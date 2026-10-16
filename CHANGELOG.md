@@ -6,6 +6,27 @@ source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
 ## Unreleased
 
+## 0.105.4 — 2026-10-22
+
+- Show context fill and the tightest account limit beside the context ring
+  (`84.2k / 200k · 5-hour 55%`), so usage is readable without hovering. A
+  provider that publishes no window size reads `13.1k used` rather than a guess.
+- Feed the context meter from every provider: Muse now uses MSP
+  `session/contextUsage` instead of cumulative prompt/output counts (which drew
+  a near-full red ring), Google derives the fill from each finished
+  Antigravity model call, and OpenRouter updates the ring after every tool round
+  and no longer zeroes it when a turn fails before any reported request.
+- Report Muse's 5-hour and weekly subscription windows (`usage/changed`, plus a
+  `usage/read` at session start) in Account usage limits, and tag OpenRouter
+  429 rows with the `openrouter` provider so they are no longer filtered out.
+- Keep each session's last context fill and each provider's limit rows across
+  session and provider switches, and accept account limits reported by a
+  background session.
+- Add per-session token totals ("This session: 39.0k in · 4 out") to the
+  context popover, cap the popover's wrapped notes so it no longer outgrows the
+  window and clips the per-category token counts, label Muse replies "Muse"
+  instead of "Claude", and give Muse and Google accurate empty-state text.
+
 ## 0.105.3 — 2026-10-22
 
 - Claude sessions waiting on background work are no longer shut down. A turn can end while background shells, monitors or subagents keep running (the CLI wakes the session when they finish); the 10-minute idle reaper and the live-session cap treated that session as idle and ended it, killing the work. The driver now tracks `system/background_tasks_changed` and both leave such sessions alone.
@@ -34,7 +55,6 @@ source (`source.tar.gz`) and `SHA256SUMS.txt`.
 - New sessions appear in the sidebar once their transcript lands (Gemini/Muse/Codex write it only after the first turn is accepted): a one-second file check for up to 30 s, then a single list rebuild.
 - Deleting a session no longer leaves a "Session <id>" ghost: Helios stops its own driver before removing the file, refuses (with an explanation) sessions held by a `claude` process it did not start, and treats an already-missing file as deleted.
 - A participant that is still starting or mid-turn counts as executing, so switching providers no longer fails with "This Work is already executing". Switching to a provider with no conversation in the Work says it cannot see the other chat; an unverifiable participant explains the refused send; the "preparing this chat" notice names Muse correctly.
-
 ## 0.104.1 — 2026-10-14
 
 - Re-adopt a staged session's provider when the background model catalog finishes loading at startup, and block cross-provider sends while the initial catalog is still probing so resuming a Muse or Google session cannot switch to a stale persisted model or start a fresh contextless session.
