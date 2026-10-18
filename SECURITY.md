@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Please report vulnerabilities privately through GitHub:
-**[Report a vulnerability](https://github.com/spencercnorton/helios/security/advisories/new)**.
+**[Report a vulnerability](https://github.com/spencernorton/helios/security/advisories/new)**.
 Do not open a public issue, and do not include real credentials, transcripts
 or project paths in the report — a description and a minimal reproduction
 are enough. A `HELIOS_DEBUG=1` log records each `claude` spawn's full

@@ -15,7 +15,7 @@ it with the tagged source, and [CHANGELOG.md](CHANGELOG.md) says what changed.
 
 ## Before you start
 
-- **Bugs** — open a [bug report](https://github.com/spencercnorton/helios/issues/new/choose).
+- **Bugs** — open a [bug report](https://github.com/spencernorton/helios/issues/new/choose).
   A report with reproduction steps, versions and a scrubbed log excerpt is
   usually fixed faster than a pull request that arrives without one. Run
   `HELIOS_DEBUG=1 ./scripts/helios` and take the excerpt from
@@ -28,7 +28,7 @@ it with the tagged source, and [CHANGELOG.md](CHANGELOG.md) says what changed.
   [docs/user-guide.md](docs/user-guide.md)); an idea that cuts across them
   needs a conversation before code.
 - **Security** — never in a public issue. Use
-  [private vulnerability reporting](https://github.com/spencercnorton/helios/security/advisories/new);
+  [private vulnerability reporting](https://github.com/spencernorton/helios/security/advisories/new);
   see [SECURITY.md](SECURITY.md).
 
 ## Working on the code

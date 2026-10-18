@@ -11,8 +11,8 @@
 
 <p align="center">
   <a href="https://norvitech.com"><img alt="NorviTech Suite" src="https://img.shields.io/badge/NorviTech-Suite-FD8024.svg"></a>
-  <a href="https://github.com/spencercnorton/helios/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/spencercnorton/helios/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/spencercnorton/helios/releases"><img alt="Latest release" src="https://img.shields.io/github/v/tag/spencercnorton/helios?label=release&sort=semver"></a>
+  <a href="https://github.com/spencernorton/helios/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/spencernorton/helios/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/spencernorton/helios/releases"><img alt="Latest release" src="https://img.shields.io/github/v/tag/spencercnorton/helios?label=release&sort=semver"></a>
   <a href="https://apt.globalentry.systems"><img alt="APT repository" src="https://img.shields.io/badge/apt-Ubuntu%2026.04-e95420.svg?logo=ubuntu&logoColor=white"></a>
   <a href="LICENSE"><img alt="MIT licence" src="https://img.shields.io/badge/licence-MIT-blue.svg"></a>
   <a href="https://buy.stripe.com/8x26oH2U44f65TRe574wM04"><img alt="Donate" src="https://img.shields.io/badge/donate-Stripe-635bff.svg?logo=stripe&logoColor=white"></a>
@@ -153,7 +153,7 @@ Python floor is not — an older interpreter fails at import, so check
 ```bash
 # Debian/Ubuntu
 sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-gtksource-5 libgtksourceview-5-0 git python3-pil
-git clone https://github.com/spencercnorton/helios.git
+git clone https://github.com/spencernorton/helios.git
 cd helios
 ./scripts/helios                 # run from the checkout
 ./scripts/install-desktop.sh     # optional: app-grid entry and icon
@@ -251,11 +251,11 @@ as well.
 
 ## Contributing and support
 
-- Bugs and feature requests: [open an issue](https://github.com/spencercnorton/helios/issues/new/choose).
-- Security reports: [private vulnerability reporting](https://github.com/spencercnorton/helios/security/advisories/new) — see [SECURITY.md](SECURITY.md).
+- Bugs and feature requests: [open an issue](https://github.com/spencernorton/helios/issues/new/choose).
+- Security reports: [private vulnerability reporting](https://github.com/spencernorton/helios/security/advisories/new) — see [SECURITY.md](SECURITY.md).
 - Pull requests are welcome; read [CONTRIBUTING.md](CONTRIBUTING.md) first —
   accepted changes ship in the next tagged release, whose notes and `.deb` are on the
-  [Releases](https://github.com/spencercnorton/helios/releases) page.
+  [Releases](https://github.com/spencernorton/helios/releases) page.
 - If Helios saves you time, you can [support its development](https://buy.stripe.com/8x26oH2U44f65TRe574wM04).
 
 ## Development
@@ -322,14 +322,14 @@ docs/                        # user guide, agent setup, GTK4 gotchas, screenshot
 </p>
 
 <p align="center">
-  <a href="https://github.com/spencercnorton/helios">Helios</a> ·
-  <a href="https://github.com/spencercnorton/bitagent">BitAgent</a> ·
-  <a href="https://github.com/spencercnorton/xnote">XNote</a> ·
-  <a href="https://github.com/spencercnorton/xnote-placement">XNote Placement</a> ·
-  <a href="https://github.com/spencercnorton/snipsnap">SnipSnap</a> ·
-  <a href="https://github.com/spencercnorton/conductor">Conductor</a> ·
-  <a href="https://github.com/spencercnorton/norvi-os">NorviOS</a> ·
-  <a href="https://github.com/spencercnorton/indigo">Indigo</a> ·
-  <a href="https://github.com/spencercnorton/roadtrack">Road Track</a> ·
+  <a href="https://github.com/spencernorton/helios">Helios</a> ·
+  <a href="https://github.com/spencernorton/bitagent">BitAgent</a> ·
+  <a href="https://github.com/spencernorton/xnote">XNote</a> ·
+  <a href="https://github.com/spencernorton/xnote-placement">XNote Placement</a> ·
+  <a href="https://github.com/spencernorton/snipsnap">SnipSnap</a> ·
+  <a href="https://github.com/spencernorton/conductor">Conductor</a> ·
+  <a href="https://github.com/spencernorton/norvi-os">NorviOS</a> ·
+  <a href="https://github.com/spencernorton/indigo">Indigo</a> ·
+  <a href="https://github.com/spencernorton/roadtrack">Road Track</a> ·
   <a href="https://norvitech.com">norvitech.com</a>
 </p>
