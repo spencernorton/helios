@@ -33,7 +33,9 @@ INSTRUCTIONS = (
     "Helios has a browser pane beside this chat. Use browser_open to show the "
     "person an HTML report, a local file or a dev server (a path, "
     "localhost:PORT or a URL) instead of only describing it. browser_read and "
-    "browser_screenshot let you check what rendered. Files in your working "
+    "browser_screenshot let you check what rendered; browser_click and "
+    "browser_type drive the page and browser_console shows its console output "
+    "and errors. Files in your working "
     "folder and localhost are yours to use; other sites and files ask the "
     "person first. Reference a report's assets by relative path inside the "
     "folder: absolute file paths do not load."
@@ -89,6 +91,49 @@ TOOLS = [
         "name": "browser_screenshot",
         "description": "Return a PNG screenshot of what a tab currently shows.",
         "inputSchema": {"type": "object", "properties": {"tab": _TAB}, "additionalProperties": False},
+        "annotations": {"readOnlyHint": True, "openWorldHint": True},
+    },
+    {
+        "name": "browser_click",
+        "description": "Click an element in a tab: by CSS selector, or the first link/button "
+                       "whose visible text contains `text`. Returns the page afterwards.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tab": _TAB,
+                "selector": {"type": "string", "description": "CSS selector."},
+                "text": {"type": "string", "description": "Visible text of a link or button."},
+            },
+            "additionalProperties": False,
+        },
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
+    },
+    {
+        "name": "browser_type",
+        "description": "Type into an input, textarea or editable element (by CSS selector, or "
+                       "the focused element), replacing its value; optionally submit the form.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tab": _TAB,
+                "selector": {"type": "string", "description": "CSS selector; defaults to the focused element."},
+                "text": {"type": "string"},
+                "submit": {"type": "boolean", "description": "Submit the form (or press Enter) afterwards."},
+            },
+            "required": ["text"],
+            "additionalProperties": False,
+        },
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
+    },
+    {
+        "name": "browser_console",
+        "description": "Return the page's recent console messages and uncaught errors "
+                       "(newest last, up to 200).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"tab": _TAB, "clear": {"type": "boolean", "description": "Empty the buffer after reading."}},
+            "additionalProperties": False,
+        },
         "annotations": {"readOnlyHint": True, "openWorldHint": True},
     },
     {

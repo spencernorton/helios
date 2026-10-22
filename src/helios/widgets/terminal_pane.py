@@ -16,6 +16,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib, GObject, Gtk, Pango  # noqa: E402
 
+from helios.backend import run_configs  # noqa: E402
+
 
 def _load_vte():
     try:
@@ -30,6 +32,8 @@ class TerminalPane(Gtk.Box):
     __gsignals__ = {
         # Selected terminal text, for the composer.
         "send-to-chat": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
+        # A run config's server is answering on its port ("localhost:PORT").
+        "preview": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
     }
 
     def __init__(self, *, cwd: Callable[[], str]) -> None:
@@ -54,6 +58,13 @@ class TerminalPane(Gtk.Box):
         self._title.add_css_class("caption")
         self._title.add_css_class("dim-label")
         bar.append(self._title)
+        self._run_menu = Gtk.MenuButton(label="Run", tooltip_text="Start this project's dev server")
+        self._run_menu.add_css_class("flat")
+        self._run_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        popover = Gtk.Popover(child=self._run_box)
+        popover.connect("show", lambda *_: self._fill_run_menu())
+        self._run_menu.set_popover(popover)
+        bar.append(self._run_menu)
         send = Gtk.Button(label="Send to chat")
         send.add_css_class("flat")
         send.set_tooltip_text("Put the selected terminal text in the message box")
@@ -75,12 +86,12 @@ class TerminalPane(Gtk.Box):
 
     # ── public ──────────────────────────────────────────────────────────
 
-    def new_tab(self, command: str = "", title: str = ""):
+    def new_tab(self, command: str = "", title: str = "", cwd: str = ""):
         """Open a shell in the chat's folder; type ``command`` into it if given.
         Returns the terminal, or None when VTE is unavailable."""
         if not self.available:
             return None
-        cwd = self._cwd() or os.path.expanduser("~")
+        cwd = cwd or self._cwd() or os.path.expanduser("~")
         if not os.path.isdir(cwd):
             cwd = os.path.expanduser("~")
         term = self._vte.Terminal()
@@ -112,9 +123,41 @@ class TerminalPane(Gtk.Box):
         self._sync_title()
         return term
 
-    def run(self, command: str, title: str) -> None:
-        """Run ``command`` in a new tab (used by run configs)."""
-        self.new_tab(command, title)
+    def run(self, config) -> None:
+        """Start a run config in its own tab; once its port answers, ask the
+        window to open it in the browser pane."""
+        self._run_menu.popdown()
+        self.new_tab(config.command, config.name, config.cwd)
+        if not config.port:
+            return
+        tries = [0]
+
+        def poll() -> bool:
+            tries[0] += 1
+            if run_configs.port_open(config.port):
+                self.emit("preview", f"localhost:{config.port}")
+                return False
+            return tries[0] < 240  # ponytail: 2 minutes, then stop waiting
+
+        GLib.timeout_add(500, poll)
+
+    def _fill_run_menu(self) -> None:
+        while (child := self._run_box.get_first_child()) is not None:
+            self._run_box.remove(child)
+        configs = run_configs.load(self._cwd())
+        for config in configs:
+            button = Gtk.Button(label=config.name + (f"  ·  :{config.port}" if config.port else ""))
+            button.add_css_class("flat")
+            button.set_tooltip_text(config.command)
+            button.connect("clicked", lambda _b, c=config: self.run(c))
+            self._run_box.append(button)
+        if not configs:
+            hint = Gtk.Label(
+                label="No run configuration.\nAdd .claude/launch.json or a\npackage.json dev script.",
+                justify=Gtk.Justification.CENTER,
+            )
+            hint.add_css_class("dim-label")
+            self._run_box.append(hint)
 
     # ── internals ───────────────────────────────────────────────────────
 

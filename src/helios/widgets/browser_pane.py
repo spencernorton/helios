@@ -21,7 +21,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gio, GLib, GObject, Gtk  # noqa: E402
 
 from helios import paths  # noqa: E402
 from helios.backend import ui_state  # noqa: E402
@@ -33,6 +33,8 @@ from helios.backend.browser_target import (  # noqa: E402
     localize,
     resolve,
 )
+from helios.backend.media import media_path  # noqa: E402
+from helios.backend.transcript import ImageRef  # noqa: E402
 from helios.log import get_logger  # noqa: E402
 
 _log = get_logger("browser")
@@ -53,6 +55,74 @@ _READ_SCRIPT = (
     "JSON.stringify({title: document.title, url: location.href,"
     " text: document.body ? document.body.innerText : ''})"
 )
+
+# Installed at document start in the page's own world so it sees the page's
+# console. Its buffer is page-controlled data, like any page text.
+_CONSOLE_CAPTURE = r"""(() => {
+  if (window.__heliosConsole) return;
+  const log = window.__heliosConsole = [];
+  const push = (level, args) => {
+    try {
+      const text = Array.from(args).map(a => {
+        if (typeof a === "string") return a;
+        try { return JSON.stringify(a); } catch (e) { return String(a); }
+      }).join(" ").slice(0, 2000);
+      log.push({level, text, time: Date.now()});
+      if (log.length > 200) log.shift();
+    } catch (e) {}
+  };
+  for (const level of ["log", "info", "warn", "error", "debug"]) {
+    const original = console[level];
+    console[level] = function (...args) { push(level, args); return original.apply(this, args); };
+  }
+  addEventListener("error", e => push("error", [`${e.message} (${e.filename || ""}:${e.lineno || 0})`]));
+  addEventListener("unhandledrejection", e => push("error", ["Unhandled rejection: " + ((e.reason && e.reason.message) || e.reason)]));
+})();"""
+
+_CLICK_SCRIPT = r"""(() => {
+  const selector = %s, wanted = %s;
+  let el = null;
+  if (selector) {
+    try { el = document.querySelector(selector); }
+    catch (e) { return JSON.stringify({ok: false, error: "Bad selector: " + e.message}); }
+  } else if (wanted) {
+    const needle = wanted.toLowerCase();
+    el = Array.from(document.querySelectorAll(
+      "a,button,input[type=submit],input[type=button],[role=button],summary,label"
+    )).find(e => ((e.innerText || e.value || "").toLowerCase().includes(needle)));
+  }
+  if (!el) return JSON.stringify({ok: false, error: "No element matched."});
+  el.scrollIntoView({block: "center"});
+  el.click();
+  return JSON.stringify({ok: true, element: el.tagName.toLowerCase() + (el.id ? "#" + el.id : ""),
+                         text: (el.innerText || el.value || "").slice(0, 80)});
+})()"""
+
+# React and friends track the value property on the element; the prototype's
+# native setter plus input/change events is what makes them see the change.
+_TYPE_SCRIPT = r"""(() => {
+  const selector = %s, value = %s, submit = %s;
+  let el;
+  try { el = selector ? document.querySelector(selector) : document.activeElement; }
+  catch (e) { return JSON.stringify({ok: false, error: "Bad selector: " + e.message}); }
+  if (!el || el === document.body) return JSON.stringify({ok: false, error: "No element matched."});
+  el.focus();
+  if (el.isContentEditable) {
+    el.textContent = value;
+  } else {
+    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
+    if (descriptor && descriptor.set) descriptor.set.call(el, value); else el.value = value;
+  }
+  el.dispatchEvent(new Event("input", {bubbles: true}));
+  el.dispatchEvent(new Event("change", {bubbles: true}));
+  if (submit) {
+    if (el.form && el.form.requestSubmit) el.form.requestSubmit();
+    else for (const type of ["keydown", "keypress", "keyup"])
+      el.dispatchEvent(new KeyboardEvent(type, {key: "Enter", code: "Enter", keyCode: 13, bubbles: true}));
+  }
+  return JSON.stringify({ok: true, element: el.tagName.toLowerCase() + (el.id ? "#" + el.id : "")});
+})()"""
 
 Reply = Callable[[dict], None]
 
@@ -176,6 +246,11 @@ def _load_webkit():
 
 
 class BrowserPane(Gtk.Box):
+    __gsignals__ = {
+        # A screenshot of the selected tab, saved as a file, for the composer.
+        "attach": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
+    }
+
     def __init__(
         self,
         *,
@@ -226,6 +301,7 @@ class BrowserPane(Gtk.Box):
         self._address.connect("activate", self._on_address_activate)
         bar.append(self._address)
         self._button(bar, "tab-new-symbolic", "New tab", self._new_blank_tab)
+        self._button(bar, "camera-photo-symbolic", "Add a screenshot of this page to the chat", self._attach_snapshot)
         self._external = self._button(bar, "external-link-symbolic", "Open in your browser", self._open_external)
         self._button(bar, "window-close-symbolic", "Hide browser (Ctrl+Shift+B)", on_close)
         self.append(bar)
@@ -261,6 +337,22 @@ class BrowserPane(Gtk.Box):
         self._load(view, lambda: view.load_uri(url), settled)
         self._tab_view.set_selected_page(self._tab_view.get_page(view))
         return view
+
+    def _attach_snapshot(self) -> None:
+        view = self._selected_view()
+        if view is None:
+            return
+
+        def finished(source, result) -> None:
+            try:
+                png = source.get_snapshot_finish(result).save_to_png_bytes().get_data()
+            except GLib.Error:
+                return
+            path = media_path(ImageRef("image/png", data=base64.b64encode(png).decode("ascii")))
+            if path is not None:
+                self.emit("attach", str(path))
+
+        view.get_snapshot(self._webkit.SnapshotRegion.VISIBLE, self._webkit.SnapshotOptions.NONE, None, finished)
 
     def handle_call(self, tool: str, args: dict, reply: Reply) -> None:
         """One agent tool call. Always replies exactly once."""
@@ -397,6 +489,62 @@ class BrowserPane(Gtk.Box):
 
         self._consent_for_view(view, args, "see", capture, reply)
 
+    def _run_page_script(self, args: dict, reply: Reply, verb: str, script: str,
+                         world: str | None, after_ms: int = 0) -> None:
+        """Run ``script`` (which returns JSON) in a tab after consent; reply
+        with its result merged into the page description."""
+        view = self._view_for(args, reply)
+        if view is None:
+            return
+        cwd = self._call_cwd(args)
+
+        def finished(source, result) -> None:
+            try:
+                outcome = json.loads(source.evaluate_javascript_finish(result).to_string())
+            except Exception as exc:
+                reply({"ok": False, "error": f"The page did not answer: {exc}"})
+                return
+            if not isinstance(outcome, dict) or outcome.get("ok") is False:
+                reply(outcome if isinstance(outcome, dict) else {"ok": False, "error": "Unexpected page result."})
+                return
+
+            def answer() -> bool:
+                if self._alive(view, reply):
+                    reply({**self._describe(view, "loading" if view.is_loading() else "loaded", cwd), **outcome})
+                return False
+
+            GLib.timeout_add(after_ms, answer) if after_ms else answer()
+
+        def run() -> None:
+            if self._alive(view, reply):
+                _deadline(reply)
+                view.evaluate_javascript(script, -1, world, None, None, finished)
+
+        self._consent_for_view(view, args, verb, run, reply)
+
+    def _tool_click(self, args: dict, reply: Reply) -> None:
+        selector, text = str(args.get("selector") or ""), str(args.get("text") or "")
+        if not selector and not text:
+            reply({"ok": False, "error": 'browser_click needs "selector" or "text".'})
+            return
+        script = _CLICK_SCRIPT % (json.dumps(selector), json.dumps(text))
+        self._run_page_script(args, reply, "use", script, "helios", after_ms=500)
+
+    def _tool_type(self, args: dict, reply: Reply) -> None:
+        if not isinstance(args.get("text"), str):
+            reply({"ok": False, "error": 'browser_type needs "text".'})
+            return
+        script = _TYPE_SCRIPT % (json.dumps(str(args.get("selector") or "")), json.dumps(args["text"]),
+                                 json.dumps(bool(args.get("submit"))))
+        self._run_page_script(args, reply, "use", script, "helios", after_ms=500 if args.get("submit") else 0)
+
+    def _tool_console(self, args: dict, reply: Reply) -> None:
+        script = ("JSON.stringify({ok: true, messages: (window.__heliosConsole || []).slice()})"
+                  if not args.get("clear") else
+                  "JSON.stringify({ok: true, messages: (window.__heliosConsole || []).splice(0)})")
+        # The page's own world: the capture script lives there.
+        self._run_page_script(args, reply, "read", script, None)
+
     def _tool_tabs(self, args: dict, reply: Reply) -> None:
         cwd = self._call_cwd(args)
         selected = self._selected_view()
@@ -506,6 +654,10 @@ class BrowserPane(Gtk.Box):
         # Agent-written reports often omit <meta charset>; WebKit would read
         # them as Latin-1 and turn every "→" into mojibake.
         settings.set_default_charset("utf-8")
+        WebKit_ = self._webkit
+        view.get_user_content_manager().add_script(WebKit_.UserScript.new(
+            _CONSOLE_CAPTURE, WebKit_.UserContentInjectedFrames.TOP_FRAME,
+            WebKit_.UserScriptInjectionTime.START, None, None))
         view.connect("load-changed", self._on_load_changed)
         view.connect("load-failed", self._on_load_failed)
         view.connect("create", self._on_create)

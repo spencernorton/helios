@@ -702,6 +702,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             cwd=lambda: self._current_project_cwd() or str(getattr(self._driver, "_cwd", "") or ""),
         )
         self._terminal.connect("send-to-chat", self._on_terminal_send)
+        self._terminal.connect("preview", lambda _p, url: self._open_in_pane(url))
         self._right_stack.add_titled_with_icon(
             self._terminal, "terminal", "Terminal", "utilities-terminal-symbolic"
         )
@@ -755,6 +756,8 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             on_close=lambda: self._browser_btn.set_active(False),
             cwd=lambda: self._current_project_cwd() or str(getattr(self._driver, "_cwd", "") or ""),
         )
+        if self._browser.available:
+            self._browser.connect("attach", lambda _p, path: self._composer.add_attachments([path]))
         self._browser.set_visible(False)
         self._browser_paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         self._browser_paned.set_start_child(self._main_stack)
