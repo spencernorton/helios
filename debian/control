@@ -25,7 +25,8 @@ Depends: ${misc:Depends},
          python3-gi-cairo
 Recommends: git,
             gir1.2-xdp-1.0,
-            gir1.2-xdpgtk4-1.0
+            gir1.2-xdpgtk4-1.0,
+            gir1.2-vte-3.91
 Description: desktop for Claude Code, OpenAI Codex and OpenRouter agents
  Helios is a native GTK4/libadwaita desktop that keeps every coding-agent
  session in one window: what the agent is doing right now, what it may do,

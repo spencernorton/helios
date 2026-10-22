@@ -241,6 +241,9 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
         # Real per-category context occupancy from `get_context_usage`.
         # Answers before the first turn, so the meter need never show 0/0.
         "context-usage": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
+        # Claude-only: the running background tasks (list of dicts with
+        # task_id, task_type, description) after each change.
+        "background-tasks-changed": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
         # Provider-truth activity phases the stream itself cannot show: an
         # API retry and a compaction are both *silent* on the wire, so the
         # strip inferred "still thinking" through them. Same signal
@@ -371,6 +374,7 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
         # background shells, monitors and subagents still running after the
         # turn's `result`. Their finish wakes the session for a new turn.
         self._background_tasks: tuple[str, ...] = ()
+        self.background_task_rows: list[dict] = []
         # Monotonic timestamp of the last meaningful wire activity (a send or
         # any stdout record). The window's idle-reaper + LRU cap use this to
         # pick which background drivers to wind down.
@@ -2029,6 +2033,29 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
         self._permission_mode = mode
         self.emit("permission-mode-changed", mode)
 
+    def stop_background_task(self, task_id: str) -> bool:
+        """Stop one background shell/monitor/agent by its CLI task id."""
+        if not task_id or task_id not in self._background_tasks:
+            return False
+
+        def landed(ok: bool, detail: str, _payload: dict) -> None:
+            if not ok and not self._stop_requested:
+                self.emit("error", f"Could not stop the background task: {detail or 'no reply'}")
+
+        return self._send_control_request({"subtype": "stop_task", "task_id": task_id}, landed)
+
+    def task_output_path(self, task_id: str) -> str:
+        """Where the CLI streams a background task's output (measured on
+        2.1.308: <tmp>/claude-<uid>/<encoded cwd>/<session>/tasks/<id>.output)."""
+        import tempfile
+
+        from helios.backend.projects import encode_project_dirname
+
+        return os.path.join(
+            tempfile.gettempdir(), f"claude-{os.getuid()}", encode_project_dirname(self._cwd),
+            self._session_id or "", "tasks", f"{task_id}.output",
+        )
+
     def stop_task(self, actor_id: str) -> bool:
         """Stop one background subagent without interrupting the session.
 
@@ -2775,11 +2802,18 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
                 self._note_task_record(sub, obj)
             elif sub == "background_tasks_changed":
                 tasks = obj.get("tasks")
-                self._background_tasks = tuple(
-                    str(t.get("task_id") or "")
+                rows = [
+                    {
+                        "task_id": str(t.get("task_id") or ""),
+                        "task_type": str(t.get("task_type") or ""),
+                        "description": str(t.get("description") or ""),
+                    }
                     for t in (tasks if isinstance(tasks, list) else ())
-                    if isinstance(t, dict)
-                )
+                    if isinstance(t, dict) and t.get("task_id")
+                ]
+                self._background_tasks = tuple(row["task_id"] for row in rows)
+                self.background_task_rows = rows
+                self.emit("background-tasks-changed", list(rows))
             elif sub == "api_retry":
                 # The one record that distinguishes "the API is failing and
                 # will try again" from "the model is taking a while". Nothing
