@@ -1,5 +1,10 @@
 # Helios — Session Journal
 
+## 2026-10-22 — claude — Land the browser pane (v0.106.0)
+
+- **What:** cherry-picked the four `claude/browser-pane` commits (2026-10-16) onto 0.105.4 as Phase 0 of `docs/PARITY-ROADMAP-2026-10.md`; only bookkeeping conflicted. Its 2026-10-16 entry below records the Xvfb validation and GPT review.
+- **Known gap carried into Phase 1:** `browser_screenshot` returns MCP image content to the agent, but the transcript parser still drops image blocks, so the person does not see it yet.
+
 ## 2026-10-16 — claude — Browser pane for agents (v0.106.0)
 
 - **Branch:** `claude/browser-pane` (stacked on `claude/usage-stats`)

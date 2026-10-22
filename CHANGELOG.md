@@ -6,7 +6,7 @@ source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
 ## Unreleased
 
-## 0.106.0 — 2026-10-16
+## 0.106.0 — 2026-10-22
 
 - Add a tabbed browser pane beside the transcript (Ctrl+Shift+B or the header
   button) built on WebKitGTK 6: back, forward, reload, new tab, open in your
@@ -31,7 +31,6 @@ source (`source.tar.gz`) and `SHA256SUMS.txt`.
 - The package now depends on `gir1.2-webkit-6.0`; a source checkout without it
   shows an install hint in the pane instead of failing.
 
-## 0.105.0 — 2026-10-16
 ## 0.105.4 — 2026-10-22
 
 - Show context fill and the tightest account limit beside the context ring
