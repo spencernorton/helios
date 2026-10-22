@@ -1,5 +1,11 @@
 # Helios — Session Journal
 
+## 2026-10-22 — claude — Land the usage-stats branch (v0.105.4)
+
+- **What:** cherry-picked `claude/usage-stats` (2026-10-16, two commits, GPT-reviewed twice) onto 0.105.3 as Phase 0 of `docs/PARITY-ROADMAP-2026-10.md`. Its own entry below still says v0.105.0; that number shipped first as the Accounts page, so it releases as **0.105.4**.
+- **Overlap resolved:** 0.105.2 had independently fixed the Muse meter inline; the branch's `_emit_context_usage` (falls back to the catalog window when `windowTokens` is absent) replaced it. Both Muse meter tests kept. 0.105.2's `set_window(0)` reset and tooltip coexist with the branch's "N used" caption for Gemini.
+- **Validation:** suite green apart from the 2 pre-existing local failures; the branch's own Xvfb verification is in its entry.
+
 ## 2026-10-22 — claude — Keep sessions with background work alive; driver-truth dots (v0.105.3)
 
 - **Reported:** a Claude session "randomly stopped"; another showed a green dot while its caption said working.
@@ -43,6 +49,46 @@
 - **Not changed, by design:** a cross-provider switch inside a `single` Work still starts without the other provider's history (collaboration is explicit; see AGENTS.md); the toast now says so. The quiet GPT→Claude fallback when the OpenAI catalog is unverified is pinned by tests as silent; left alone and raised with Spencer.
 - **Argon:** not a Helios bug. Google's `fetchAvailableModels` stopped returning Gemini 4 Argon for the account after 2026-10-18 ~22:00; `agy --model gemini-4-argon-medium` now fails "not recognized" in agy 1.4.5.
 - **Validation:** 3427 passed; the 2 failures in `test_model_catalog_refresh.py` pre-exist on `main` (they reach the real `agy` on PATH; CI has none). New tests: `test_model_switch_respawn.py`, `test_sidebar_session_lifecycle.py`, Muse reasoning test (fails without the fix).
+## 2026-10-16 — claude — Usage stats visible for every provider (v0.105.0)
+
+- **Branch:** `claude/usage-stats`
+- **Symptom:** "none of our models show context or usage stats". The ring and
+  hover popover existed, but: Muse emitted cumulative `(prompt, output)` as
+  `(used, window)` and dropped MSP `session/contextUsage` into an activity
+  event; Google never emitted `usage-updated` (window 0 → permanent "·");
+  OpenRouter 429 rows carried the upstream name as `provider` and were always
+  filtered out, and a failed turn zeroed the ring; switching to a live session
+  reset the meter to 0 because the transcript re-read defers to live drivers;
+  nothing was readable without hovering.
+- **What changed:** Muse uses `session/contextUsage` and maps `usage/changed` /
+  `usage/read` (`SubscriptionUsage`) to limit rows (`rate_limits.muse_rate_limit_rows`;
+  `humanize_window_mins` moved there from `codex_app_contract`). Google emits
+  the fill from each DONE `step_update.usage` (measured: per model call, input
+  excludes `cache_read_tokens`; agy publishes no window, so it stays 0 and the
+  caption reads "N used"). OpenRouter emits per round and skips zero fills.
+  The window caches `drv._helios_last_usage` / `_helios_session_tokens` and
+  restores them on switch; limit rows are filed per provider in the popover and
+  no longer gated on the visible driver (quotas are account-wide). New
+  `usage_caption` label beside the ring; popover gains "This session" totals and
+  `set_max_width_chars(46)` on wrapped notes (it outgrew the window and clipped
+  the legend numbers). Transcript assistant names now come from one table that
+  includes Muse.
+- **Validation:** worktree Helios run on Xvfb `:99` under `dbus-run-session`
+  with a private `HELIOS_STATE_DIR`: Gemini `13.8k used`, Muse
+  `49.8k / 1.008M · 5-hour 6%`, Claude `37.2k / 1M` with legend values and
+  "This session". GPT could not be exercised there (Codex credentials sit in the
+  GNOME keyring, unreachable from the private bus). Full suite green except the
+  two `test_model_catalog_refresh` failures that also fail on `main`.
+- **GPT review (gpt-6.1-sol, two passes) — fixed:** a 429 row never cleared
+  (now removed after the next reported round); Google fill missing from the
+  popover/tooltip; Codex footer/totals counted only the last request (now the
+  delta of `tokenUsage.total`, seeded `{}` for a new thread, unknown for the
+  first turn after a resume); Gemini "in" ignored `cache_read_tokens` — the old
+  test claiming agy input already includes cache was contradicted by the
+  measurement and was corrected; background Claude `get_context_usage` was not
+  cached; `_apply_context_fill` guessed 1M for an unknown Google window.
+- **Not done:** Muse/Gemini transcripts store no usage, so reopening an idle
+  session of theirs shows 0 until its next turn.
 
 
 ## 2026-10-14 — Fix startup provider adoption race and in-flight resume driver tracking
