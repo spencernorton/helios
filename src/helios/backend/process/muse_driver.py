@@ -175,6 +175,8 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
         self._root_turn_id = ""
         self._turn_usage: dict[str, int] = {}
         self._blocks: dict[str, Block] = {}
+        self._summary_part: dict[str, str] = {}
+        self._model_changes: dict[int, tuple[str, Any]] = {}
         self._tool_outputs: dict[str, str] = {}
         self._agents: dict[str, dict[str, str]] = {}
         self._pending_approvals: dict[str, dict] = {}
@@ -253,6 +255,43 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
             message["id"] = self._rpc_seq
             self._pending_rpc[self._rpc_seq] = method
         return self._write(message)
+
+    @staticmethod
+    def _notify(callback, success: bool, detail: str = "") -> None:
+        if callback is not None:
+            try:
+                callback(success, detail)
+            except Exception:
+                _log.exception("execution-setting callback failed")
+
+    def set_effort(self, key: str, callback=None) -> bool:
+        # turn/start carries reasoningEffort, so this is just the next turn's.
+        if not isinstance(key, str) or not key.strip():
+            self._notify(callback, False, "unknown effort level")
+            return False
+        self._effort = key
+        self._notify(callback, True)
+        return True
+
+    def set_model(self, model: str, callback=None) -> bool:
+        """MSP `session/setModel`: durable, applies to subsequent model calls,
+        no respawn (probed against `muse serve`, 2026-10-22)."""
+        if not isinstance(model, str) or not model.startswith("muse-"):
+            self._notify(callback, False, "unknown model")
+            return False
+        if model == self._model:
+            self._notify(callback, True)
+            return True
+        if self._is_busy or not self.is_accepting_input or not self._session_id:
+            self._notify(callback, False, "the Muse session is busy")
+            return False
+        if not self._send("session/setModel", {
+                "sessionId": self._session_id, "commandId": uuid7(),
+                "model": {"modelId": model}}):
+            self._notify(callback, False, "Muse is not accepting input")
+            return False
+        self._model_changes[self._rpc_seq] = (model, callback)
+        return True
 
     def _respond(self, request_id: Any, result: Any) -> bool:
         return self._write({"jsonrpc": "2.0", "id": request_id, "result": result})
@@ -445,6 +484,7 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
         self._prepared_prompt = prepared
         self._streaming = StreamingAssistant(model=self._model)
         self._blocks = {}
+        self._summary_part = {}
         self._tool_outputs = {}
         self._agents = {}
         self._turn_usage = {}
@@ -527,6 +567,18 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
         # Result / error for one of our requests.
         if "id" in msg and ("result" in msg or "error" in msg):
             method = self._pending_rpc.pop(msg["id"], "")
+            change = self._model_changes.pop(msg["id"], None)
+            if change is not None:
+                model, callback = change
+                result = msg.get("result")
+                if isinstance(result, dict) and result.get("status") == "accepted":
+                    self._model = model
+                    self._notify(callback, True)
+                else:
+                    detail, _ = scrub_sensitive(str(
+                        (msg.get("error") or {}).get("message") or "Muse refused the model"))
+                    self._notify(callback, False, detail[:200])
+                return False
             if "error" in msg:
                 detail, _ = scrub_sensitive(
                     str((msg.get("error") or {}).get("message") or "request failed"))
@@ -637,10 +689,13 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
             block = self._block_for(item_id, "reasoning_summary")
             if block is not None:
                 summary = item.get("summary")
-                if isinstance(summary, list):
-                    block.text = "\n".join(str(part) for part in summary)
-                elif isinstance(item.get("text"), str):
-                    block.text = item["text"]
+                parts = [str(p) for p in summary if p] if isinstance(summary, list) else []
+                raw = item.get("text")
+                text = "\n\n".join(parts) or (raw if isinstance(raw, str) else "")
+                # item/started and item/updated re-send an empty summary while
+                # the parts stream as deltas; never wipe what already arrived.
+                if text:
+                    block.text = text
                 self.emit("assistant-streaming", self._streaming)
         elif kind == "toolCall":
             block = self._block_for(item_id, "tool_use")
@@ -728,7 +783,13 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
             block = self._block_for(item_id, "reasoning_summary" if field.startswith("summary") else "text")
             if block is None:
                 return
-        if field in ("text",) or field.startswith("summary"):
+        if field.startswith("summary"):
+            # `summary.n`: a new index starts a new part.
+            if block.text and self._summary_part.get(item_id, field) != field:
+                block.text += "\n\n"
+            self._summary_part[item_id] = field
+            block.text += delta
+        elif field == "text":
             block.text += delta
         elif field in ("args", "input", "tool_use_input_json"):
             block.tool_use_input_json += delta
@@ -865,6 +926,7 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
         self._is_busy = False
         self._streaming = None
         self._blocks = {}
+        self._summary_part = {}
         self._tool_outputs = {}
         self._last_activity = time.monotonic()
         result = {

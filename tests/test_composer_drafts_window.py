@@ -87,6 +87,7 @@ def _window():
         _next_chat=None,
         _conversation_perms=None,
         _shared=_Noop(),
+        _sessions=_Noop(),
         _plan=_Noop(),
         _transcript=_Noop(),
         _context=_Noop(),

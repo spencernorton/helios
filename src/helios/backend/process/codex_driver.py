@@ -258,6 +258,22 @@ class CodexCliDriver(UserMessageQueueMixin, GObject.Object):
         self._notify_execution_callback(callback, True)
         return True
 
+    def set_model(
+        self,
+        model: str,
+        callback: _ExecutionCallback | None = None,
+    ) -> bool:
+        # A plain field like effort: every turn/start (and exec argv) carries
+        # `model`, so a switch needs no respawn and no rebuilt session.
+        if not isinstance(model, str) or not model.strip():
+            self._notify_execution_callback(callback, False, "unknown model")
+            return False
+        if not self._execution_change_ready(callback):
+            return False
+        self._model = model.strip()
+        self._notify_execution_callback(callback, True)
+        return True
+
     def answer_question(self, tool_use_id: str, answer: str | None) -> None:
         """Codex has no AskUserQuestion channel — nothing to answer."""
 

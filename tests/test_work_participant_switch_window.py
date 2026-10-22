@@ -208,10 +208,20 @@ def test_apply_model_choice_names_the_provider_actually_left(monkeypatch):
         _current_work_id=lambda: "work-1",
         _toast=lambda text: toasts.append(text),
         _driver=None,
+        _next_chat=types.SimpleNamespace(resume_id="claude-native"),
     )
 
     MainWindow._apply_model_choice(window, "opus")
     assert toasts == ["Claude is now leading this Work — OpenRouter remains available."]
+
+    # No conversation for the new provider yet: say it starts without context.
+    window._model = "moonshotai/kimi-k3"
+    window._next_chat = types.SimpleNamespace(resume_id="")
+    MainWindow._apply_model_choice(window, "opus")
+    assert toasts[-1] == (
+        "Claude starts a new conversation in this Work — it can't see the "
+        "OpenRouter chat, which stays in the sidebar."
+    )
 
     window._model = "opus"
     switch_result[0] = False

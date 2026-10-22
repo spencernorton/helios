@@ -21,9 +21,12 @@ def test_delete_observer_sees_provider_before_index_is_forgotten(tmp_path):
     )
     observed: list[str] = []
     owner = SimpleNamespace(
-        emit=lambda _signal, ids: observed.extend(
+        emit=lambda signal, ids: signal == "sessions-deleted" and observed.extend(
             session_providers.provider_for(session_id) for session_id in ids
         ),
+        _live_session_ids=set(),
+        _listbox=SimpleNamespace(get_selected_row=lambda: None),
+        get_root=lambda: None,
         _set_select_mode=lambda _active: None,
         reload=lambda **_kwargs: None,
     )
