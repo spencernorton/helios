@@ -232,7 +232,7 @@ class DriverManager:
         for driver in list(self.live.values()):
             if (
                 driver is self.current
-                or driver.is_busy
+                or _is_working(driver)
                 or not driver.is_accepting_input
             ):
                 continue
@@ -250,7 +250,7 @@ class DriverManager:
                 for driver in self.live.values()
                 if (
                     driver is not self.current
-                    and not driver.is_busy
+                    and not _is_working(driver)
                     and driver.is_accepting_input
                 )
             ),
@@ -278,6 +278,15 @@ class DriverManager:
 
 def _short_id(driver: Driver) -> str:
     return (getattr(driver, "session_id", "") or "?")[:8]
+
+
+def _is_working(driver: Driver) -> bool:
+    """Mid-turn, or between turns with background tasks that will wake it."""
+    return bool(driver.is_busy or getattr(driver, "has_background_work", False))
+
+
+def working_session_ids(manager: "DriverManager") -> set[str]:
+    return {sid for sid, driver in manager.live.items() if _is_working(driver)}
 
 
 def _end_input_quietly(driver: Driver) -> None:

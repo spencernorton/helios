@@ -58,6 +58,7 @@ from helios.backend.process.muse_driver import MuseDriverSpawnError, MuseServeDr
 from helios.backend.process.driver_manager import (
     COMMON_DRIVER_SIGNALS,
     DriverManager,
+    working_session_ids,
 )
 from helios.backend.claude_binary import ClaudeBinaryNotFound
 from helios.backend.composer_state import DraftBook, draft_key
@@ -905,6 +906,9 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
 
         # --- Signals ---
         self._sessions.connect("session-selected", self._on_session_selected)
+        self._sessions.set_working_ids_provider(
+            lambda: working_session_ids(self._driver_manager)
+        )
         self._sessions.connect("sessions-deleting", self._on_sessions_deleting)
         self._sessions.connect("sessions-deleted", self._on_sessions_deleted)
         self._sessions.connect("session-stop-requested", self._on_session_stop_requested)

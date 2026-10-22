@@ -365,6 +365,10 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
         # busy/idle state when re-binding a background session as the visible
         # one (multi-session). Distinct from `is_running` (process alive).
         self._busy = False
+        # Task ids from the CLI's latest `system/background_tasks_changed`:
+        # background shells, monitors and subagents still running after the
+        # turn's `result`. Their finish wakes the session for a new turn.
+        self._background_tasks: tuple[str, ...] = ()
         # Monotonic timestamp of the last meaningful wire activity (a send or
         # any stdout record). The window's idle-reaper + LRU cap use this to
         # pick which background drivers to wind down.
@@ -511,6 +515,12 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
     @property
     def is_running(self) -> bool:
         return self._proc is not None and not self._closed
+
+    @property
+    def has_background_work(self) -> bool:
+        """Turn finished, but background tasks are still running and will wake
+        this session. Never idle-reap it: that kills the work (2026-10-22)."""
+        return bool(self._background_tasks) and self.is_running
 
     @property
     def is_busy(self) -> bool:
@@ -2755,6 +2765,13 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
                     )
             elif sub in {"task_started", "task_progress", "task_notification"}:
                 self._note_task_record(sub, obj)
+            elif sub == "background_tasks_changed":
+                tasks = obj.get("tasks")
+                self._background_tasks = tuple(
+                    str(t.get("task_id") or "")
+                    for t in (tasks if isinstance(tasks, list) else ())
+                    if isinstance(t, dict)
+                )
             elif sub == "api_retry":
                 # The one record that distinguishes "the API is failing and
                 # will try again" from "the model is taking a while". Nothing
