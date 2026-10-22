@@ -623,20 +623,15 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
             for key, value in usage.items():
                 if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                     self._turn_usage[key] = self._turn_usage.get(key, 0) + value
-            cumulative = params.get("cumulative") if isinstance(params.get("cumulative"), dict) else {}
-            prompt = cumulative.get("promptTokens")
-            output = cumulative.get("outputTokens")
-            if isinstance(prompt, int) and isinstance(output, int):
-                self.emit("usage-updated", prompt, output)
         elif method == "usage/changed":
             self.emit("rate-limit-updated", params)
         elif method == "session/contextUsage":
-            self.emit("activity-updated", {
-                "category": "tool-progress",
-                "windowTokens": params.get("windowTokens"),
-                "usedTokens": params.get("usedTokens"),
-                "pressure": params.get("pressure"),
-            })
+            # The meter's (used, window). This used to emit cumulative
+            # (promptTokens, outputTokens) from tokenUsage, which the window
+            # read as used/window: "2k max, 100% used".
+            used, window = params.get("usedTokens"), params.get("windowTokens")
+            if isinstance(used, int) and isinstance(window, int) and window > 0:
+                self.emit("usage-updated", used, window)
         elif method == "session/todoListChanged":
             todos = params.get("todos") or params.get("items") or params.get("todoList")
             if isinstance(todos, list):

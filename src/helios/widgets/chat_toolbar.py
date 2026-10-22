@@ -1780,8 +1780,12 @@ class _ContextMeter(Gtk.DrawingArea):
         """Update just the denominator (the selected model's context window)
         without changing the used-token count. Lets the gauge rescale the
         instant the model changes, before any turn reports real usage."""
-        if self._destroyed or total <= 0 or total == self._total:
+        if self._destroyed or total == self._total:
             return
+        if total <= 0:
+            # The provider reports no window (agy): show nothing rather than
+            # the previous model's numbers.
+            self._used = 0
         self._total = total
         new_fraction = max(0.0, min(1.0, (self._used / total) if total > 0 else 0.0))
         self._refresh_tooltip()
@@ -1818,7 +1822,7 @@ class _ContextMeter(Gtk.DrawingArea):
                 f"Context: {self._used:,} / {self._total:,} tokens ({pct}%)"
             )
         else:
-            self.set_tooltip_text("Context window")
+            self.set_tooltip_text("Context window not reported by this provider")
 
     def _draw(self, _area, cr, width: int, height: int) -> None:
         # Resolve colors from the libadwaita CSS by querying the widget style.
@@ -2418,6 +2422,8 @@ class _ContextPopover(Gtk.Popover):
         """Set the selected model's context window. Updates the cap label
         immediately; only rescales the bar/usage line once a turn has run."""
         if total <= 0:
+            self._window = 0
+            self._max_label.set_label("Window not reported")
             return
         self._window = total
         self._max_label.set_label(f"{_format_window(total)} max")

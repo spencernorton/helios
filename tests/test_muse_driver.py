@@ -231,3 +231,17 @@ def test_set_model_uses_native_session_set_model_without_respawn(tmp_path):
     # Reasoning is a per-turn field: no RPC at all.
     assert driver.set_effort("high", lambda ok, _d: outcomes.append(ok))
     assert driver._effort == "high" and outcomes[-1] is True
+
+
+def test_context_meter_gets_used_and_window_not_cumulative_tokens(tmp_path):
+    """tokenUsage's cumulative (prompt, output) used to reach the meter as
+    (used, window): "2k max, 100% used"."""
+    driver = _driver(tmp_path)
+    seen = []
+    driver.connect("usage-updated", lambda _d, used, window: seen.append((used, window)))
+    driver._dispatch_message({"jsonrpc": "2.0", "method": "session/tokenUsage", "params": {
+        "usage": {"promptTokens": 5}, "cumulative": {"promptTokens": 90_000, "outputTokens": 2_000}}})
+    assert seen == []
+    driver._dispatch_message({"jsonrpc": "2.0", "method": "session/contextUsage", "params": {
+        "usedTokens": 41_000, "windowTokens": 1_007_997, "pressure": "low"}})
+    assert seen == [(41_000, 1_007_997)]
