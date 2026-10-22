@@ -164,6 +164,7 @@ def test_window_completion_refreshes_matching_workspace_for_every_provider(provi
         _drv_is_current=lambda drv: False,
         _push_background_activity=lambda *args: None,
         _notify_session_finished=lambda *args: None,
+        _sessions=SimpleNamespace(reload=lambda **_kwargs: None),
     )
     driver = SimpleNamespace(provider=provider, _cwd="/other", queued_messages=lambda: [])
     MainWindow._on_turn_result(window, driver, {})

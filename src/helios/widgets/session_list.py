@@ -77,6 +77,9 @@ FILTER_TEMP = "temp"
 class SessionList(Gtk.Box):
     __gsignals__ = {
         "session-selected": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
+        # Emitted just before files are removed, so live drivers stop first and
+        # cannot write the transcript back as an untitled ghost row.
+        "sessions-deleting": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
         # Emitted after a delete completes; carries a list[str] of session ids.
         "sessions-deleted": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
         # Emitted from a row's right-click "Stop session"; carries session_id.
@@ -383,6 +386,17 @@ class SessionList(Gtk.Box):
         if row is not None:
             row.set_live_activity(text)
 
+    def clear_selection(self) -> None:
+        """Deselect without emitting session-selected. A fresh chat must not
+        leave the previous row selected: the next re-render would re-fire it,
+        adopting that row's provider and silently replacing the model the
+        user just picked (Muse Full → Claude, 2026-10-22)."""
+        self._listbox.handler_block(self._row_selected_handler)
+        try:
+            self._listbox.unselect_all()
+        finally:
+            self._listbox.handler_unblock(self._row_selected_handler)
+
     def select_session(self, session_id: str) -> bool:
         """Select the row for `session_id` if it's currently visible.
 
@@ -478,8 +492,9 @@ class SessionList(Gtk.Box):
             return
         self._filter = new
         self._ui_state.set("session_filter", new)
-        # Filter change behaves like a fresh load: auto-select the first row.
-        self._render(preserve_selection=False)
+        # Never auto-select here: selecting a row re-points the chat and its
+        # provider/model, which a filter click must not do behind the user.
+        self._render(preserve_selection=True)
 
     def _set_filter(self, filter_id: str) -> None:
         """Programmatic filter change (reveal_session probing). Renders with
@@ -1036,11 +1051,21 @@ class SessionList(Gtk.Box):
     def _on_delete_response(self, _dlg, response: str, sessions: list[Session]) -> None:
         if response != "delete":
             return
+        # A `claude` process Helios does not own (a script, a terminal) keeps
+        # appending to its transcript, so unlinking it only resurrects the row
+        # as "Session <id>" on the next write. Refuse those; Helios-owned
+        # drivers are stopped through sessions-deleting first.
+        selected = self._listbox.get_selected_row()
+        viewed_id = getattr(getattr(selected, "session", None), "session_id", "")
+        external = discover_active_session_ids() - self._live_session_ids
+        held = [s for s in sessions if s.session_id in external]
+        sessions = [s for s in sessions if s.session_id not in external]
+        self.emit("sessions-deleting", [s.session_id for s in sessions])
         deleted_ids: list[str] = []
         touched_projects = set()
         for s in sessions:
             try:
-                s.path.unlink()
+                s.path.unlink(missing_ok=True)
                 deleted_ids.append(s.session_id)
                 touched_projects.add(id(s.project))
             except OSError as e:
@@ -1063,7 +1088,23 @@ class SessionList(Gtk.Box):
         self._set_select_mode(False)
         # Re-discover from disk (cheap, local only). discover_local_sessions
         # builds fresh Project objects, so no stale per-Project caches survive.
-        self.reload(rescan_pool=False)
+        # Only move to the newest row when the viewed chat itself was deleted;
+        # otherwise auto-selecting re-points the open chat and its model.
+        self.reload(
+            preserve_selection=viewed_id not in deleted_ids,
+            rescan_pool=False,
+        )
+        root = self.get_root()
+        if held and root is not None:
+            n = len(held)
+            dlg = Adw.AlertDialog.new(
+                "Still running elsewhere",
+                f"{n} session{'s are' if n != 1 else ' is'} still running in a "
+                "process Helios did not start, so deleting would only bring "
+                f"{'them' if n != 1 else 'it'} back. Stop that process first.",
+            )
+            dlg.add_response("ok", "OK")
+            dlg.present(root)
 
 
 _DOT_STATE_CLASS = {

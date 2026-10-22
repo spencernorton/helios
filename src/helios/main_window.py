@@ -63,6 +63,7 @@ from helios.backend.claude_binary import ClaudeBinaryNotFound
 from helios.backend.composer_state import DraftBook, draft_key
 from helios.backend.conversation_perms import store as conversation_perms_store
 from helios.backend.latest_worker import LatestTaskRunner
+from helios.backend import projects as _projects
 from helios.backend.projects import (
     HOME_CWD,
     Project,
@@ -904,6 +905,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
 
         # --- Signals ---
         self._sessions.connect("session-selected", self._on_session_selected)
+        self._sessions.connect("sessions-deleting", self._on_sessions_deleting)
         self._sessions.connect("sessions-deleted", self._on_sessions_deleted)
         self._sessions.connect("session-stop-requested", self._on_session_stop_requested)
         self._goal_strip.connect("edit-requested", lambda *_: self._edit_goal())
@@ -2755,6 +2757,15 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 )
                 return
             if self._current_work_id():
+                target = self._next_chat
+                if target is not None and not target.resume_id:
+                    # Single Works never pass one provider's history to
+                    # another; say so instead of showing a silent blank chat.
+                    self._toast(
+                        f"{lead} starts a new conversation in this Work — it "
+                        f"can't see the {peer} chat, which stays in the sidebar."
+                    )
+                    return
                 self._toast(
                     f"{lead} is now leading this Work — {peer} remains available."
                 )
@@ -2763,9 +2774,41 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         if self._driver is not None and self._driver.is_running:
             if self._try_live_model_change(alias, label):
                 return
-            self._toast(f"Model set to {label} — applies to your next chat.")
+            if MainWindow._retire_for_respawn(self, self._driver, "set_model"):
+                self._toast(
+                    f"Model set to {label} — your next message continues this "
+                    "chat on it."
+                )
+                return
+            self._toast(f"Model set to {label} — applies to your next message.")
         # No live process: the picker chip already shows the choice, and it
         # simply applies at the next spawn. Nothing worth a toast.
+
+    def _retire_for_respawn(self, driver, method: str) -> bool:
+        """Claude, GPT and Muse switch model in place. Gemini (model fixed at
+        spawn) and OpenRouter cannot: wind an idle one down like an idle reap
+        so the next send resumes the same native session on the new setting.
+        Costs no extra model tokens — a new model reads the conversation
+        uncached either way. A busy one is caught at send time."""
+        if (
+            driver is None
+            or callable(getattr(driver, method, None))
+            or driver.is_busy
+            or not driver.is_accepting_input
+            or not self._driver_matches_selected_provider(driver)
+            or not self._driver_matches_target_binding(driver)
+        ):
+            return False
+        driver.end_input()
+        return True
+
+    def _driver_model_is_stale(self, driver) -> bool:
+        """The picker changed while this idle driver kept its old model."""
+        return bool(
+            not driver.is_busy
+            and getattr(driver, "_helios_requested_model", self._model)
+            != self._model
+        )
 
     def _try_live_model_change(self, alias: str, label: str) -> bool:
         """Apply a same-provider model pick to the live Claude process.
@@ -2798,10 +2841,12 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             if getattr(self, "_destroyed", False):
                 return
             if success:
+                driver._helios_requested_model = alias
                 self._toast(f"Model set to {label} — applied to the live chat.")
                 self._sync_effort_sensitivity()
             else:
-                self._toast(f"Model set to {label} — applies to your next chat.")
+                # `_ensure_driver` retries in place before the next turn.
+                self._toast(f"Model set to {label} — applies to your next message.")
 
         try:
             set_model(alias, applied)
@@ -2928,12 +2973,19 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         self._sync_execution_control()
 
     def _work_is_executing(self, work_id: str) -> bool:
-        """True while any participant of ``work_id`` holds a running attempt."""
+        """True while any participant of ``work_id`` holds a running attempt
+        or is still starting/mid-turn (a Gemini/Muse resume runs before its
+        attempt is recorded, and a switch then earned "already executing")."""
 
         coordinator = getattr(self, "_work_coordinator", None)
         store = getattr(coordinator, "store", None)
         if not work_id or store is None:
             return False
+        if any(
+            driver.is_busy or getattr(driver, "is_initializing", False)
+            for driver in self._driver_manager.drivers_for_work(work_id)
+        ):
+            return True
         try:
             return any(
                 attempt.work_id == work_id
@@ -3883,6 +3935,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         self._staged_effort_key = ""
         self._staged_workflow_mode = ""
         self._shared.set_handoff_target(None)
+        self._sessions.clear_selection()
         # Don't stop the current session — it keeps running in the background
         # (registry). Just unbind the visible UI so the next send spawns a
         # fresh driver for this cwd.
@@ -4402,7 +4455,15 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             if self._driver_manager.current_accepting_matches_provider(
                 self._selected_provider()
             ):
-                if self._driver_matches_target_binding(self._driver):
+                stale = MainWindow._driver_model_is_stale(self, self._driver)
+                in_place = callable(getattr(self._driver, "set_model", None))
+                if stale and not in_place:
+                    # Picked a new model while it was busy; resume on it now.
+                    self._driver.end_input()
+                elif self._driver_matches_target_binding(self._driver):
+                    if stale:
+                        # Picked while busy: switch in place before this turn.
+                        self._try_live_model_change(self._model, self._model)
                     return True
                 # Same provider but a retired generation/native binding. Keep
                 # the selected target intact; it will be reactivated below.
@@ -4413,6 +4474,10 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 # not let the next prompt go to the wrong backend.
                 self._bind_visible_driver(None)
                 if not self._stage_selected_work_participant():
+                    self._toast(
+                        "The selected Work participant could not be verified, "
+                        "so Helios did not send your message."
+                    )
                     return False
         target = self._next_chat
         if target is None:
@@ -4646,6 +4711,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             driver._helios_staged_permission_mode = spawn_permission_mode
             driver._helios_staged_effort_key = spawn_effort_key
             driver._helios_staged_workflow_mode = spawn_workflow_mode
+            driver._helios_requested_model = self._model
             driver._helios_identity_confirmed = False
             # A resume is exact, not a hint.  The runtime must report this
             # same native identity before Helios can bind or persist it.
@@ -5248,7 +5314,10 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             # another process here replaces the visible driver and invalidates
             # its pending dispatch before native identity can arrive.
             GLib.idle_add(self._restore_blocked_execution_send, text)
-            self._toast("Google is preparing this chat — your next message was kept as a draft.")
+            self._toast(
+                f"{model_catalog.PROVIDER_LABELS.get(drv.provider, 'The provider')} "
+                "is preparing this chat — your next message was kept as a draft."
+            )
             return
         if self._restore_in_flight:
             # The other half of the rewind exclusion. Refusing a restore while
@@ -5342,7 +5411,8 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         ):
             GLib.idle_add(self._restore_blocked_execution_send, text)
             self._toast(
-                "Google is preparing this chat — your next message was kept as a draft."
+                f"{model_catalog.PROVIDER_LABELS.get(drv.provider, 'The provider')} "
+                "is preparing this chat — your next message was kept as a draft."
             )
             return
         if drv is not None and (drv.is_busy or checkpoint_pending or queued_pending):
@@ -6689,21 +6759,37 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         # scan the directory before the file is there and the new row
         # wouldn't appear. Delay just enough to let the file land, then
         # invalidate the cache and refresh so the live row shows up.
-        GLib.timeout_add(400, self._refresh_sidebar_for_live, drv, session_id)
+        GLib.timeout_add(400, self._refresh_sidebar_for_live, drv, session_id, 0)
 
-    def _refresh_sidebar_for_live(self, drv: ClaudeCliDriver, session_id: str) -> bool:
-        """One-shot scheduled refresh after session-started. Verifies the
-        driver is still the live one before touching the sidebar."""
-        if self._destroyed or not self._drv_is_current(drv):
+    # Providers other than Claude write their mirror only once the provider
+    # accepts the first turn (Gemini/Muse) or after durable dispatch, which can
+    # be seconds after session-started. Keep re-scanning until the row lands.
+    _SIDEBAR_LIVE_RETRIES = 30
+
+    def _refresh_sidebar_for_live(
+        self, drv: ClaudeCliDriver, session_id: str, tries: int = 0,
+    ) -> bool:
+        """Scheduled refresh after session-started, retried ~1s apart until
+        the session's transcript file exists and has a row."""
+        if self._destroyed:
+            return False
+        if (
+            tries < self._SIDEBAR_LIVE_RETRIES
+            and not any(_projects.PROJECTS_DIR.glob(f"*/{session_id}.jsonl"))
+        ):
+            # Waiting costs one glob a second; the list rebuilds once.
+            GLib.timeout_add(
+                1000, self._refresh_sidebar_for_live, drv, session_id, tries + 1,
+            )
             return False
         self._sync_live_ids()
-        # Re-scan local disk so the freshly-written .jsonl gets a row (cheap;
-        # the pool is left alone), then select it so the chat the user just
-        # started is findable. Safe: _on_session_selected early-returns when
-        # the id matches the running driver, so it won't tear it down.
         self._sessions.reload(preserve_selection=True, rescan_pool=False)
-        self._sessions.select_session(session_id)
-        return False  # one-shot
+        if self._drv_is_current(drv):
+            # Select it so the chat the user just started is findable. Safe:
+            # _on_session_selected early-returns when the id matches the
+            # running driver, so it won't tear it down.
+            self._sessions.select_session(session_id)
+        return False
 
     def _on_assistant_streaming(self, drv, streaming) -> None:
         if self._destroyed:
@@ -6767,6 +6853,8 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             self._push_background_activity(drv, "", "")
             if not getattr(drv, "_token_budget_exhausted", False) and not drv.queued_messages():
                 self._notify_session_finished(drv)
+            # Its transcript now exists on disk even if its row never did.
+            self._sessions.reload(preserve_selection=True, rescan_pool=False)
             return
         # A completed turn is the only thing that moves OpenRouter's balance,
         # and it is the moment the panel is most likely to be read.
@@ -8142,6 +8230,11 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             if live
             else MainWindow._execution_target_provider(self)
         )
+        if live and not callable(getattr(driver, "set_effort", None)):
+            # Gemini/Muse take reasoning only at spawn: save it like an idle
+            # chat, then resume on it (was a raw AttributeError toast).
+            live = False
+            MainWindow._retire_for_respawn(self, driver, "set_effort")
 
         if not live:
             _permission, previous_effort = MainWindow._execution_settings_for_spawn(
@@ -8271,6 +8364,14 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         if not accepted and self._effort_changes.get(driver) is token:
             applied(False, "the conversation is not idle")
 
+    def _on_sessions_deleting(self, _list, session_ids: list[str]) -> None:
+        # Stop any live driver (could be background) BEFORE its file goes:
+        # a running driver's next write would recreate an untitled ghost row.
+        for sid in session_ids:
+            drv = self._driver_manager.driver_for_session(sid)
+            if drv is not None:
+                self._teardown_driver(drv)
+
     def _on_sessions_deleted(self, _list, deleted_ids: list[str]) -> None:
         if not deleted_ids:
             return
@@ -8300,9 +8401,6 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 # Compatibility-only legacy goals are owned by the native
                 # transcript. Canonical Work goals survive participant delete.
                 session_goals.clear_goal(sid)
-            drv = self._driver_manager.driver_for_session(sid)
-            if drv is not None:
-                self._teardown_driver(drv)
         # If the user was staging a resume against a deleted session, clear it.
         self._next_chat = clear_deleted_resume(self._next_chat, set(deleted_ids))
         # Selecting a different (or no) session also resets transcript view —

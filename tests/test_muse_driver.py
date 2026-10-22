@@ -193,3 +193,41 @@ def test_session_bound_populates_tools_and_emits_capabilities(tmp_path, monkeypa
     assert driver.init_tools
     assert driver.init_mcp_servers == [{"name": "code-intel", "status": "configured"}]
     assert caps and caps[0]["mcp_servers"] == [{"name": "code-intel", "status": "configured"}]
+
+
+def test_reasoning_summary_survives_empty_updates_and_raw_text_fallback(tmp_path):
+    driver = _driver(tmp_path)
+    driver._on_item({"itemId": "rs", "kind": "reasoning", "turnId": "turn-1",
+                     "status": "inProgress", "summary": []}, terminal=False)
+    driver._on_delta({"itemId": "rs", "field": "summary.0", "delta": "Reading the "})
+    driver._on_delta({"itemId": "rs", "field": "summary.0", "delta": "schema."})
+    driver._on_delta({"itemId": "rs", "field": "summary.1", "delta": "Applying rules."})
+    # An empty re-emission must not wipe the streamed parts.
+    driver._on_item({"itemId": "rs", "kind": "reasoning", "turnId": "turn-1",
+                     "status": "inProgress", "summary": []}, terminal=False)
+    assert driver._blocks["rs"].text == "Reading the schema.\n\nApplying rules."
+    # No summary, only committed raw text: show the raw text.
+    driver._on_item({"itemId": "rt", "kind": "reasoning", "turnId": "turn-1",
+                     "status": "completed", "summary": [], "text": "why"}, terminal=True)
+    assert driver._blocks["rt"].text == "why"
+    assert driver._blocks["rt"].type == "reasoning_summary"
+
+
+def test_set_model_uses_native_session_set_model_without_respawn(tmp_path):
+    driver = _driver(tmp_path)
+    driver._is_busy = False
+    driver._accepting_input = True
+    driver._stopped = False
+    outcomes = []
+    assert driver.set_model("muse-wonder-full-1.0", lambda ok, detail: outcomes.append((ok, detail)))
+    sent = driver._proc.stdin.frames()[-1]
+    assert sent["method"] == "session/setModel"
+    assert sent["params"]["sessionId"] == "session-1"
+    assert sent["params"]["model"] == {"modelId": "muse-wonder-full-1.0"}
+    assert outcomes == [] and driver.model == MODEL  # only the ack applies it
+    driver._dispatch_message({"jsonrpc": "2.0", "id": sent["id"],
+                            "result": {"commandId": "c", "status": "accepted"}})
+    assert outcomes == [(True, "")] and driver.model == "muse-wonder-full-1.0"
+    # Reasoning is a per-turn field: no RPC at all.
+    assert driver.set_effort("high", lambda ok, _d: outcomes.append(ok))
+    assert driver._effort == "high" and outcomes[-1] is True

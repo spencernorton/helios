@@ -1,5 +1,21 @@
 # Helios — Session Journal
 
+## 2026-10-22 — claude — Session UX fixes: Muse reasoning, sidebar rows, deletes, model switches (v0.104.2)
+
+- **Branch:** `claude/session-ux-fixes`
+- **Reported:** Muse/Gemini "Thinking" with nothing to expand; new sessions missing from the sidebar until they post; deleted sessions lingering as "Session <id>"; errors switching models on new and existing sessions; Gemini 4 Argon missing from the picker.
+- **Root causes / changes:**
+  - Muse `_on_item` overwrote streamed `summary.n` deltas with an empty `summary` list on every item update and ignored raw `text` when the list was empty. Fixed in `muse_driver.py`. Gemini: agy headless `step_update` has no thinking field, only a `thinking_tokens` count, so nothing can be shown.
+  - `_refresh_sidebar_for_live` was a single 400 ms shot; non-Claude providers write their mirror only after the first turn is accepted. Now retries ~1 s apart up to 30 times; background rows appear without selection.
+  - Ghost rows: the file was unlinked before the driver was stopped, and sessions run by an external `claude` (e.g. a local launcher script) were deleted and immediately rewritten. New `sessions-deleting` signal tears down Helios drivers first; externally held sessions are refused with a dialog; `unlink(missing_ok=True)`.
+  - Only `ClaudeCliDriver` has `set_model`/`set_effort`; other drivers kept the old model forever and Gemini/Muse reasoning changes raised `AttributeError`. `_retire_for_respawn` ends input on an idle driver so the next send resumes on the new setting; `_helios_requested_model` + `_driver_model_is_stale` catch a busy one at send time.
+  - `_work_is_executing` now counts busy/initializing Work drivers (a Gemini/Muse resume runs before its attempt row exists).
+- **Follow-up (same day): picked model silently replaced.** Spencer picked Muse Full and the session spawned `claude --model opus`. Reproduced on the real window (Xvfb + private state dir, drivers stubbed; harness `~/work/helios-repro/repro.py`): `_show_fresh_chat_ui` left the old row selected; the delete handler's non-preserving `reload` re-selected row 0 → `_on_session_selected` → `_adopt_session_provider` → `_apply_model_choice('opus', quiet=True)`. Unmodified `main` reproduces it; this branch keeps Muse. Fix: `SessionList.clear_selection()` (handler-blocked) on fresh chat; delete/filter reloads preserve selection.
+- **Follow-up: no respawns for model changes.** The first cut ended the driver and resumed; replaced with in-place switches: `CodexCliDriver.set_model` (per-turn field), `MuseServeDriver.set_model` → MSP `session/setModel {sessionId, commandId, model:{modelId}}` (probed live: `accepted` + `session/modelChanged`), Muse `set_effort` per-turn. `_helios_requested_model` + `_driver_model_is_stale` apply a mid-turn pick in place at the next send; only Gemini/OpenRouter still resume.
+- **Not changed, by design:** a cross-provider switch inside a `single` Work still starts without the other provider's history (collaboration is explicit; see AGENTS.md); the toast now says so. The quiet GPT→Claude fallback when the OpenAI catalog is unverified is pinned by tests as silent; left alone and raised with Spencer.
+- **Argon:** not a Helios bug. Google's `fetchAvailableModels` stopped returning Gemini 4 Argon for the account after 2026-10-18 ~22:00; `agy --model gemini-4-argon-medium` now fails "not recognized" in agy 1.4.5.
+- **Validation:** 3427 passed; the 2 failures in `test_model_catalog_refresh.py` pre-exist on `main` (they reach the real `agy` on PATH; CI has none). New tests: `test_model_switch_respawn.py`, `test_sidebar_session_lifecycle.py`, Muse reasoning test (fails without the fix).
+
 
 ## 2026-10-14 — Fix startup provider adoption race and in-flight resume driver tracking
 

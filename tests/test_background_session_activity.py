@@ -188,6 +188,9 @@ class _Sessions:
     def set_live_activity(self, session_id, text):
         self.pushed.append((session_id, text))
 
+    def reload(self, **_kwargs):
+        pass
+
 
 def _fake_window(visible=None):
     sessions = _Sessions()

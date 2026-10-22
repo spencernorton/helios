@@ -6,6 +6,15 @@ source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
 ## Unreleased
 
+## 0.104.2 — 2026-10-22
+
+- A picked model is no longer silently replaced. Starting a new chat left the previous row selected in the sidebar, and a later re-render (deleting a session, changing the filter) re-selected a row, which re-adopted that row's provider: picking Muse Full and sending spawned Claude. A new chat now clears the sidebar selection, and delete and filter changes keep the current selection instead of auto-selecting the newest row (delete still moves on when the open chat itself was deleted).
+- Model changes switch in place instead of restarting: GPT sends `model` on every turn, Muse uses the native `session/setModel`, Claude keeps its control-channel switch. Reasoning changes on Muse are per-turn. A model picked while a turn runs is applied in place before the next turn. Only Gemini (model fixed at spawn) and OpenRouter resume the same conversation on the new model; that costs latency, not extra model tokens, since a new model reads the conversation uncached either way.
+- Show Muse reasoning: the driver no longer wipes streamed `summary.n` parts when Muse re-sends an empty summary, falls back to committed raw reasoning text, and separates parts. Gemini (agy headless) carries no thinking text, so it still shows only the activity state.
+- New sessions appear in the sidebar once their transcript lands (Gemini/Muse/Codex write it only after the first turn is accepted): a one-second file check for up to 30 s, then a single list rebuild.
+- Deleting a session no longer leaves a "Session <id>" ghost: Helios stops its own driver before removing the file, refuses (with an explanation) sessions held by a `claude` process it did not start, and treats an already-missing file as deleted.
+- A participant that is still starting or mid-turn counts as executing, so switching providers no longer fails with "This Work is already executing". Switching to a provider with no conversation in the Work says it cannot see the other chat; an unverifiable participant explains the refused send; the "preparing this chat" notice names Muse correctly.
+
 ## 0.104.1 — 2026-10-14
 
 - Re-adopt a staged session's provider when the background model catalog finishes loading at startup, and block cross-provider sends while the initial catalog is still probing so resuming a Muse or Google session cannot switch to a stale persisted model or start a fresh contextless session.
