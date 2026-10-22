@@ -6,6 +6,10 @@ source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
 ## Unreleased
 
+## 0.109.0 — 2026-10-22
+
+- The Changes pane is now a review pane. Diffs are split into hunks under *Staged* and *Unstaged*, with per-hunk and per-file Stage, Unstage and Discard (discards confirm; untracked files go to the trash). A comment button on each hunk collects notes, and *Send N comments to agent* delivers them to the current chat as one message. A commit bar commits staged changes, pushes the branch (setting upstream the first time) and opens a PR/MR with `gh` or `glab` in a terminal.
+
 ## 0.108.0 — 2026-10-22
 
 - Send images to the model. Paste an image from the clipboard, drop an image file, or take a screenshot with the new camera button (desktop screenshot portal; works on Wayland). The image is attached as an editable `@path` reference, shown as a thumbnail above the composer, and sent natively: Claude gets image content blocks, GPT gets Codex `localImage` input, Muse gets MSP `image` input. All three were verified end to end (each named the colours of a test image with its tools off). Gemini and OpenRouter still receive the path as text.

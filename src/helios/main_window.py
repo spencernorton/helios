@@ -608,6 +608,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         self._capabilities = CapabilitiesPane()
         self._capabilities.connect("refresh-requested", self._refresh_capabilities)
         self._changes = ChangesPane()
+        self._changes.connect("feedback", self._on_review_feedback)
         self._shared = SharedContextPane()
         self._shared.connect("handoff-requested", self._on_handoff_requested)
         self._welcome = build_welcome_view()
@@ -3664,6 +3665,14 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             self._changes.refresh()
         if active:
             MainWindow._refresh_capabilities(self)
+
+    def _on_review_feedback(self, _pane, text: str) -> None:
+        """Review comments go to the session you are viewing, like a message
+        you typed: they queue if a turn is running."""
+        if self._next_chat is None:
+            self._toast("Open a chat to send review comments to.")
+            return
+        self._on_composer_send(self._composer, text)
 
     # --- browser pane ---
 
