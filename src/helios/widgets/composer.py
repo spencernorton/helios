@@ -11,14 +11,18 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, GLib, GObject, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
 
 from helios.backend.slash_commands import (
     SlashCommand,
     completion_text,
     match_commands,
 )
+from helios.backend.attachments import mentioned_images
+from helios.backend.media import media_path
+from helios.backend.transcript import ImageRef
 from helios.resources.icons import LAUNCH_ICON_NAME
+from helios.widgets.image_strip import ImageStrip
 from helios.widgets.slash_popover import SlashPopover
 
 # One compact motion token for the send acknowledgement. Keep the matching
@@ -80,7 +84,15 @@ class Composer(Gtk.Box):
         row.set_margin_bottom(6)
         row.set_margin_start(8)
         row.set_margin_end(8)
-        card.set_child(row)
+        # Thumbnails of the images this message will carry (its @path image
+        # references), so a pasted screenshot is visibly attached.
+        card_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self._thumbs_slot = Gtk.Box(margin_start=12, margin_end=12, margin_top=8)
+        self._thumbs_slot.set_visible(False)
+        self._thumb_paths: tuple = ()
+        card_box.append(self._thumbs_slot)
+        card_box.append(row)
+        card.set_child(card_box)
 
         # Multi-line TextView in a scroller (capped at ~6 rows then scrolls).
         scroller = Gtk.ScrolledWindow()
@@ -195,6 +207,16 @@ class Composer(Gtk.Box):
         self._attach_dialog: Gtk.FileDialog | None = None  # pin across async
         row.prepend(self._attach_btn)
 
+        self._shot_btn = Gtk.Button.new_from_icon_name("camera-photo-symbolic")
+        self._shot_btn.set_tooltip_text("Attach a screenshot")
+        self._shot_btn.add_css_class("flat")
+        self._shot_btn.add_css_class("circular")
+        self._shot_btn.set_size_request(36, 36)
+        self._shot_btn.set_valign(Gtk.Align.END)
+        self._shot_btn.connect("clicked", self._on_screenshot_clicked)
+        self._portal = None  # pin across the async portal call
+        row.prepend(self._shot_btn)
+
         drop = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
         drop.connect("drop", self._on_drop)
         self.add_controller(drop)
@@ -214,6 +236,7 @@ class Composer(Gtk.Box):
         # there's text — mid-turn submits queue rather than being blocked).
         buf = self._textview.get_buffer()
         buf.connect("changed", self._on_buffer_changed)
+        self._textview.connect("paste-clipboard", self._on_paste)
         # Arrow keys move the cursor without changing the buffer, and leaving
         # the first token has to close the popover too.
         buf.connect("notify::cursor-position", lambda *_: self._update_slash())
@@ -345,10 +368,9 @@ class Composer(Gtk.Box):
         return f'@"{escaped}"'
 
     def add_attachments(self, paths: list[str]) -> None:
-        """Insert `@<abspath>` references for the given files into the input so
-        the backend can pick them up. Claude expands @-paths; for GPT they ride
-        as plain text. Known limit: text @-refs only (no real image content-blocks);
-        the path stays visible/editable, upgrade if it proves insufficient."""
+        """Insert `@<abspath>` references for the given files into the input.
+        Image references also go to the model as real images (Claude, GPT and
+        Muse; see backend/attachments.py); everything stays editable text."""
         if self._read_only:
             return
         tokens = [self._attach_token(p) for p in paths if p]
@@ -418,6 +440,68 @@ class Composer(Gtk.Box):
         self._placeholder.set_visible(empty)
         self._update_send_enabled()
         self._update_slash()
+        self._sync_thumbs()
+
+    def _sync_thumbs(self) -> None:
+        text = self.current_text()
+        paths = tuple(p for p, _ in mentioned_images(text)) if "@" in text else ()
+        if paths == self._thumb_paths:
+            return
+        self._thumb_paths = paths
+        child = self._thumbs_slot.get_first_child()
+        if child is not None:
+            self._thumbs_slot.remove(child)
+        if paths:
+            self._thumbs_slot.append(ImageStrip([ImageRef(path=p) for p in paths]))
+        self._thumbs_slot.set_visible(bool(paths))
+
+    # --- image paste and screenshots ---
+
+    def _on_paste(self, textview: Gtk.TextView) -> None:
+        """An image on the clipboard (a screenshot, a copied picture) becomes an
+        attachment; anything with text pastes as text, as before."""
+        clipboard = textview.get_clipboard()
+        formats = clipboard.get_formats()
+        if not formats.contain_gtype(Gdk.Texture.__gtype__) or formats.contain_mime_type("text/plain"):
+            return
+        textview.stop_emission_by_name("paste-clipboard")
+        clipboard.read_texture_async(None, self._on_texture_read)
+
+    def _on_texture_read(self, clipboard: Gdk.Clipboard, result) -> None:
+        try:
+            texture = clipboard.read_texture_finish(result)
+        except GLib.Error:
+            return
+        if texture is None:
+            return
+        png = texture.save_to_png_bytes().get_data()
+        import base64
+
+        path = media_path(ImageRef("image/png", data=base64.b64encode(png).decode("ascii")))
+        if path is not None:
+            self.add_attachments([str(path)])
+
+    def _on_screenshot_clicked(self, *_) -> None:
+        try:
+            gi.require_version("Xdp", "1.0")
+            gi.require_version("XdpGtk4", "1.0")
+            from gi.repository import Xdp, XdpGtk4
+        except (ImportError, ValueError):
+            self._shot_btn.set_tooltip_text("Screenshots need gir1.2-xdp-1.0 and gir1.2-xdpgtk4-1.0")
+            return
+        self._portal = Xdp.Portal()
+        parent = XdpGtk4.parent_new_gtk(self.get_root())
+        self._portal.take_screenshot(
+            parent, Xdp.ScreenshotFlags.INTERACTIVE, None, self._on_screenshot_taken, None)
+
+    def _on_screenshot_taken(self, portal, result, _data) -> None:
+        try:
+            uri = portal.take_screenshot_finish(result)
+        except GLib.Error:
+            return  # cancelled
+        path = Gio.File.new_for_uri(uri).get_path() if uri else None
+        if path:
+            self.add_attachments([path])
 
     # --- slash completion ---
 

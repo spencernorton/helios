@@ -89,6 +89,14 @@ works you can keep typing — the message queues and goes when the turn ends.
 `Esc` or `Ctrl+.` stops the current turn; queued messages come back to the
 composer.
 
+**Sending images.** Paste an image (`Ctrl+V` with a picture on the
+clipboard), drop an image file, or press the camera button to take a
+screenshot through the desktop portal (pick a window or an area). Each becomes
+an `@path` reference in your message — pasted images are saved under
+`~/.helios/media/` — and appears as a thumbnail above the text. Claude, GPT
+and Muse receive the image itself, not just the path (images over 5 MB stay a
+path); Gemini and OpenRouter get the path as text.
+
 **Images and files.** Images in a conversation — screenshots the browser pane
 returns, an image a tool read, a picture the model generated — show as
 thumbnails under the message. Click one to open it full size in the side pane

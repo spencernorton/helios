@@ -49,6 +49,7 @@ from gi.repository import Gio, GLib, GObject  # noqa: E402
 
 import shutil
 
+from helios.backend.attachments import anthropic_blocks
 from helios.backend.claude_binary import (
     find_claude_binary,
     supports_budget_family_enforcement,
@@ -842,7 +843,8 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
             "type": "user",
             "message": {
                 "role": "user",
-                "content": [{"type": "text", "text": prepared.text}],
+                # @path image attachments ride as real image blocks too.
+                "content": [{"type": "text", "text": prepared.text}, *anthropic_blocks(text)],
             },
         }
         line = (json.dumps(payload) + "\n").encode("utf-8")

@@ -24,6 +24,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import GLib, GObject  # noqa: E402
 
+from helios.backend.attachments import codex_inputs
 from helios.backend import codex_env, model_catalog, session_goals
 from helios.backend.agent_activity import (
     TERMINAL_AGENT_STATUSES,
@@ -2063,6 +2064,7 @@ class CodexAppServerDriver(CodexCliDriver):
                 effort=self._effort,
                 workflow_mode=self._workflow_mode,
             )
+            params["input"].extend(codex_inputs(text))  # @path images
         except Exception as exc:
             self.emit("error", f"Could not prepare Codex turn: {exc}")
             return MessageDelivery("rejected")

@@ -1,5 +1,12 @@
 # Helios — Session Journal
 
+## 2026-10-22 — claude — Image input (v0.108.0)
+
+- **Roadmap Phase 1b.** Attachments stay `@path` text (queue, drafts and recovery untouched); drivers convert image references at the wire via `backend/attachments.py`: Claude `anthropic_blocks` (stream-json image blocks), Codex `codex_inputs` (`localImage {path}`), Muse `muse_inputs` (`{type:image, mediaType, base64Data}` — shape probed against `muse serve`'s validator). 5 MB cap per image; larger stays a path. Bare `@path` references drop trailing prose punctuation.
+- **Composer:** clipboard image paste (only when the clipboard offers no text), portal screenshot button (Xdp/XdpGtk4, imported lazily), thumbnail row for referenced images. The sent user bubble carries `Turn.images`; `CodexTranscriptWriter._write_user` stores path-backed image blocks.
+- **Verified live:** Claude Haiku (`--tools ""`) answered "Blue background, yellow rectangle."; Muse Spark "Blue and yellow."; Codex App Server turn "Blue and yellow." with no commands — all from the image alone. Composer thumbnail checked on Xvfb.
+- **Not done:** OpenRouter (history replay assumes text content; needs a careful change) and Gemini (agy headless has no image input) keep text paths. No downscaling of large images.
+
 ## 2026-10-22 — claude — Images in the transcript (v0.107.0)
 
 - **Roadmap Phase 1a** (`docs/PARITY-ROADMAP-2026-10.md`).
