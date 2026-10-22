@@ -1,5 +1,11 @@
 # Helios — Session Journal
 
+## 2026-10-22 — claude — Muse context meter, quiet model switches (v0.105.2)
+
+- **Muse meter:** `session/tokenUsage` emitted `usage-updated(cumulative promptTokens, cumulative outputTokens)`; the signal contract is `(used, window)` (see `openrouter_driver` docstring), so the meter showed the output total as the window. `session/contextUsage` (`usedTokens`, `windowTokens`) — previously routed to `activity-updated` and read by nothing — now drives it. Claude, Codex and OpenRouter already emitted `(used, window)`; Gemini emits none (agy reports no window), and `set_window(0)` now clears the meter instead of being ignored.
+- **Toasts:** `_apply_model_choice` stays silent on a provider switch when there was no resume target and no running driver. `_toast` adds a GLib timer that dismisses after `timeout` because Adw's countdown pauses under the pointer.
+- **Validation:** new Muse meter test; switch-toast test models the real staging sequence. Suite green apart from the 2 pre-existing local `test_model_catalog_refresh.py` failures.
+
 ## 2026-10-22 — claude — Gemini account after a keyring sign-in (v0.105.1)
 
 - **Symptom:** after switching agy accounts with `/logout` + `/login`, Accounts showed Gemini as not signed in.

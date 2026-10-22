@@ -2750,11 +2750,19 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         if provider != old_provider:
             lead = model_catalog.PROVIDER_LABELS.get(provider, "Claude")
             peer = model_catalog.PROVIDER_LABELS.get(old_provider, "Claude")
+            # Nothing typed or started yet: the picker chip already shows the
+            # choice, so a "now leading this Work" toast is pure noise.
+            target = self._next_chat
+            had_conversation = bool(target is not None and target.resume_id) or bool(
+                self._driver is not None and self._driver.is_running
+            )
             if not self._stage_fresh_chat_for_provider_switch():
                 self._toast(
                     f"New {lead} chat — the running {peer} chat continues "
                     "in the background."
                 )
+                return
+            if not had_conversation:
                 return
             if self._current_work_id():
                 target = self._next_chat
@@ -8721,6 +8729,11 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         toast.connect("dismissed", self._on_toast_dismissed)
         self._live_toast = toast
         self._toast_overlay.add_toast(toast)
+        if timeout > 0:
+            # Adw pauses a toast's countdown while the pointer rests on it, and
+            # toasts land right where the model picker leaves the pointer, so
+            # they could sit there indefinitely. Our own clock always wins.
+            GLib.timeout_add_seconds(timeout, lambda: toast.dismiss() or False)
 
     def _on_toast_dismissed(self, toast) -> None:
         if self._live_toast is toast:

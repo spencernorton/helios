@@ -6,6 +6,12 @@ source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
 ## Unreleased
 
+## 0.105.2 — 2026-10-22
+
+- Muse's context meter is real: the driver sent cumulative (prompt, output) token totals as the meter's (used, window), so it read "2k max, 100% used". It now reports Muse's own `session/contextUsage` (`usedTokens` / `windowTokens`, ~1M). Muse manages and compacts its context itself; this was a display bug.
+- A provider that reports no context window (Gemini via agy) clears the meter and says so, instead of keeping the previous model's numbers.
+- Switching models on a chat with nothing started is silent; the picker already shows the choice. Toasts now always close after their timeout, even with the pointer resting on them (Adw pauses the countdown on hover, and toasts appear where the picker leaves the pointer).
+
 ## 0.105.1 — 2026-10-22
 
 - Accounts → Gemini shows the signed-in Google account after an agy `/login`. A fresh agy sign-in keeps its token in the system keyring instead of a file, so the row read as "Not signed in"; Helios now falls back to the account agy records in its own log.

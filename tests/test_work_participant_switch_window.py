@@ -214,14 +214,30 @@ def test_apply_model_choice_names_the_provider_actually_left(monkeypatch):
     MainWindow._apply_model_choice(window, "opus")
     assert toasts == ["Claude is now leading this Work — OpenRouter remains available."]
 
-    # No conversation for the new provider yet: say it starts without context.
+    # An existing chat whose new provider has no conversation in the Work yet:
+    # staging clears the resume target, and the toast says it starts fresh.
     window._model = "moonshotai/kimi-k3"
-    window._next_chat = types.SimpleNamespace(resume_id="")
+    window._next_chat = types.SimpleNamespace(resume_id="kimi-native")
+
+    def stage_fresh():
+        window._next_chat = types.SimpleNamespace(resume_id="")
+        return True
+
+    window._stage_fresh_chat_for_provider_switch = stage_fresh
     MainWindow._apply_model_choice(window, "opus")
     assert toasts[-1] == (
         "Claude starts a new conversation in this Work — it can't see the "
         "OpenRouter chat, which stays in the sidebar."
     )
+
+    # Nothing started yet: switching models is silent (the chip shows it).
+    count = len(toasts)
+    window._model = "moonshotai/kimi-k3"
+    window._next_chat = types.SimpleNamespace(resume_id="")
+    MainWindow._apply_model_choice(window, "opus")
+    assert len(toasts) == count
+    window._stage_fresh_chat_for_provider_switch = lambda: switch_result[0]
+    window._next_chat = types.SimpleNamespace(resume_id="claude-native")
 
     window._model = "opus"
     switch_result[0] = False
