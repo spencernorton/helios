@@ -1,5 +1,13 @@
 # Helios — Session Journal
 
+## 2026-10-22 — claude — Accounts page, Codex probe hang (v0.105.0)
+
+- **Asked:** Settings split Claude's account from the other providers, showed no email for most, and offered no way to change any of them.
+- **What changed:** `backend/accounts.py` reads every provider's identity (Claude `auth status`, Codex `account/read` via a new `codex_env.fetch_account`, Gemini `google_env.signed_in_email` from the id_token claim only, Muse `account/read` label, OpenRouter key presence) and launches each CLI's own sign-in/out/switch in a terminal (agy has no login subcommand: its TUI `/logout` + `/login`). Settings gains a first *Accounts* page; it re-reads on window re-activation after a launch and calls the credentials-changed hook (forced catalog refresh) when an identity changes. Removed the Settings-page Claude account group and the Muse sign-in row; the Claude binary row moved to a Providers group.
+- **Bug found on the way:** `codex_env._read_rpc_response` select()ed the fd but read via buffered `readline()`; a response sharing a chunk with a notification sat in the Python buffer until timeout (~1 in 3 `account/read` calls, intermittent model-catalog failures). Now raw `os.read` with a per-process line buffer; 8/8 probes pass in ~1 s.
+- **Verified:** rendered the real dialog on Xvfb with live accounts — all five rows correct (Gemini showed the older Google account, which is why a model was missing).
+- **Validation:** suite green except the 2 pre-existing `test_model_catalog_refresh.py` failures (real `agy` on PATH). New `tests/test_accounts.py`.
+
 ## 2026-10-22 — claude — Session UX fixes: Muse reasoning, sidebar rows, deletes, model switches (v0.104.2)
 
 - **Branch:** `claude/session-ux-fixes`

@@ -27,7 +27,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib, GObject, Gtk  # noqa: E402
 
 from helios import APP_ID
-from helios.backend import claude_env, codex_env, model_catalog
+from helios.backend import accounts, claude_env, codex_env, model_catalog
 from helios.backend import ollama_titles
 from helios.backend.process.codex_app_hub import (
     CodexCredentialUpdateInUseError,
@@ -164,12 +164,13 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._selected_model_id = model
         self._model_choices: list[tuple[str, str]] = self._initial_model_choices(model)
 
+        self._build_accounts_page()
         self._build_settings_page(permission_mode, model)
         self._build_providers_page()
         self._build_tools_page()
 
         # Kick off the live loads as soon as we're shown.
-        self._reload_account()
+        self._reload_accounts()
         self._reload_mcp()
         self._reload_codex_mcp()
         self._reload_codex()
@@ -276,71 +277,132 @@ class SettingsDialog(Adw.PreferencesDialog):
 
     # ── page 1: account + defaults ──────────────────────────────────────
 
+    def _build_accounts_page(self) -> None:
+        """Every provider's sign-in on one page: who, how, and a way to change it."""
+        page = Adw.PreferencesPage()
+        page.set_title("Accounts")
+        page.set_icon_name("avatar-default-symbolic")
+        self.add(page)
+
+        group = Adw.PreferencesGroup()
+        group.set_title("Signed-in accounts")
+        group.set_description(
+            "Each provider's own CLI keeps its sign-in; Helios keeps no copy. "
+            "Sign in, out or switch opens that CLI in a terminal — this page "
+            "refreshes when you come back."
+        )
+        refresh = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
+        refresh.add_css_class("flat")
+        refresh.set_tooltip_text("Re-check every account")
+        refresh.set_valign(Gtk.Align.CENTER)
+        refresh.connect("clicked", lambda *_: self._reload_accounts())
+        group.set_header_suffix(refresh)
+        page.add(group)
+
+        self._account_rows: dict[str, tuple[Adw.ActionRow, Gtk.Box]] = {}
+        self._account_seen: dict[str, tuple[bool, str]] = {}
+        self._accounts_pending = False
+        self._return_watch = None
+        for provider in accounts.PROVIDERS:
+            row = Adw.ActionRow()
+            row.set_title(model_catalog.PROVIDER_LABELS.get(provider, provider))
+            row.set_subtitle("Checking…")
+            row.set_subtitle_selectable(True)
+            buttons = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+            row.add_suffix(buttons)
+            group.add(row)
+            self._account_rows[provider] = (row, buttons)
+
+    def _reload_accounts(self) -> None:
+        self._accounts_pending = False
+        for provider, (row, buttons) in self._account_rows.items():
+            row.set_subtitle("Checking…")
+            self._set_account_buttons(buttons, ())
+            self._run_async(lambda p=provider: accounts.read(p), self._apply_account)
+
+    def _apply_account(self, account) -> None:
+        if self._closed or not isinstance(account, accounts.Account):
+            return
+        row, buttons = self._account_rows[account.provider]
+        if account.signed_in:
+            row.set_subtitle(" · ".join(
+                bit for bit in (account.identity or "Signed in", account.detail) if bit
+            ))
+        else:
+            row.set_subtitle(account.error or (
+                "Not signed in" if account.provider in accounts.TERMINAL_PROVIDERS
+                else "No API key"
+            ))
+        provider = account.provider
+        if provider not in accounts.TERMINAL_PROVIDERS:
+            actions = (("Manage key…", "", lambda *_: self.set_visible_page(self._providers_page)),)
+        elif account.signed_in:
+            actions = (
+                ("Switch account…", "", lambda *_: self._on_account_action(provider, "switch")),
+                ("Sign out", "", lambda *_: self._on_account_action(provider, "sign-out")),
+            )
+        else:
+            actions = (
+                ("Sign in…", "suggested-action",
+                 lambda *_: self._on_account_action(provider, "sign-in")),
+            )
+        self._set_account_buttons(buttons, actions)
+        # A changed identity means a changed model catalog: refresh the app's
+        # pickers and this dialog's provider details.
+        seen = (account.signed_in, account.identity)
+        previous = self._account_seen.get(provider)
+        self._account_seen[provider] = seen
+        if previous is not None and previous != seen:
+            if self._codex_credentials_changed is not None:
+                self._codex_credentials_changed()
+            refresh = {
+                model_catalog.PROVIDER_OPENAI: lambda: self._reload_codex(force_models=True),
+                model_catalog.PROVIDER_GOOGLE: lambda: self._reload_google(force=True),
+                model_catalog.PROVIDER_MUSE: lambda: self._reload_muse(force=True),
+            }.get(provider)
+            if refresh is not None:
+                refresh()
+
+    @staticmethod
+    def _set_account_buttons(box: Gtk.Box, actions) -> None:
+        while (child := box.get_first_child()) is not None:
+            box.remove(child)
+        for label, css, handler in actions:
+            button = Gtk.Button.new_with_label(label)
+            if css:
+                button.add_css_class(css)
+            button.connect("clicked", handler)
+            box.append(button)
+
+    def _on_account_action(self, provider: str, action: str) -> None:
+        ok, message = accounts.launch(provider, action)
+        row, _buttons = self._account_rows[provider]
+        row.set_subtitle(
+            "Finish in the terminal — this page refreshes when you come back."
+            if ok else message
+        )
+        if ok:
+            self._accounts_pending = True
+            self._watch_for_return()
+
+    def _watch_for_return(self) -> None:
+        """Re-read accounts once the user comes back from the terminal."""
+        root = self.get_root()
+        if root is None or self._return_watch is not None:
+            return
+
+        def on_active(window, _pspec) -> None:
+            if window.is_active() and self._accounts_pending and not self._closed:
+                self._reload_accounts()
+
+        self._return_watch = (root, root.connect("notify::is-active", on_active))
+
     def _build_settings_page(self, permission_mode: str, model: str) -> None:
         page = Adw.PreferencesPage()
         page.set_title("Settings")
         page.set_icon_name("emblem-system-symbolic")
         self.add(page)
 
-        # --- Account -----------------------------------------------------
-        self._account_group = Adw.PreferencesGroup()
-        self._account_group.set_title("Account")
-        page.add(self._account_group)
-
-        refresh_acct = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
-        refresh_acct.add_css_class("flat")
-        refresh_acct.set_tooltip_text("Refresh account status")
-        refresh_acct.set_valign(Gtk.Align.CENTER)
-        refresh_acct.connect("clicked", lambda *_: self._reload_account())
-        self._account_group.set_header_suffix(refresh_acct)
-
-        self._account_row = Adw.ActionRow()
-        self._account_row.set_title("Checking…")
-        self._account_icon = Gtk.Image.new_from_icon_name("avatar-default-symbolic")
-        self._account_icon.add_css_class("dim-label")
-        self._account_row.add_prefix(self._account_icon)
-        self._account_group.add(self._account_row)
-
-        # One state-aware auth button — "Sign out" when signed in, "Sign in…"
-        # when not. Never both at once; _set_auth_mode reconfigures the row
-        # once we know the account state.
-        self._logged_in = False
-        self._auth_row = Adw.ActionRow()
-        self._auth_btn = Gtk.Button()
-        self._auth_btn.set_valign(Gtk.Align.CENTER)
-        self._auth_btn.connect("clicked", self._on_auth_action)
-        self._auth_row.add_suffix(self._auth_btn)
-        self._auth_row.set_activatable_widget(self._auth_btn)
-        self._account_group.add(self._auth_row)
-        self._set_auth_mode(False)
-        self._auth_btn.set_sensitive(False)  # enabled once status loads
-
-        # Which claude binary Helios actually drives. Version skew between the
-        # standalone install and IDE-bundled copies is silent otherwise (the
-        # app once ran the VSCode extension's binary for weeks unnoticed).
-        binary_row = Adw.ActionRow()
-        binary_row.set_title("Claude binary")
-        bin_icon = Gtk.Image.new_from_icon_name("application-x-executable-symbolic")
-        bin_icon.add_css_class("dim-label")
-        binary_row.add_prefix(bin_icon)
-        try:
-            from helios.backend.claude_binary import find_claude_binary
-
-            binary = find_claude_binary()
-            binary_row.set_subtitle(str(binary.path))
-            source_badge = Gtk.Label(label=binary.source)
-            source_badge.add_css_class("caption")
-            source_badge.add_css_class("dim-label")
-            source_badge.set_valign(Gtk.Align.CENTER)
-            source_badge.set_tooltip_text(
-                "Where this binary was found: env override, PATH, the "
-                "standalone install, or an IDE bundle."
-            )
-            binary_row.add_suffix(source_badge)
-        except Exception:
-            binary_row.set_subtitle("Not found — set $HELIOS_CLAUDE_BINARY")
-        binary_row.set_subtitle_selectable(True)
-        self._account_group.add(binary_row)
 
         # --- Defaults ----------------------------------------------------
         defaults_group = Adw.PreferencesGroup()
@@ -689,6 +751,40 @@ class SettingsDialog(Adw.PreferencesDialog):
         page.set_title("Providers")
         page.set_icon_name("network-server-symbolic")
         self.add(page)
+        self._providers_page = page
+
+        claude_group = Adw.PreferencesGroup()
+        claude_group.set_title("Anthropic · Claude")
+        claude_group.set_description(
+            "Helios drives the `claude` CLI with its own sign-in (see Accounts)."
+        )
+        page.add(claude_group)
+        # Which claude binary Helios actually drives. Version skew between the
+        # standalone install and IDE-bundled copies is silent otherwise (the
+        # app once ran the VSCode extension's binary for weeks unnoticed).
+        binary_row = Adw.ActionRow()
+        binary_row.set_title("Claude binary")
+        bin_icon = Gtk.Image.new_from_icon_name("application-x-executable-symbolic")
+        bin_icon.add_css_class("dim-label")
+        binary_row.add_prefix(bin_icon)
+        try:
+            from helios.backend.claude_binary import find_claude_binary
+
+            binary = find_claude_binary()
+            binary_row.set_subtitle(str(binary.path))
+            source_badge = Gtk.Label(label=binary.source)
+            source_badge.add_css_class("caption")
+            source_badge.add_css_class("dim-label")
+            source_badge.set_valign(Gtk.Align.CENTER)
+            source_badge.set_tooltip_text(
+                "Where this binary was found: env override, PATH, the "
+                "standalone install, or an IDE bundle."
+            )
+            binary_row.add_suffix(source_badge)
+        except Exception:
+            binary_row.set_subtitle("Not found — set $HELIOS_CLAUDE_BINARY")
+        binary_row.set_subtitle_selectable(True)
+        claude_group.add(binary_row)
 
         # ── OpenRouter · Chat provider ──
         self._or_group = Adw.PreferencesGroup()
@@ -889,16 +985,6 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._muse_catalog_row.add_prefix(muse_cat_icon)
         self._muse_group.add(self._muse_catalog_row)
 
-        self._muse_auth_row = Adw.ActionRow()
-        self._muse_auth_row.set_title("Sign in")
-        self._muse_auth_row.set_subtitle("Authenticate with your Meta account.")
-        self._muse_auth_btn = Gtk.Button.new_with_label("Sign in…")
-        self._muse_auth_btn.add_css_class("suggested-action")
-        self._muse_auth_btn.set_valign(Gtk.Align.CENTER)
-        self._muse_auth_btn.connect("clicked", self._on_muse_auth_action)
-        self._muse_auth_row.add_suffix(self._muse_auth_btn)
-        self._muse_group.add(self._muse_auth_row)
-
         self._muse_key_row = Adw.PasswordEntryRow()
         self._muse_key_row.set_title("Use or replace a Meta API key")
         self._muse_key_row.set_show_apply_button(True)
@@ -995,14 +1081,13 @@ class SettingsDialog(Adw.PreferencesDialog):
             elif auth.ok:
                 self._muse_status_row.set_title("Not signed in")
                 self._muse_status_row.set_subtitle(
-                    "Use “Sign in” below, or paste a Meta API key.")
+                    "Sign in on the Accounts page, or paste a Meta API key.")
                 self._set_muse_icon("dialog-warning-symbolic", "warning")
             else:
                 self._muse_status_row.set_title("Muse unavailable")
                 self._muse_status_row.set_subtitle(
                     auth.error or "Install Muse Code, then tap refresh.")
                 self._set_muse_icon("dialog-warning-symbolic", "warning")
-            self._set_muse_auth_mode(auth.ok and auth.logged_in)
             if selectable:
                 self._muse_catalog_row.set_subtitle(
                     f"{len(selectable)} models discovered by muse serve "
@@ -1022,29 +1107,6 @@ class SettingsDialog(Adw.PreferencesDialog):
         for c in ("success", "warning", "error", "dim-label"):
             self._muse_icon.remove_css_class(c)
         self._muse_icon.add_css_class(css)
-
-    def _set_muse_auth_mode(self, logged_in: bool) -> None:
-        self._muse_logged_in = logged_in
-        for css in ("suggested-action", "destructive-action"):
-            self._muse_auth_btn.remove_css_class(css)
-        if logged_in:
-            self._muse_auth_row.set_title("Sign out")
-            self._muse_auth_row.set_subtitle("Sign out of your Meta account.")
-            self._muse_auth_btn.set_label("Sign out")
-            self._muse_auth_btn.add_css_class("destructive-action")
-        else:
-            self._muse_auth_row.set_title("Sign in")
-            self._muse_auth_row.set_subtitle("Authenticate with your Meta account.")
-            self._muse_auth_btn.set_label("Sign in…")
-            self._muse_auth_btn.add_css_class("suggested-action")
-
-    def _on_muse_auth_action(self, *_args) -> None:
-        from helios.backend import muse_env
-        if getattr(self, "_muse_logged_in", False):
-            ok, msg = muse_env.launch_logout()
-        else:
-            ok, msg = muse_env.launch_login()
-        self._muse_group.set_description(f"{msg} Then tap refresh ↻." if ok else msg)
 
     def _on_muse_key_apply(self, *_args) -> None:
         from helios.backend import muse_env
@@ -1890,52 +1952,6 @@ class SettingsDialog(Adw.PreferencesDialog):
 
     # ── live loads (threaded) ────────────────────────────────────────────
 
-    def _reload_account(self) -> None:
-        self._account_row.set_title("Checking…")
-        self._account_row.set_subtitle("")
-        self._set_account_icon("content-loading-symbolic", "dim-label")
-        self._auth_btn.set_sensitive(False)
-        self._run_async(claude_env.fetch_auth_status, self._apply_account)
-
-    def _apply_account(self, status: claude_env.AuthStatus) -> None:
-        if self._closed:
-            return
-        if not status.ok:
-            self._account_row.set_title("Couldn't read account status")
-            self._account_row.set_subtitle(status.error)
-            self._set_account_icon("dialog-error-symbolic", "error")
-            self._set_auth_mode(False)
-            return
-        if not status.logged_in:
-            self._account_row.set_title("Not signed in")
-            self._account_row.set_subtitle("Use “Sign in” below to authenticate.")
-            self._set_account_icon("dialog-warning-symbolic", "warning")
-            self._set_auth_mode(False)
-            return
-        self._account_row.set_title(status.email or "Signed in")
-        bits = []
-        if status.subscription_type:
-            bits.append(status.subscription_type.capitalize())
-        if status.auth_method:
-            bits.append(status.auth_method)
-        # Show a real (team) org name, but skip the auto-generated personal
-        # "<email>'s Organization" — it's just noise next to the email title.
-        if (
-            status.org_name
-            and status.org_name != status.email
-            and status.org_name != f"{status.email}'s Organization"
-        ):
-            bits.append(status.org_name)
-        self._account_row.set_subtitle(" · ".join(bits) or "Signed in")
-        self._set_account_icon("object-select-symbolic", "success")
-        self._set_auth_mode(True)
-
-    def _set_account_icon(self, icon_name: str, css: str) -> None:
-        self._account_icon.set_from_icon_name(icon_name)
-        for c in ("success", "warning", "error", "dim-label"):
-            self._account_icon.remove_css_class(c)
-        self._account_icon.add_css_class(css)
-
     def _reload_mcp(self) -> None:
         self._clear_mcp_rows()
         spinner_row = Adw.ActionRow()
@@ -2142,37 +2158,6 @@ class SettingsDialog(Adw.PreferencesDialog):
 
         self._run_async(work, on_done)
 
-    # ── account actions ──────────────────────────────────────────────────
-
-    def _set_auth_mode(self, logged_in: bool) -> None:
-        """Show exactly one auth action — Sign out when signed in, Sign in
-        otherwise — never both at once."""
-        self._logged_in = logged_in
-        self._auth_btn.set_sensitive(True)
-        for c in ("suggested-action", "destructive-action"):
-            self._auth_btn.remove_css_class(c)
-        if logged_in:
-            self._auth_row.set_title("Sign out")
-            self._auth_row.set_subtitle(
-                "Sign out of your Anthropic account on this machine."
-            )
-            self._auth_btn.set_label("Sign out")
-            self._auth_btn.add_css_class("destructive-action")
-        else:
-            self._auth_row.set_title("Sign in")
-            self._auth_row.set_subtitle("Authenticate with your Anthropic account.")
-            self._auth_btn.set_label("Sign in…")
-            self._auth_btn.add_css_class("suggested-action")
-
-    def _on_auth_action(self, *_args) -> None:
-        if self._logged_in:
-            ok, msg = claude_env.launch_logout()
-        else:
-            ok, msg = claude_env.launch_login("claudeai")
-        self._account_group.set_description(
-            f"{msg} Then tap refresh ↻." if ok else msg
-        )
-
     def _on_ollama_inputs_changed(self, *_args) -> None:
         self._ollama_check_generation += 1
         self._ollama_status_row.set_subtitle("Settings changed. Save and check to use this server and model.")
@@ -2238,3 +2223,7 @@ class SettingsDialog(Adw.PreferencesDialog):
 
     def _on_closed(self, *_args) -> None:
         self._closed = True
+        if self._return_watch is not None:
+            root, handler = self._return_watch
+            root.disconnect(handler)
+            self._return_watch = None

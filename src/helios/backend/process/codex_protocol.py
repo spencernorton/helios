@@ -177,6 +177,7 @@ KNOWN_SERVER_REQUEST_METHODS: frozenset[str] = frozenset(
 CLIENT_REQUEST_METHODS_USED: frozenset[str] = frozenset(
     {
         "account/rateLimits/read",
+        "account/read",
         "collaborationMode/list",
         "initialize",
         "mcpServerStatus/list",
