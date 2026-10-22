@@ -6,6 +6,12 @@ source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
 ## Unreleased
 
+## 0.107.0 — 2026-10-22
+
+- Images are visible. The transcript parser kept only text, so every image a tool returned, a screenshot from the browser pane, or a picture you attached was dropped. Images now render as thumbnails under the message (Claude tool results and attachments; Codex `imageView`, `imageGeneration` and MCP image results; Muse tool images). Click opens the full image in the side pane, which also renders PDFs and HTML; right-click copies it.
+- Tool cards that touched a file (Read, Write, Edit) have an open button that shows the file in the side pane.
+- Inline images are written once to `~/.helios/media/` and provider mirrors (GPT, Gemini, Muse, OpenRouter) store a path, so a reopened chat shows the same images without base64 in the transcript.
+
 ## 0.106.0 — 2026-10-22
 
 - Add a tabbed browser pane beside the transcript (Ctrl+Shift+B or the header

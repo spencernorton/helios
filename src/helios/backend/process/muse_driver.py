@@ -48,7 +48,7 @@ from helios.backend.process.streaming import Block, StreamingAssistant
 from helios.backend.project_perms import effective_execution_mode, is_home_cwd
 from helios.backend.rate_limits import muse_rate_limit_rows
 from helios.backend.sensitive_text import scrub_sensitive
-from helios.backend.transcript import ToolResult
+from helios.backend.transcript import ToolResult, images_in
 from helios.log import get_logger
 
 _log = get_logger("muse-driver")
@@ -180,6 +180,7 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
         self._summary_part: dict[str, str] = {}
         self._model_changes: dict[int, tuple[str, Any]] = {}
         self._tool_outputs: dict[str, str] = {}
+        self._tool_images: dict[str, list] = {}
         self._agents: dict[str, dict[str, str]] = {}
         self._pending_approvals: dict[str, dict] = {}
         self._pending_inputs: dict[str, dict] = {}
@@ -498,6 +499,7 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
         self._blocks = {}
         self._summary_part = {}
         self._tool_outputs = {}
+        self._tool_images = {}
         self._agents = {}
         self._turn_usage = {}
         params: dict[str, Any] = {
@@ -736,6 +738,9 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
                 output = item.get("visibleOutput")
                 if isinstance(output, str) and output:
                     self._tool_outputs[block.tool_use_id] = output
+                images = images_in([item.get(k) for k in ("result", "output", "content")])
+                if images:  # e.g. a browser screenshot returned over MCP
+                    self._tool_images[block.tool_use_id] = images
                 self.emit("assistant-streaming", self._streaming)
                 if item.get("statusLine"):
                     self.emit("activity-updated", {
@@ -913,10 +918,11 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
             turn = self._streaming.to_turn()
             for tool_use in turn.tool_uses:
                 output = self._tool_outputs.get(tool_use.id)
-                if output:
+                images = self._tool_images.get(tool_use.id, [])
+                if output or images:
                     turn.tool_results.append(ToolResult(
-                        tool_use_id=tool_use.id, content=output,
-                        is_error=subtype == "error"))
+                        tool_use_id=tool_use.id, content=output or "",
+                        is_error=subtype == "error", images=images))
             if turn.content or turn.tool_uses:
                 if not self._record_execution_contribution(turn):
                     self._hold_accounting_failure(
@@ -956,6 +962,7 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
         self._blocks = {}
         self._summary_part = {}
         self._tool_outputs = {}
+        self._tool_images = {}
         self._last_activity = time.monotonic()
         result = {
             "subtype": subtype,

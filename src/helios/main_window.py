@@ -66,6 +66,7 @@ from helios.backend.claude_binary import ClaudeBinaryNotFound
 from helios.backend.composer_state import DraftBook, draft_key
 from helios.backend.conversation_perms import store as conversation_perms_store
 from helios.backend.latest_worker import LatestTaskRunner
+from helios.backend import browser_target
 from helios.backend import projects as _projects
 from helios.backend.projects import (
     HOME_CWD,
@@ -1455,6 +1456,11 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             act.connect("activate", cb)
             self.add_action(act)
             application.set_accels_for_action(f"win.{name}", accels)
+        # Any widget can show a local file (image thumbnails, file paths)
+        # with activate_action("win.open-media", path) — no callback plumbing.
+        media = Gio.SimpleAction.new("open-media", GLib.VariantType.new("s"))
+        media.connect("activate", lambda _a, param: self._open_in_pane(param.get_string()))
+        self.add_action(media)
 
     # --- provider-native command palette ---
 
@@ -3659,6 +3665,21 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             MainWindow._refresh_capabilities(self)
 
     # --- browser pane ---
+
+    def _open_in_pane(self, path: str) -> None:
+        """Show a local file in the side pane: WebKit renders images (with
+        click-to-zoom), PDFs (built-in PDF.js), HTML and text."""
+        if not self._browser.available:
+            Gtk.FileLauncher.new(Gio.File.new_for_path(path)).launch(self, None, None, None)
+            return
+        cwd = self._current_project_cwd() or ""
+        try:
+            url = browser_target.localize(browser_target.resolve(path, cwd), cwd)
+        except browser_target.TargetError as exc:
+            self._toast(str(exc))
+            return
+        self._browser_btn.set_active(True)
+        self._browser.open(url)
 
     def _on_browser_toggle(self, button: Gtk.ToggleButton) -> None:
         shown = button.get_active()

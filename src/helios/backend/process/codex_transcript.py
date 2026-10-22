@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from helios.backend import model_catalog, projects, session_providers
+from helios.backend.media import image_block
 from helios.backend.transcript import CONTENT_SCHEMA_KEY, Turn
 from helios.log import get_logger
 
@@ -333,11 +334,17 @@ class CodexTranscriptWriter:
                 }
             )
         for tr in turn.tool_results:
+            tr_payload: str | list = _elide_tool_result(tr.content)
+            images = [b for b in map(image_block, tr.images) if b is not None]
+            if images:
+                # Path-backed image blocks: a reopened chat shows the same
+                # pictures without base64 bloating the mirror.
+                tr_payload = [{"type": "text", "text": tr_payload}, *images]
             activity.append(
                 {
                     "type": "tool_result",
                     "tool_use_id": tr.tool_use_id,
-                    "content": _elide_tool_result(tr.content),
+                    "content": tr_payload,
                     "is_error": tr.is_error,
                 }
             )

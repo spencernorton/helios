@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import gi
 
 gi.require_version("Gtk", "4.0")
@@ -15,6 +17,7 @@ from helios.backend.transcript import (
     Turn,
     activity_items,
 )
+from helios.widgets.image_strip import ImageStrip
 
 MAX_TOOL_PREVIEW = 600  # characters
 MAX_TOOL_INPUT = 400
@@ -172,6 +175,11 @@ class MessageBubble(Gtk.Box):
             activity_content_index=turn.activity_content_index,
         ):
             body.append(widget)
+        # Images stay visible: tool results live in the collapsed activity
+        # group, and a screenshot nobody can see is why this exists.
+        self._images: ImageStrip | None = None
+        for ref in [*turn.images, *(i for tr in turn.tool_results for i in tr.images)]:
+            self._add_image(ref)
         self._files_label: Gtk.Widget | None = None
         self._files_slot = body
         self._sync_files_changed()
@@ -247,6 +255,8 @@ class MessageBubble(Gtk.Box):
         ):
             return False  # already resolved — a second result is not ours
         self._attached.append(tr)
+        for ref in tr.images:
+            self._add_image(ref)
         elapsed = _elapsed_text(self._turn.timestamp, timestamp)
         if elapsed:
             self._elapsed[tr.tool_use_id] = elapsed
@@ -261,6 +271,15 @@ class MessageBubble(Gtk.Box):
             _invalidate_lazy_group(self._activity_expander)
         self._sync_files_changed()
         return True
+
+    def _add_image(self, ref) -> None:
+        if self._images is None:
+            self._images = ImageStrip()
+            self._body.append(self._images)
+            footer = getattr(self, "_footer", None)
+            if footer is not None:
+                self._body.reorder_child_after(footer, self._images)
+        self._images.add_image(ref)
 
     def _all_tool_results(self) -> list[ToolResult]:
         return [*self._turn.tool_results, *self._attached]
@@ -813,6 +832,17 @@ def _card_accessible_label(tu: ToolUse, state: str, elapsed: str) -> str:
     return f"{tu.name} tool call, {state}{', ' + elapsed if elapsed else ''}"
 
 
+def _openable_path(inp: dict) -> str:
+    """The existing file a tool call names (Read/Write/Edit, image views…)."""
+    if not isinstance(inp, dict):
+        return ""
+    for key in ("file_path", "path", "notebook_path"):
+        value = inp.get(key)
+        if isinstance(value, str) and os.path.isabs(value) and os.path.isfile(value):
+            return value
+    return ""
+
+
 def _tool_card_header(tu: ToolUse, state: str, elapsed: str) -> Gtk.Widget:
     summary = _summarize_tool_input(tu.input)
     box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -822,6 +852,18 @@ def _tool_card_header(tu: ToolUse, state: str, elapsed: str) -> Gtk.Widget:
     title.add_css_class("helios-tool-card-title")
     title.set_hexpand(True)
     box.append(title)
+    target = _openable_path(tu.input)
+    if target:
+        opener = Gtk.Button.new_from_icon_name("document-open-symbolic")
+        opener.add_css_class("flat")
+        opener.add_css_class("circular")
+        opener.set_valign(Gtk.Align.CENTER)
+        opener.set_tooltip_text(f"Open {os.path.basename(target)} in the side pane")
+        opener.connect(
+            "clicked",
+            lambda btn: btn.activate_action("win.open-media", GLib.Variant.new_string(target)),
+        )
+        box.append(opener)
     chip = Gtk.Label(label=f"{state} · {elapsed}" if elapsed else state)
     chip.add_css_class("helios-tool-state")
     chip.add_css_class(f"helios-tool-state-{state}")
