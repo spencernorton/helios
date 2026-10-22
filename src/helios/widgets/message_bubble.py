@@ -5,7 +5,7 @@ import os
 import gi
 
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gdk, GLib, Gtk  # noqa: E402
+from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from helios.backend.process.streaming import stable_markdown_prefix
 from helios.backend.tool_diff import EDIT_TOOLS, edit_diff, edit_path
@@ -314,6 +314,27 @@ class MessageBubble(Gtk.Box):
         _cancel_activity_builds(self)
 
     def _build_header(self, turn: Turn) -> Gtk.Widget:
+        header = self._base_header(turn)
+        if turn.role == "user" and turn.uuid and turn.timestamp:
+            # Rewind / fork from this message. Window actions, so the bubble
+            # needs no knowledge of sessions or providers.
+            menu = Gio.Menu()
+            rewind = Gio.MenuItem.new("Rewind code to before this message", None)
+            rewind.set_action_and_target_value("win.rewind-before", GLib.Variant.new_string(turn.timestamp))
+            menu.append_item(rewind)
+            fork = Gio.MenuItem.new("Fork conversation from here", None)
+            fork.set_action_and_target_value("win.fork-from", GLib.Variant.new_string(turn.uuid))
+            menu.append_item(fork)
+            button = Gtk.MenuButton(icon_name="view-more-symbolic", menu_model=menu)
+            button.add_css_class("flat")
+            button.add_css_class("circular")
+            button.set_valign(Gtk.Align.CENTER)
+            button.set_tooltip_text("Rewind or fork from this message")
+            copy = header.get_last_child()
+            header.insert_child_after(button, copy.get_prev_sibling())
+        return header
+
+    def _base_header(self, turn: Turn) -> Gtk.Widget:
         dt = turn.dt
         return _bubble_header(
             {

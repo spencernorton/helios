@@ -1,5 +1,11 @@
 # Helios — Session Journal
 
+## 2026-10-22 — claude — Rewind and fork from a message (v0.110.0)
+
+- **Roadmap Phase 2c (Claude).** `backend/transcript_fork.fork_before(path, uuid)` copies the JSONL records before a user message under a new session id (rewriting `sessionId`, dropping torn lines, atomic write) and returns the message text. Verified with the real CLI: a conversation that set codeword PELICAN then BADGER, forked before the second message, resumed answering PELICAN while the source answered BADGER.
+- **UI:** user bubbles with a uuid and timestamp get a ⋮ menu wired to `win.rewind-before(s ts)` (Rewind narrowed to the latest checkpoint at or before the message, +5 s skew) and `win.fork-from(s uuid)` (provider must resolve to anthropic; settings cloned; fork revealed and the text put in the composer).
+- **Not done:** fork from a message for GPT (Codex `thread/fork` has no cut point), Muse (`session/fork` source cut cursor untried) and OpenRouter (history file copy). GPT keeps its head fork in the command palette.
+
 ## 2026-10-22 — claude — Review pane (v0.109.0)
 
 - **Roadmap Phase 2a + 2b.** `backend/git_review.py` holds every repository WRITE (hunk apply via `git apply [--cached] [-R]` from stdin, file stage/unstage/restore, commit, push with `-u origin <branch>` when there is no upstream, `gh`/`glab` PR command); `git_changes` stays the bounded read-only side. Untracked files are trashed with `Gio.File.trash`, never deleted.
