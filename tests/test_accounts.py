@@ -46,3 +46,16 @@ def test_a_failing_provider_reads_as_an_error_not_a_crash(monkeypatch):
     monkeypatch.setitem(accounts._READERS, model_catalog.PROVIDER_MUSE, lambda: 1 / 0)
     account = accounts.read(model_catalog.PROVIDER_MUSE)
     assert not account.signed_in and "division" in account.error
+
+
+def test_keyring_sign_in_reads_the_account_from_agys_log(tmp_path, monkeypatch):
+    import os
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    log = tmp_path / ".gemini" / "antigravity-cli" / "log"
+    log.mkdir(parents=True)
+    (log / "cli-1.log").write_text("I1022 server_oauth.go:224] applyAuthResult: email=old@example.com, authMethod=consumer\n")
+    (log / "cli-2.log").write_text("I1022 server_oauth.go:224] applyAuthResult: email=new@example.com, authMethod=consumer\n")
+    os.utime(log / "cli-1.log", (1, 1))
+    assert google_env.signed_in_email() == "new@example.com"
+    assert accounts.read(model_catalog.PROVIDER_GOOGLE).identity == "new@example.com"

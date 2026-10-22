@@ -1,5 +1,12 @@
 # Helios — Session Journal
 
+## 2026-10-22 — claude — Gemini account after a keyring sign-in (v0.105.1)
+
+- **Symptom:** after switching agy accounts with `/logout` + `/login`, Accounts showed Gemini as not signed in.
+- **Cause:** a fresh agy sign-in stores its token in the system keyring; `antigravity-oauth-token` disappeared, and `signed_in_email` read only that file.
+- **Fix:** fall back to the newest `applyAuthResult: email=` line in agy's own logs (`~/.gemini/antigravity-cli/log/`), which agy writes on every authenticated start. Test added.
+- **Outcome for the user:** the second Google account lists Gemini 4 Argon; the first did not.
+
 ## 2026-10-22 — claude — Accounts page, Codex probe hang (v0.105.0)
 
 - **Asked:** Settings split Claude's account from the other providers, showed no email for most, and offered no way to change any of them.

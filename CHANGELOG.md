@@ -6,6 +6,10 @@ source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
 ## Unreleased
 
+## 0.105.1 — 2026-10-22
+
+- Accounts → Gemini shows the signed-in Google account after an agy `/login`. A fresh agy sign-in keeps its token in the system keyring instead of a file, so the row read as "Not signed in"; Helios now falls back to the account agy records in its own log.
+
 ## 0.105.0 — 2026-10-22
 
 - New **Accounts** page, first in Settings: every provider on one list with the signed-in email and plan (Claude via `claude auth status`, GPT via Codex App Server `account/read`, Gemini from agy's sign-in token, Muse via `account/read`), and *Sign in…*, *Sign out* and *Switch account…* buttons that open each CLI's own flow in a terminal. The page re-reads accounts when you return; a changed account refreshes the model pickers. OpenRouter's row opens its key on *Providers*. The Claude-only account block on *Settings* and Muse's separate sign-in row are gone; Claude now has its own group on *Providers*.
