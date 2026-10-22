@@ -67,7 +67,7 @@ from helios.backend.claude_binary import ClaudeBinaryNotFound
 from helios.backend.composer_state import DraftBook, draft_key
 from helios.backend.conversation_perms import store as conversation_perms_store
 from helios.backend.latest_worker import LatestTaskRunner
-from helios.backend import browser_target, transcript_fork
+from helios.backend import browser_target, transcript_fork, worktrees
 from helios.backend.attachments import mentioned_images
 from helios.backend import projects as _projects
 from helios.backend.projects import (
@@ -2692,6 +2692,20 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
         inner.append(sep)
 
+        worktree_btn = Gtk.Button()
+        worktree_btn.add_css_class("flat")
+        worktree_btn.set_child(
+            self._new_chat_row(
+                "Chat in a Worktree",
+                "Isolated checkout on its own branch of this repository",
+                "media-playlist-shuffle-symbolic",
+            )
+        )
+        worktree_btn.connect(
+            "clicked", lambda *_: (pop.popdown(), self._start_new_chat_in_worktree())
+        )
+        inner.append(worktree_btn)
+
         folder_btn = Gtk.Button()
         folder_btn.add_css_class("flat")
         folder_btn.set_child(
@@ -4202,6 +4216,40 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             return
         self._apply_model_choice(alias, quiet=True)
         self._start_new_chat()
+
+    def _start_new_chat_in_worktree(self) -> None:
+        """Opt-in isolation: a fresh worktree of the current chat's repository
+        (else the default folder's) on its own branch, then a new chat there."""
+        source = self._current_project_cwd() or configured_default_cwd() or ""
+        if not source:
+            self._toast("Open a chat in a git repository first.")
+            return
+        self._toast("Creating a worktree…")
+
+        def work() -> None:
+            try:
+                path, error = worktrees.create(source), ""
+            except Exception as exc:  # noqa: BLE001 — shown to the person
+                path, error = "", str(exc)
+            GLib.idle_add(done, path, error)
+
+        def done(path: str, error: str) -> bool:
+            if self._destroyed:
+                return False
+            if error:
+                self._toast(f"Couldn't create a worktree: {error[:200]}", timeout=8)
+                return False
+            try:
+                project = ensure_local_project(path)
+            except OSError as exc:
+                self._toast(f"Couldn't use {path}: {exc}")
+                return False
+            self._show_fresh_chat_ui(project)
+            self._composer.grab_input_focus()
+            self._toast(f"New chat in worktree {os.path.basename(path)}.")
+            return False
+
+        threading.Thread(target=work, daemon=True, name="helios-worktree").start()
 
     def _start_new_chat_in_folder(self) -> None:
         """Ctrl+Shift+N: pick a working directory, then start a fresh chat

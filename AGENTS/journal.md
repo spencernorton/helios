@@ -1,5 +1,11 @@
 # Helios — Session Journal
 
+## 2026-10-22 — claude — Opt-in worktrees (v0.113.0)
+
+- **Roadmap Phase 3e.** `backend/worktrees.py`: `create` (`git worktree add -b helios/<repo>-<time> state_dir()/worktrees/<name> HEAD`), `is_helios_worktree`, `remove` (refuses foreign folders and dirty trees; runs from the common dir; keeps the branch). New-chat popover entry → `_start_new_chat_in_worktree` (thread, then `_show_fresh_chat_ui`); Changes pane shows *Remove worktree* only for Helios worktrees.
+- **Not the v0.66.0 lease/redirect:** nothing happens unless the entry is picked; no admission or write-collision logic was added (see the "NO write-collision guard" note in AGENTS.md).
+- **Validation:** real-repo tests; on Xvfb the new chat's cwd was the worktree and the pane offered removal.
+
 ## 2026-10-22 — claude — Browser actions and run configs (v0.112.0)
 
 - **Roadmap Phase 3c/3d.** `browser_click`/`browser_type` run in the isolated `helios` world (DOM is shared; typing uses the prototype's native value setter + input/change so React sees it); `browser_console` reads a buffer that `_CONSOLE_CAPTURE` (a document-start `UserScript` in the page world) fills — page-controlled data, like page text. All three go through `_consent_for_view`. *Add to chat* snapshots the visible tab into `state_dir()/media` and the window attaches it.

@@ -6,6 +6,10 @@ source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
 ## Unreleased
 
+## 0.113.0 — 2026-10-22
+
+- *Chat in a Worktree* (new-chat menu): an opt-in git worktree of the current repository on its own `helios/…` branch under `~/.helios/worktrees/`, with a new chat in it. The Changes pane commits, pushes and opens a PR from there, and *Remove worktree* deletes the folder once it is clean, keeping the branch. The automatic redirect removed in 0.66.0 stays removed.
+
 ## 0.112.0 — 2026-10-22
 
 - Browser pane: new agent tools `browser_click` (selector or visible text), `browser_type` (replace a field's value the way frameworks notice, optionally submit) and `browser_console` (recent console messages and uncaught errors, captured from document start), under the existing per-site consent. A camera button attaches a screenshot of the current page to your message.
