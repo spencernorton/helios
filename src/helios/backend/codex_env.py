@@ -21,6 +21,7 @@ persist it first with ``codex login --with-access-token`` when needed.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import selectors
@@ -303,22 +304,29 @@ def _read_rpc_response(
         raise CodexAppServerError("Codex App Server stdout is unavailable")
     selector = selectors.DefaultSelector()
     selector.register(proc.stdout, selectors.EVENT_READ)
+    fd = proc.stdout.fileno()
+    # Raw reads with our own line buffer: select() watches the fd, so lines
+    # parked in a buffered readline() were invisible to it and a response
+    # that arrived in the same chunk as a notification timed out (~1 in 3
+    # account/read calls, and intermittent model-catalog failures).
+    buf: bytes = getattr(proc, "_helios_rpc_buf", b"")
     try:
         while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise CodexAppServerError(
-                    f"Codex App Server request {request_id} timed out"
-                )
-            if not selector.select(remaining):
-                raise CodexAppServerError(
-                    f"Codex App Server request {request_id} timed out"
-                )
-            line = proc.stdout.readline()
-            if not line:
-                raise CodexAppServerError(
-                    f"Codex App Server exited before request {request_id} completed"
-                )
+            while b"\n" not in buf:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not selector.select(remaining):
+                    raise CodexAppServerError(
+                        f"Codex App Server request {request_id} timed out"
+                    )
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    raise CodexAppServerError(
+                        f"Codex App Server exited before request {request_id} completed"
+                    )
+                buf += chunk
+            raw, buf = buf.split(b"\n", 1)
+            proc._helios_rpc_buf = buf
+            line = raw.decode("utf-8", "replace")
             try:
                 message = json.loads(line)
             except json.JSONDecodeError:
@@ -339,16 +347,10 @@ def _read_rpc_response(
         selector.close()
 
 
-def fetch_app_server_capabilities(
-    timeout: float = 15.0,
-) -> CodexAppServerCapabilities:
-    """Return models and collaboration modes from the same App Server.
-
-    This is the authoritative catalog for the installed Codex build and its
-    current authentication mode.  Unlike ``GET /v1/models``, it also tells a
-    client which reasoning efforts, modalities, defaults, and service tiers
-    Codex can actually use.
-    """
+@contextlib.contextmanager
+def _app_server_session(timeout: float, version: str):
+    """Start Codex App Server, complete initialize/initialized, and yield
+    ``(proc, deadline)``; always reaps the process."""
     binary = find_codex_binary()
     try:
         proc = subprocess.Popen(
@@ -375,13 +377,44 @@ def fetch_app_server_capabilities(
                 "clientInfo": {
                     "name": "helios",
                     "title": "Helios",
-                    "version": "model-catalog",
+                    "version": version,
                 },
                 "capabilities": {"experimentalApi": True},
             },
         })
         _read_rpc_response(proc, 1, deadline=deadline)
         _write_rpc(proc, {"method": "initialized", "params": {}})
+        yield proc, deadline
+    except (OSError, BrokenPipeError) as exc:
+        raise CodexAppServerError(f"Codex App Server communication failed: {exc}") from exc
+    finally:
+        if proc.stdin is not None:
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            try:
+                proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=1.0)
+
+
+def fetch_app_server_capabilities(
+    timeout: float = 15.0,
+) -> CodexAppServerCapabilities:
+    """Return models and collaboration modes from the same App Server.
+
+    This is the authoritative catalog for the installed Codex build and its
+    current authentication mode.  Unlike ``GET /v1/models``, it also tells a
+    client which reasoning efforts, modalities, defaults, and service tiers
+    Codex can actually use.
+    """
+    with _app_server_session(timeout, "model-catalog") as (proc, deadline):
         _write_rpc(proc, {
             "method": "model/list",
             "id": 2,
@@ -419,23 +452,16 @@ def fetch_app_server_capabilities(
             models=tuple(row for row in model_data if isinstance(row, dict)),
             collaboration_modes=tuple(modes),
         )
-    except (OSError, BrokenPipeError) as exc:
-        raise CodexAppServerError(f"Codex App Server communication failed: {exc}") from exc
-    finally:
-        if proc.stdin is not None:
-            try:
-                proc.stdin.close()
-            except OSError:
-                pass
-        try:
-            proc.wait(timeout=0.5)
-        except subprocess.TimeoutExpired:
-            proc.terminate()
-            try:
-                proc.wait(timeout=1.0)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=1.0)
+
+
+def fetch_account(timeout: float = 15.0) -> dict:
+    """Codex's own ``account/read``: ``{"type", "email", "planType"}`` for the
+    signed-in account, or ``{}`` when signed out. Display only; login truth
+    stays with ``codex login status``."""
+    with _app_server_session(timeout, "accounts") as (proc, deadline):
+        _write_rpc(proc, {"method": "account/read", "id": 2, "params": {}})
+        account = _read_rpc_response(proc, 2, deadline=deadline).get("account")
+    return account if isinstance(account, dict) else {}
 
 
 def fetch_app_server_models(timeout: float = 15.0) -> list[dict]:

@@ -251,8 +251,17 @@ chat), `/effort` sets this conversation's reasoning level.
 
 ## Settings
 
-**Settings.** *Account* — the Claude account and the resolved `claude` binary
-with a badge naming where it was found. *Defaults* — permission mode and
+**Accounts.** One row per provider — Claude, GPT, Gemini, Muse and
+OpenRouter — showing the signed-in email and plan as each provider's own CLI
+reports it (`claude auth status`, Codex App Server `account/read`, the email
+claim of agy's sign-in token, `muse` `account/read`). *Sign in…*, *Sign out*
+and *Switch account…* open that CLI's own flow in a terminal (Gemini opens
+`agy`, whose `/logout` and `/login` do the switch); the page re-reads every
+account when you return, and a changed account refreshes the model pickers.
+OpenRouter is an API key, so its row opens *Providers*. Helios stores no
+credential.
+
+**Settings.** *Defaults* — permission mode and
 model for new chats (persisted only by the **Save chat defaults** button at
 the bottom of the page) and the default working directory (saved as soon as
 you choose it). *Appearance* — colour scheme (auto, light, dark) and a
@@ -261,7 +270,8 @@ session finishes or a tandem mission is gated, Ollama titles (server URL and
 model, persisted by *Save and check*), other machines' sessions.
 *Diagnostics* — the log file.
 
-**Providers.** *OpenRouter · Chat* — the API key (stored at
+**Providers.** *Anthropic · Claude* — the resolved `claude` binary with a
+badge naming where it was found. *OpenRouter · Chat* — the API key (stored at
 `~/.helios/openrouter.key`, mode 0600), the live model catalog, and which
 models appear in the picker. The key must be at least 16 characters with no
 whitespace; saving it enables the OpenRouter toggle and fetches the catalog
@@ -329,7 +339,7 @@ files each key lives in, is in [agent-setup.md](agent-setup.md).
 | `XDG_DATA_HOME` | Tool inventories cached under `<dir>/helios/` (default `~/.local/share`) |
 | `XDG_CONFIG_HOME` | Optional extra instructions: every `*.md` file in `<dir>/helios/system-prompt.d/` (default `~/.config`), in name order, is added to every session's instructions; read at startup |
 | `TANDEM_STATE_DIR` | Tandem mission state for the Missions pane (default `~/.tandem`) |
-| `TERMINAL` | Terminal emulator for the Settings *Sign in…* button (else the first of `x-terminal-emulator`, `gnome-terminal`, `kgx`, `konsole`, `tilix`, `kitty`, `alacritty`, `foot`, `xterm`) |
+| `TERMINAL` | Terminal emulator for the Settings → Accounts *Sign in…*, *Sign out* and *Switch account…* buttons (else the first of `x-terminal-emulator`, `gnome-terminal`, `kgx`, `konsole`, `tilix`, `kitty`, `alacritty`, `foot`, `xterm`) |
 
 A desktop launch does not read `~/.bashrc`; set these on the desktop entry's
 `Exec=` line (`Exec=env HELIOS_CLAUDE_BINARY=/path/to/claude helios`).
@@ -365,7 +375,7 @@ only. Leave both unset if you do not use those services.
 `$HELIOS_CLAUDE_BINARY` (must be an executable file, otherwise it is silently
 ignored), then `PATH`, `~/.local/bin/claude`, the newest
 `~/.local/share/claude/versions/*`, then VS Code and JetBrains bundles — the
-badge beside the path in Settings → Account says which one won. A desktop
+badge beside the path in Settings → Providers → Anthropic · Claude says which one won. A desktop
 session has a shorter `PATH` than your terminal: symlink the binary into
 `~/.local/bin`, or set the variable on the desktop entry
 (`Exec=env HELIOS_CLAUDE_BINARY=/path/to/claude helios`).

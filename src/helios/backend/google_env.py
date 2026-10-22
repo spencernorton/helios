@@ -7,6 +7,7 @@ main loop. Catalog availability does not by itself prove account sign-in.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -329,7 +330,25 @@ def _probe_account(binary: GoogleBinary, env: dict[str, str], timeout: float) ->
         status.auth_method = "oauth-quota"
         status.plan_name = "Google account (tier not reported)"
         status.auth_warning = ""
+        status.email = signed_in_email()
     return status
+
+
+def signed_in_email() -> str:
+    """The `email` claim of agy's own sign-in token, for display only.
+
+    agy has no status command that names the account. Only the id_token's
+    payload is decoded; the access/refresh tokens are never read out.
+    """
+    path = Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+    try:
+        id_token = json.loads(path.read_text(encoding="utf-8")).get("id_token", "")
+        payload = id_token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        email = json.loads(base64.urlsafe_b64decode(payload)).get("email", "")
+    except (OSError, ValueError, IndexError, AttributeError):
+        return ""
+    return email if isinstance(email, str) else ""
 
 
 def list_mcp_servers() -> list[dict[str, str]]:

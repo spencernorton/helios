@@ -6,6 +6,11 @@ source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
 ## Unreleased
 
+## 0.105.0 — 2026-10-22
+
+- New **Accounts** page, first in Settings: every provider on one list with the signed-in email and plan (Claude via `claude auth status`, GPT via Codex App Server `account/read`, Gemini from agy's sign-in token, Muse via `account/read`), and *Sign in…*, *Sign out* and *Switch account…* buttons that open each CLI's own flow in a terminal. The page re-reads accounts when you return; a changed account refreshes the model pickers. OpenRouter's row opens its key on *Providers*. The Claude-only account block on *Settings* and Muse's separate sign-in row are gone; Claude now has its own group on *Providers*.
+- Fix Codex App Server probes hanging until timeout about one call in three: the reader waited on the pipe with `select()` but read through a buffered `readline()`, so a response that arrived in the same chunk as a notification was invisible. Model-catalog discovery shared the bug.
+
 ## 0.104.2 — 2026-10-22
 
 - A picked model is no longer silently replaced. Starting a new chat left the previous row selected in the sidebar, and a later re-render (deleting a session, changing the filter) re-selected a row, which re-adopted that row's provider: picking Muse Full and sending spawned Claude. A new chat now clears the sidebar selection, and delete and filter changes keep the current selection instead of auto-selecting the newest row (delete still moves on when the open chat itself was deleted).
