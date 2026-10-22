@@ -215,7 +215,15 @@ The **workspace pane** (header, right) switches between:
 
 - **Plan** — the execution plan, the tasks done, and quality signals such as
   whether a passing check actually covered the files that changed.
-- **Changes** — the aggregate diff of the current conversation.
+- **Changes** — review the repository's current changes (from every
+  session, not just this one). Each file's diff is split into hunks under
+  *Staged* and *Unstaged*: stage, unstage or discard a hunk or the whole file
+  (discards ask first; an untracked file goes to the trash, never deleted).
+  The comment button on a hunk collects notes, and *Send N comments to agent*
+  delivers them to the chat you are viewing as one message. The bottom bar
+  commits the staged changes, pushes the branch (setting its upstream the
+  first time), and opens a pull/merge request with `gh` or `glab` in a
+  terminal.
 - **Capabilities** — what the connected provider reported for this
   conversation: the tools it has, its MCP servers, and the instruction files
   it loaded.

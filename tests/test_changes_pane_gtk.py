@@ -45,7 +45,20 @@ def project(cwd, *, remote=False):
 
 
 def text(pane):
-    return pane._buffer.get_text(pane._buffer.get_start_iter(), pane._buffer.get_end_iter(), True)
+    """Everything the review area shows: notes, previews and hunk diffs."""
+    parts = []
+    child = pane._hunks.get_first_child()
+    while child is not None:
+        if isinstance(child, Gtk.Label):
+            parts.append(child.get_label())
+        child = child.get_next_sibling()
+    parts += [b.get_text(b.get_start_iter(), b.get_end_iter(), True) for b in pane._buffers]
+    return "\n".join(parts)
+
+
+def language(pane):
+    lang = pane._buffers[-1].get_language()
+    return lang.get_id() if lang is not None else None
 
 
 def test_selected_project_and_file_fence_all_late_results(pane):
@@ -92,10 +105,11 @@ def test_refresh_button_empty_error_and_remote_states(pane):
     assert pane._status.get_label() == "This folder is not a Git repository."
     pane.set_project(project("/remote", remote=True))
     assert pane.cwd == "" and not pane._refresh.get_sensitive()
-    assert not pane._view.get_editable()
 
 
 def test_untracked_previews_use_file_language_and_tracked_files_keep_diff(pane):
+    from helios.backend.git_review import Hunk
+
     pane.set_project(project("/repo"))
     snapshot = ChangesSnapshot("/repo", (
         ChangedFile("acceptance.md", "??"),
@@ -104,22 +118,41 @@ def test_untracked_previews_use_file_language_and_tracked_files_keep_diff(pane):
         ChangedFile("tracked.md", " M"),
     ))
     pane._apply_status(pane._status_runner.requests[-1], snapshot)
-    assert pane._buffer.get_language().get_id() == "markdown"
     markdown_request = pane._diff_runner.requests[-1]
     pane._apply_diff(markdown_request, "Untracked file\n\n- Acceptance criterion")
-    assert "preview" in pane._view.get_tooltip_text()
+    assert language(pane) == "markdown"
 
     pane._files.select_row(pane._files.get_row_at_index(1))
-    assert pane._buffer.get_language().get_id() in {"python", "python3"}
     pane._apply_diff(markdown_request, "STALE MARKDOWN")
     assert "STALE" not in text(pane)
-    assert pane._buffer.get_language().get_id() in {"python", "python3"}
+    pane._apply_diff(pane._diff_runner.requests[-1], "print(1)")
+    assert language(pane) in {"python", "python3"}
 
     pane._files.select_row(pane._files.get_row_at_index(2))
-    assert pane._buffer.get_language() is None  # unknown type stays plain text
+    pane._apply_diff(pane._diff_runner.requests[-1], "plain")
+    assert language(pane) is None  # unknown type stays plain text
     pane._files.select_row(pane._files.get_row_at_index(3))
-    assert pane._buffer.get_language().get_id() == "diff"
-    assert "diff" in pane._view.get_tooltip_text()
+    hunk = Hunk("diff --git a/tracked.md b/tracked.md\n", "@@ -1 +1 @@\n-a\n+b\n", staged=False)
+    pane._apply_diff(pane._diff_runner.requests[-1], [hunk])
+    assert language(pane) == "diff"
+
+
+def test_hunk_comments_become_one_message_for_the_agent(pane):
+    from helios.backend.git_review import Hunk
+
+    sent = []
+    pane.connect("feedback", lambda _p, message: sent.append(message))
+    pane.set_project(project("/repo"))
+    pane._apply_status(pane._status_runner.requests[-1], ChangesSnapshot("/repo", (ChangedFile("a.py", " M"),)))
+    hunk = Hunk("diff --git a/a.py b/a.py\n", "@@ -1 +1 @@\n-x\n+y\n", staged=False)
+    pane._apply_diff(pane._diff_runner.requests[-1], [hunk])
+    assert not pane._feedback_btn.get_visible()
+    pane._set_comment(("a.py", hunk.title), "use a constant")
+    assert pane._feedback_btn.get_visible()
+    pane._on_send_feedback()
+    assert sent == ["Review comments on the current changes — please address each:\n\n"
+                    "- `a.py` at `@@ -1 +1 @@`: use a constant"]
+    assert not pane._feedback_btn.get_visible()
 
 
 def test_git_work_runs_off_gtk_and_returns_through_main_context(monkeypatch):

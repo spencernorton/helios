@@ -1,5 +1,11 @@
 # Helios — Session Journal
 
+## 2026-10-22 — claude — Review pane (v0.109.0)
+
+- **Roadmap Phase 2a + 2b.** `backend/git_review.py` holds every repository WRITE (hunk apply via `git apply [--cached] [-R]` from stdin, file stage/unstage/restore, commit, push with `-u origin <branch>` when there is no upstream, `gh`/`glab` PR command); `git_changes` stays the bounded read-only side. Untracked files are trashed with `Gio.File.trash`, never deleted.
+- **UI:** `ChangesPane` renders one card per hunk (GtkSource diff view, Stage/Unstage/Discard, comment toggle), keeps comments across refreshes, and emits `feedback(str)`; the window sends it through `_on_composer_send` so it queues like a typed message. Writes run on a thread and refresh afterwards.
+- **Validation:** `tests/test_git_review.py` runs against real temporary repositories; the pane tests were rewritten for hunk cards. Driven on Xvfb against a scratch repo: clicking a hunk's Stage staged exactly that hunk.
+
 ## 2026-10-22 — claude — Image input (v0.108.0)
 
 - **Roadmap Phase 1b.** Attachments stay `@path` text (queue, drafts and recovery untouched); drivers convert image references at the wire via `backend/attachments.py`: Claude `anthropic_blocks` (stream-json image blocks), Codex `codex_inputs` (`localImage {path}`), Muse `muse_inputs` (`{type:image, mediaType, base64Data}` — shape probed against `muse serve`'s validator). 5 MB cap per image; larger stays a path. Bare `@path` references drop trailing prose punctuation.
