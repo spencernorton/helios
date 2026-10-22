@@ -6,6 +6,10 @@ source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
 ## Unreleased
 
+## 0.110.0 — 2026-10-22
+
+- Each saved message of yours has a ⋮ menu: *Rewind code to before this message* opens Rewind on the checkpoint taken just before it, and *Fork conversation from here* (Claude chats) copies the conversation up to that message into a new chat, opens it and puts the message back in the composer to edit and resend. The source conversation is never modified; the Claude CLI resumes the fork with only the earlier context (verified live).
+
 ## 0.109.0 — 2026-10-22
 
 - The Changes pane is now a review pane. Diffs are split into hunks under *Staged* and *Unstaged*, with per-hunk and per-file Stage, Unstage and Discard (discards confirm; untracked files go to the trash). A comment button on each hunk collects notes, and *Send N comments to agent* delivers them to the current chat as one message. A commit bar commits staged changes, pushes the branch (setting upstream the first time) and opens a PR/MR with `gh` or `glab` in a terminal.

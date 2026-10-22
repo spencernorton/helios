@@ -4,6 +4,7 @@ import json
 import os
 import threading
 import time
+from datetime import datetime
 from typing import NamedTuple
 
 import gi
@@ -66,7 +67,7 @@ from helios.backend.claude_binary import ClaudeBinaryNotFound
 from helios.backend.composer_state import DraftBook, draft_key
 from helios.backend.conversation_perms import store as conversation_perms_store
 from helios.backend.latest_worker import LatestTaskRunner
-from helios.backend import browser_target
+from helios.backend import browser_target, transcript_fork
 from helios.backend.attachments import mentioned_images
 from helios.backend import projects as _projects
 from helios.backend.projects import (
@@ -1463,6 +1464,12 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         media = Gio.SimpleAction.new("open-media", GLib.VariantType.new("s"))
         media.connect("activate", lambda _a, param: self._open_in_pane(param.get_string()))
         self.add_action(media)
+        rewind_before = Gio.SimpleAction.new("rewind-before", GLib.VariantType.new("s"))
+        rewind_before.connect("activate", lambda _a, p: self._rewind_before(p.get_string()))
+        self.add_action(rewind_before)
+        fork_from = Gio.SimpleAction.new("fork-from", GLib.VariantType.new("s"))
+        fork_from.connect("activate", lambda _a, p: self._fork_from_message(p.get_string()))
+        self.add_action(fork_from)
 
     # --- provider-native command palette ---
 
@@ -7709,6 +7716,52 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         self._toast("Reviewing changes…")
         return True
 
+    def _rewind_before(self, timestamp: str) -> None:
+        try:
+            when = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            self._toast("That message has no usable time to rewind to.")
+            return
+        self._show_rewind(before=when)
+
+    def _fork_from_message(self, message_uuid: str) -> None:
+        """Fork the viewed Claude conversation just before one of your
+        messages, open the fork, and put that message back in the composer."""
+        target = self._next_chat
+        source_id = str(getattr(target, "resume_id", "") or "")
+        if target is None or not source_id or target.project.read_only:
+            self._toast("Open a saved conversation to fork it.")
+            return
+        session = MainWindow._session_for_native_binding(target.project, source_id)
+        provider = session_providers.resolve_provider(
+            source_id, session.path, conversation_store=self._conversation_perms,
+        ).provider
+        if provider != model_catalog.PROVIDER_ANTHROPIC:
+            self._toast(
+                "Forking from a message works for Claude chats. GPT chats can "
+                "fork at the end from the command palette (Ctrl+Shift+P)."
+            )
+            return
+        try:
+            new_id, _path, text = transcript_fork.fork_before(session.path, message_uuid)
+        except transcript_fork.ForkError as exc:
+            self._toast(str(exc))
+            return
+        session_providers.set_provider(new_id, model_catalog.PROVIDER_ANTHROPIC)
+        settings = self._conversation_perms.get_settings(model_catalog.PROVIDER_ANTHROPIC, source_id)
+        if settings is not None:
+            self._conversation_perms.set(
+                model_catalog.PROVIDER_ANTHROPIC, new_id, settings.permission_mode,
+                effort_key=settings.effort_key, workflow_mode=settings.workflow_mode,
+            )
+        self._sessions.reload(preserve_selection=True, rescan_pool=False)
+        if not self._sessions.reveal_session(new_id):
+            self._toast("Fork created, but its sidebar row could not be selected.")
+            return
+        self._composer.set_text(text)
+        self._composer.grab_input_focus()
+        self._toast("Forked here — edit the message and send to continue this branch.")
+
     def _fork_current_chat(self) -> bool:
         """Request one persisted native GPT fork at the conversation head."""
 
@@ -9057,7 +9110,9 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             pending.append(point)
         return False
 
-    def _show_rewind(self) -> None:
+    def _show_rewind(self, before: float | None = None) -> None:
+        """Open Rewind. ``before`` (unix time of one of your messages) narrows
+        it to the checkpoint taken just before that message was sent."""
         if self._destroyed:
             return
         from helios.widgets.rewind_dialog import RewindDialog
@@ -9078,8 +9133,19 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         if self._restore_in_flight:
             self._toast("A restore is already running.")
             return
-        session_id = str(getattr(drv, "session_id", "") or "")
+        session_id = str(
+            getattr(drv, "session_id", "")
+            or getattr(self._next_chat, "resume_id", "")
+            or ""
+        )
         points = checkpoints.load(session_id) if session_id else []
+        if before is not None:
+            # A checkpoint is taken as the message is sent; allow clock skew.
+            earlier = [p for p in points if p.created_at <= before + 5]
+            if not earlier:
+                self._toast("No checkpoint was taken before that message.")
+                return
+            points = [max(earlier, key=lambda p: p.created_at)]
         # `changes_since` takes a fresh snapshot and shells out to git several
         # times; on a large repo that is seconds. Hand the dialog an async
         # loader so neither opening it nor selecting a checkpoint can freeze

@@ -89,6 +89,13 @@ works you can keep typing — the message queues and goes when the turn ends.
 `Esc` or `Ctrl+.` stops the current turn; queued messages come back to the
 composer.
 
+**Rewind and fork from a message.** Each of your saved messages has a ⋮
+menu. *Rewind code to before this message* opens Rewind on the checkpoint
+taken just before it was sent. *Fork conversation from here* (Claude chats)
+copies the conversation up to that message into a new chat — the original is
+untouched — opens it, and puts the message back in the composer to edit and
+resend. GPT chats fork at the end from the command palette.
+
 **Sending images.** Paste an image (`Ctrl+V` with a picture on the
 clipboard), drop an image file, or press the camera button to take a
 screenshot through the desktop portal (pick a window or an area). Each becomes
