@@ -334,21 +334,43 @@ def _probe_account(binary: GoogleBinary, env: dict[str, str], timeout: float) ->
     return status
 
 
-def signed_in_email() -> str:
-    """The `email` claim of agy's own sign-in token, for display only.
+_AUTH_EMAIL_RE = re.compile(r"applyAuthResult: email=([^,\s]+)")
 
-    agy has no status command that names the account. Only the id_token's
-    payload is decoded; the access/refresh tokens are never read out.
+
+def signed_in_email() -> str:
+    """The Google account agy is signed in as, for display only.
+
+    agy has no status command that names the account. A file-backed sign-in
+    keeps an id_token whose `email` claim we decode (never the access or
+    refresh token); a keyring-backed sign-in (the default after `/login`)
+    leaves no file, so fall back to agy's own log, which records the account
+    on every authenticated start.
     """
-    path = Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+    root = Path.home() / ".gemini" / "antigravity-cli"
     try:
-        id_token = json.loads(path.read_text(encoding="utf-8")).get("id_token", "")
+        id_token = json.loads(
+            (root / "antigravity-oauth-token").read_text(encoding="utf-8")
+        ).get("id_token", "")
         payload = id_token.split(".")[1]
         payload += "=" * (-len(payload) % 4)
         email = json.loads(base64.urlsafe_b64decode(payload)).get("email", "")
+        if isinstance(email, str) and email:
+            return email
     except (OSError, ValueError, IndexError, AttributeError):
+        pass
+    try:
+        logs = sorted((root / "log").glob("cli-*.log"), key=lambda f: f.stat().st_mtime)
+    except OSError:
         return ""
-    return email if isinstance(email, str) else ""
+    # ponytail: newest 10 runs; Helios itself runs agy every catalog refresh.
+    for log in reversed(logs[-10:]):
+        try:
+            match = _AUTH_EMAIL_RE.search(log.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+        if match:
+            return match.group(1)
+    return ""
 
 
 def list_mcp_servers() -> list[dict[str, str]]:
