@@ -89,6 +89,14 @@ works you can keep typing — the message queues and goes when the turn ends.
 `Esc` or `Ctrl+.` stops the current turn; queued messages come back to the
 composer.
 
+**Images and files.** Images in a conversation — screenshots the browser pane
+returns, an image a tool read, a picture the model generated — show as
+thumbnails under the message. Click one to open it full size in the side pane
+(the browser pane, which also renders PDFs and HTML); right-click copies it.
+Inline images are kept once under `~/.helios/media/` and saved conversations
+point at that file. A tool card that touched a file (Read, Write, Edit) has an
+open button that shows the file in the side pane.
+
 ## Permissions
 
 Google currently offers **Never ask** only, requires a project folder, and

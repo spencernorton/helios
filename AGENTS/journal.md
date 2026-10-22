@@ -1,5 +1,14 @@
 # Helios — Session Journal
 
+## 2026-10-22 — claude — Images in the transcript (v0.107.0)
+
+- **Roadmap Phase 1a** (`docs/PARITY-ROADMAP-2026-10.md`).
+- **Model:** `transcript.ImageRef(media_type, data|path)`; `ToolResult.images`, `Turn.images` (added to `__slots__`). `image_ref()` reads Anthropic blocks (base64 or `path` source); `images_in()` also reads MCP `{type:image,data,mimeType}` and nested `content`. Codex `imageView`/`imageGeneration`/`mcpToolCall` and Muse `toolCall` results carry images.
+- **Storage:** `backend/media.py` writes base64 once to `state_dir()/media/<sha256[:24]>.<ext>`; `CodexTranscriptWriter` stores path-backed image blocks (never inline data), so mirrors stay small and reload the images.
+- **UI:** `widgets/image_strip.py` thumbnails (scaled with GdkPixbuf to 140 px — a Gtk.Picture grows to its paintable's natural size) appended to the bubble body, not the collapsed activity group; `win.open-media(s)` opens a path in the browser pane (WebKit renders images, PDF via PDF.js, HTML) or falls back to `Gtk.FileLauncher`. Tool cards get an open button for an existing absolute `file_path`/`path`.
+- **Validation:** real window on Xvfb: a chat with a screenshot tool result shows the thumbnail; clicking opens it full size in the pane. Tests in `tests/test_transcript_images.py`.
+- **Not done:** OpenRouter's tool loop flattens MCP results to text, so its images are still dropped (needs the tool message to carry image parts too). Image *input* is Phase 1b.
+
 ## 2026-10-22 — claude — Land the browser pane (v0.106.0)
 
 - **What:** cherry-picked the four `claude/browser-pane` commits (2026-10-16) onto 0.105.4 as Phase 0 of `docs/PARITY-ROADMAP-2026-10.md`; only bookkeeping conflicted. Its 2026-10-16 entry below records the Xvfb validation and GPT review.

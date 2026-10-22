@@ -13,14 +13,15 @@ Content blocks we render:
   * tool_use              -- an outbound tool call (name + input)
   * tool_result           -- the result of a tool call
   * thinking              -- extended thinking
-  * image                 -- (rare in transcripts; show a placeholder)
+  * image                 -- user attachments, screenshots, image tool results;
+                             kept as ImageRef and shown as thumbnails
 """
 
 from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator, NamedTuple
@@ -45,11 +46,57 @@ class ToolUse:
     id: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class ImageRef:
+    """An image in a turn: inline base64 (``data``) or a file on disk (``path``)."""
+
+    media_type: str = "image/png"
+    data: str = ""
+    path: str = ""
+
+
+def image_ref(block: Any) -> ImageRef | None:
+    """An Anthropic-style ``image`` block (base64 or file source), else None."""
+    if not isinstance(block, dict) or block.get("type") != "image":
+        return None
+    source = block.get("source")
+    if not isinstance(source, dict):
+        return None
+    media = str(source.get("media_type") or "image/png")
+    if source.get("type") == "base64" and isinstance(source.get("data"), str):
+        return ImageRef(media, data=source["data"])
+    path = source.get("path")
+    if isinstance(path, str) and path:
+        return ImageRef(media, path=path)
+    return None
+
+
+def images_in(value: Any) -> list[ImageRef]:
+    """Every image in a tool payload, in any of the shapes providers use:
+    Anthropic ``{"type":"image","source":{…}}``, MCP
+    ``{"type":"image","data":…,"mimeType":…}``, nested in lists or a
+    ``content`` field."""
+    found: list[ImageRef] = []
+    if isinstance(value, list):
+        for item in value:
+            found.extend(images_in(item))
+    elif isinstance(value, dict):
+        ref = image_ref(value)
+        if ref is None and value.get("type") == "image" and isinstance(value.get("data"), str):
+            ref = ImageRef(str(value.get("mimeType") or "image/png"), data=value["data"])
+        if ref is not None:
+            found.append(ref)
+        elif isinstance(value.get("content"), list):
+            found.extend(images_in(value["content"]))
+    return found
+
+
 @dataclass(slots=True)
 class ToolResult:
     tool_use_id: str
     content: str
     is_error: bool = False
+    images: list[ImageRef] = field(default_factory=list)
 
 
 def activity_items(turn: "Turn") -> list[tuple[str, object, str]]:
@@ -200,6 +247,7 @@ class Turn:
     __slots__ = (
         "role",
         "content",
+        "images",
         "tool_uses",
         "tool_results",
         "activity_content_index",
@@ -235,6 +283,8 @@ class Turn:
         self.uuid = uuid
         self.is_sidechain = is_sidechain
         self.is_meta = is_meta
+        #: Images the speaker attached (user) or emitted (assistant).
+        self.images: list[ImageRef] = []
         # Deterministic fold of any legacy per-lane kwargs: collapsed detail
         # first (reasoning summary, thinking), then visible progress, then the
         # final answer — a stable order for Turns built without span metadata.
@@ -324,7 +374,7 @@ class Turn:
 
     @property
     def has_content(self) -> bool:
-        return bool(self.content or self.tool_uses or self.tool_results)
+        return bool(self.content or self.tool_uses or self.tool_results or self.images)
 
     @property
     def dt(self) -> datetime | None:
@@ -350,6 +400,7 @@ class Turn:
             and self.uuid == other.uuid
             and self.is_sidechain == other.is_sidechain
             and self.is_meta == other.is_meta
+            and self.images == other.images
         )
 
     __hash__ = None  # type: ignore[assignment]
@@ -750,6 +801,10 @@ def turn_from_record(obj: dict[str, Any]) -> Turn | None:
                 t = block.get("text") or ""
                 if t.strip():
                     turn.reasoning_summary_parts.append(t)
+            elif btype == "image":
+                ref = image_ref(block)
+                if ref is not None:
+                    turn.images.append(ref)
             elif btype == "tool_use":
                 if turn.activity_content_index is None:
                     turn.activity_content_index = len(turn.content)
@@ -764,11 +819,15 @@ def turn_from_record(obj: dict[str, Any]) -> Turn | None:
                 if turn.activity_content_index is None:
                     turn.activity_content_index = len(turn.content)
                 tr_content = block.get("content")
+                images: list[ImageRef] = []
                 if isinstance(tr_content, list):
                     parts = []
                     for sub in tr_content:
                         if isinstance(sub, dict) and sub.get("type") == "text":
                             parts.append(sub.get("text") or "")
+                        elif (ref := image_ref(sub)) is not None:
+                            # Read of a .png, a browser screenshot, any MCP image.
+                            images.append(ref)
                     text = "\n".join(p for p in parts if p)
                 else:
                     text = tr_content if isinstance(tr_content, str) else ""
@@ -777,6 +836,7 @@ def turn_from_record(obj: dict[str, Any]) -> Turn | None:
                         tool_use_id=block.get("tool_use_id") or "",
                         content=text or "",
                         is_error=bool(block.get("is_error")),
+                        images=images,
                     )
                 )
     if (

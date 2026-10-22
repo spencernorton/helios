@@ -33,7 +33,7 @@ from helios.backend.process.codex_events import (
 from helios.backend.process.streaming import Block, StreamingAssistant
 from helios.backend.hook_events import summarize_codex_hook
 from helios.backend.rate_limits import merge_rate_limit_snapshot
-from helios.backend.transcript import ToolResult
+from helios.backend.transcript import ImageRef, ToolResult, images_in
 
 # App Server v2 notification methods.  Keep these string-exact: the process
 # hub uses them to route multiplexed notifications to the right accumulator.
@@ -776,6 +776,7 @@ class CodexAppEventAccumulator:
         if status and status not in _TERMINAL_TOOL_STATUSES:
             return
         content = ""
+        images: list[ImageRef] = []
         is_error = status in {"failed", "declined"}
 
         if item_type == "commandExecution":
@@ -804,14 +805,27 @@ class CodexAppEventAccumulator:
                 is_error = True
                 content = _display_value(error)
             else:
+                images = images_in(item.get("result"))
                 content = _display_value(item.get("result"))
+                if images and len(content) > 2000:
+                    content = f"{len(images)} image(s)"  # not a base64 wall
         elif item_type == "dynamicToolCall":
             success = item.get("success")
             if success is False:
                 is_error = True
             content = _display_value(item.get("contentItems"))
+        elif item_type == "imageView":
+            path = _string(item.get("path"))
+            if path:
+                images = [ImageRef(path=path)]
+                content = f"Viewed {path}"
         elif item_type == "imageGeneration":
-            content = _string(item.get("result"))
+            saved = _string(item.get("savedPath"))
+            if saved:
+                images = [ImageRef(path=saved)]
+            elif _string(item.get("result")):
+                images = [ImageRef(data=_string(item.get("result")))]
+            content = _string(item.get("revisedPrompt")) or "Generated image"
             if status and status != "completed":
                 is_error = True
         elif item_type == "collabAgentToolCall":
@@ -821,7 +835,7 @@ class CodexAppEventAccumulator:
             return
         self._completed_tool_ids.add(item_id)
         self._tool_results.append(
-            ToolResult(tool_use_id=item_id, content=content, is_error=is_error)
+            ToolResult(tool_use_id=item_id, content=content, is_error=is_error, images=images)
         )
 
     # -- native state notifications ------------------------------------
