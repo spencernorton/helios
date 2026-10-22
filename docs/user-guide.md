@@ -231,6 +231,12 @@ The **workspace pane** (header, right) switches between:
   commits the staged changes, pushes the branch (setting its upstream the
   first time), and opens a pull/merge request with `gh` or `glab` in a
   terminal.
+- **Terminal** — your own shell, in tabs, starting in the chat's folder
+  (needs `gir1.2-vte-3.91`). Select output and press *Send to chat* to put it
+  in the message box as a code block.
+- **Background** — shells, monitors and agents a Claude chat left running
+  between turns, each with *Stop* and, once it has written some, *Output*
+  (opens in the side pane). Helios keeps such a session alive until they end.
 - **Capabilities** — what the connected provider reported for this
   conversation: the tools it has, its MCP servers, and the instruction files
   it loaded.

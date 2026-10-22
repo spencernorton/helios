@@ -195,6 +195,8 @@ from helios.widgets.chat_toolbar import (
 )
 from helios.widgets.composer import Composer
 from helios.widgets.changes_pane import ChangesPane
+from helios.widgets.background_pane import BackgroundPane
+from helios.widgets.terminal_pane import TerminalPane
 from helios.widgets.command_palette import CommandPalette
 from helios.widgets.context_pane import ContextPane
 from helios.widgets.capabilities_pane import CapabilitiesPane
@@ -696,14 +698,29 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         self._right_stack.add_titled_with_icon(
             self._shared, "shared", "Shared", "network-workgroup-symbolic"
         )
+        self._terminal = TerminalPane(
+            cwd=lambda: self._current_project_cwd() or str(getattr(self._driver, "_cwd", "") or ""),
+        )
+        self._terminal.connect("send-to-chat", self._on_terminal_send)
+        self._right_stack.add_titled_with_icon(
+            self._terminal, "terminal", "Terminal", "utilities-terminal-symbolic"
+        )
+        self._background = BackgroundPane()
+        self._right_stack.add_titled_with_icon(
+            self._background, "background", "Background", "system-run-symbolic"
+        )
         # Fallback full re-scan when the Missions tab becomes visible — covers
         # any file-monitor misses. No periodic poll while it's hidden.
         self._right_stack.connect("notify::visible-child", self._on_right_stack_child_changed)
         # Labeled tabs cannot fit the pane's 280px minimum. A native
         # selector keeps every page named and keyboard-accessible at any width.
-        self._right_pages = ("plan", "changes", "missions", "context", "capabilities", "shared")
+        self._right_pages = (
+            "plan", "changes", "missions", "context", "capabilities", "shared", "terminal",
+            "background",
+        )
         right_switcher = Gtk.DropDown.new_from_strings(
-            ["Plan", "Changes", "Missions", "Claude memory", "Capabilities", "Shared"]
+            ["Plan", "Changes", "Missions", "Claude memory", "Capabilities", "Shared", "Terminal",
+             "Background"]
         )
         self._right_switcher = right_switcher
         right_switcher.set_tooltip_text("Choose a workspace pane")
@@ -3673,6 +3690,18 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         if active:
             MainWindow._refresh_capabilities(self)
 
+    def _on_background_tasks(self, drv, rows) -> None:
+        if not self._destroyed and self._drv_is_current(drv):
+            self._background.show_tasks(drv, rows)
+
+    def _on_terminal_send(self, _pane, text: str) -> None:
+        """Terminal output goes into the message box as a code block — not
+        sent, so you can add what you want the agent to do with it."""
+        current = self._composer.current_text()
+        block = f"```\n{text}\n```\n"
+        self._composer.set_text(f"{current.rstrip()}\n\n{block}" if current.strip() else block)
+        self._composer.grab_input_focus()
+
     def _on_review_feedback(self, _pane, text: str) -> None:
         """Review comments go to the session you are viewing, like a message
         you typed: they queue if a turn is running."""
@@ -4970,6 +4999,9 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                             "context-usage", self._on_cli_context_usage
                         ),
                         driver.connect(
+                            "background-tasks-changed", self._on_background_tasks
+                        ),
+                        driver.connect(
                             "delivery-confirmed",
                             self._on_provider_delivery_confirmed,
                         ),
@@ -5170,6 +5202,9 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         still running in the background)."""
         previous = self._driver
         self._driver_manager.bind_current(driver)
+        background = getattr(self, "_background", None)
+        if background is not None:
+            background.show_tasks(driver, list(getattr(driver, "background_task_rows", []) or []))
         if previous is not driver:
             self._goal_strip.clear_native_goal()
             MainWindow._sync_visible_agent_activity(self, driver)

@@ -6,6 +6,11 @@ source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
 ## Unreleased
 
+## 0.111.0 — 2026-10-22
+
+- New **Terminal** workspace pane: tabs of your own shell starting in the chat's folder (VTE; `gir1.2-vte-3.91` is recommended). *Send to chat* puts the selected output into the message box as a code block.
+- New **Background** workspace pane: the shells, monitors and agents a Claude chat is running between turns (from `background_tasks_changed`), each with *Stop* (the CLI's `stop_task`) and *Output*, which opens the task's live output file in the side pane.
+
 ## 0.110.0 — 2026-10-22
 
 - Each saved message of yours has a ⋮ menu: *Rewind code to before this message* opens Rewind on the checkpoint taken just before it, and *Fork conversation from here* (Claude chats) copies the conversation up to that message into a new chat, opens it and puts the message back in the composer to edit and resend. The source conversation is never modified; the Claude CLI resumes the fork with only the earlier context (verified live).

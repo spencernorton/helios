@@ -1,5 +1,11 @@
 # Helios — Session Journal
 
+## 2026-10-22 — claude — Terminal and Background panes (v0.111.0)
+
+- **Roadmap Phase 3a/3b.** `widgets/terminal_pane.py`: Adw.TabView of `Vte.Terminal`, shell spawned lazily on first map in the chat's cwd (falls back to `$HOME`), `set_size(40, 10)` so the default 80x24 request does not push the pane past the window, `send-to-chat` → `_on_terminal_send` appends a fenced block to the composer (never auto-sends). PyGObject's `spawn_async` needs BOTH `child_setup` and its data argument despite the docstring (measured, VTE 0.84). Workspace pages appended at the end so saved pane indexes keep their meaning.
+- `ClaudeCliDriver.background_task_rows` + Claude-only `background-tasks-changed` signal (wired in the `isinstance(ClaudeCliDriver)` branch), `stop_background_task` (`stop_task`) and `task_output_path` (`<tmp>/claude-<uid>/<encoded cwd>/<session>/tasks/<id>.output`, the path this session's own background jobs used). `widgets/background_pane.py` renders them; `_bind_visible_driver` refreshes it on chat switch.
+- **Validation:** terminal driven on Xvfb (opened in the chat folder, ran a command, Send to chat filled the composer); new tests. Suite green apart from the 2 pre-existing local failures. The `AdwToastOverlay exceeds … width` warning at 1500 px pre-exists on main.
+
 ## 2026-10-22 — claude — Rewind and fork from a message (v0.110.0)
 
 - **Roadmap Phase 2c (Claude).** `backend/transcript_fork.fork_before(path, uuid)` copies the JSONL records before a user message under a new session id (rewriting `sessionId`, dropping torn lines, atomic write) and returns the message text. Verified with the real CLI: a conversation that set codeword PELICAN then BADGER, forked before the second message, resumed answering PELICAN while the source answered BADGER.
