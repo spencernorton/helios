@@ -13,7 +13,7 @@ gi.require_version("GtkSource", "5")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, GObject, Gtk, GtkSource, Pango
 
-from helios.backend import git_review
+from helios.backend import git_review, worktrees
 from helios.backend.git_changes import (
     ChangedFile,
     ChangesError,
@@ -141,6 +141,12 @@ class ChangesPane(Gtk.Box):
         self._pr_btn.set_tooltip_text("Open a pull/merge request with gh or glab in a terminal")
         self._pr_btn.connect("clicked", self._on_create_pr)
         commit_box.append(self._pr_btn)
+        self._remove_wt = Gtk.Button(label="Remove worktree")
+        self._remove_wt.add_css_class("destructive-action")
+        self._remove_wt.set_tooltip_text("Delete this Helios worktree; its branch is kept")
+        self._remove_wt.connect("clicked", lambda *_: self._confirm(
+            "Remove this worktree?", lambda: self._run(worktrees.remove, "Removed worktree; branch {} kept")))
+        commit_box.append(self._remove_wt)
         self._commit_box = commit_box
         self.append(commit_box)
 
@@ -270,6 +276,7 @@ class ChangesPane(Gtk.Box):
             return False
         self._snapshot = result
         self._commit_box.set_visible(True)
+        self._remove_wt.set_visible(worktrees.is_helios_worktree(result.root))
         self._location.set_label(display_text(result.root))
         self._location.set_tooltip_text(display_text(result.root))
         count = len(result.files)

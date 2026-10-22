@@ -89,6 +89,14 @@ works you can keep typing — the message queues and goes when the turn ends.
 `Esc` or `Ctrl+.` stops the current turn; queued messages come back to the
 composer.
 
+**Chat in a worktree.** The new-chat menu's *Chat in a Worktree* creates a
+git worktree of the current chat's repository (else the default folder's) on
+a new `helios/<repo>-<time>` branch under `~/.helios/worktrees/`, and starts
+the chat there, so its edits never touch your main checkout. Commit, push and
+open a PR from the Changes pane; *Remove worktree* there deletes the folder
+once everything is committed and keeps the branch. Nothing is redirected into
+a worktree unless you pick this.
+
 **Rewind and fork from a message.** Each of your saved messages has a ⋮
 menu. *Rewind code to before this message* opens Rewind on the checkpoint
 taken just before it was sent. *Fork conversation from here* (Claude chats)
