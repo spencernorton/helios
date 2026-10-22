@@ -80,3 +80,9 @@ def test_codex_threads_carry_the_browser_server(published):
     browser_tools.publish("")
     params = build_thread_params(cwd="/work/proj", model="gpt-6.1-sol", permission_mode="default")
     assert "mcp_servers" not in params["config"]
+
+
+def test_interaction_tools_are_advertised():
+    from helios.backend.browser_tools import TOOL_NAMES
+
+    assert {"browser_click", "browser_type", "browser_console"} <= TOOL_NAMES

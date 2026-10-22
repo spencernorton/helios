@@ -104,6 +104,12 @@ an `@path` reference in your message — pasted images are saved under
 and Muse receive the image itself, not just the path (images over 5 MB stay a
 path); Gemini and OpenRouter get the path as text.
 
+**Browser pane for agents.** Besides opening, reading and screenshotting
+pages, agents can click (CSS selector or a link/button's text), type into
+fields (optionally submitting) and read the page's console and uncaught
+errors — all under the same per-site consent. The camera button in the
+browser toolbar attaches a screenshot of the page to your message.
+
 **Images and files.** Images in a conversation — screenshots the browser pane
 returns, an image a tool read, a picture the model generated — show as
 thumbnails under the message. Click one to open it full size in the side pane
@@ -234,6 +240,11 @@ The **workspace pane** (header, right) switches between:
 - **Terminal** — your own shell, in tabs, starting in the chat's folder
   (needs `gir1.2-vte-3.91`). Select output and press *Send to chat* to put it
   in the message box as a code block.
+  Its *Run* menu lists the project's run configurations — `.claude/launch.json`
+  (the file Claude desktop's Preview uses: `name`, `runtimeExecutable`,
+  `runtimeArgs`, `port`, optional `cwd` and `env`), else `package.json`'s
+  `dev`/`start` script — and starts one in its own tab; when its `port`
+  answers, the page opens in the browser pane.
 - **Background** — shells, monitors and agents a Claude chat left running
   between turns, each with *Stop* and, once it has written some, *Output*
   (opens in the side pane). Helios keeps such a session alive until they end.

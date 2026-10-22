@@ -6,6 +6,11 @@ source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
 ## Unreleased
 
+## 0.112.0 — 2026-10-22
+
+- Browser pane: new agent tools `browser_click` (selector or visible text), `browser_type` (replace a field's value the way frameworks notice, optionally submit) and `browser_console` (recent console messages and uncaught errors, captured from document start), under the existing per-site consent. A camera button attaches a screenshot of the current page to your message.
+- Terminal pane *Run* menu: starts a configuration from `.claude/launch.json` (Claude desktop's Preview format, JSONC tolerated) or a `package.json` `dev`/`start` script in its own tab, then opens `localhost:PORT` in the browser pane once the port answers.
+
 ## 0.111.0 — 2026-10-22
 
 - New **Terminal** workspace pane: tabs of your own shell starting in the chat's folder (VTE; `gir1.2-vte-3.91` is recommended). *Send to chat* puts the selected output into the message box as a code block.

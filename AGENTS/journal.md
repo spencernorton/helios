@@ -1,5 +1,11 @@
 # Helios — Session Journal
 
+## 2026-10-22 — claude — Browser actions and run configs (v0.112.0)
+
+- **Roadmap Phase 3c/3d.** `browser_click`/`browser_type` run in the isolated `helios` world (DOM is shared; typing uses the prototype's native value setter + input/change so React sees it); `browser_console` reads a buffer that `_CONSOLE_CAPTURE` (a document-start `UserScript` in the page world) fills — page-controlled data, like page text. All three go through `_consent_for_view`. *Add to chat* snapshots the visible tab into `state_dir()/media` and the window attaches it.
+- `backend/run_configs.py` reads `.claude/launch.json` (`configurations[].{name, runtimeExecutable, runtimeArgs, port, cwd, env}` — schema per third-party docs, no official page found) or package.json scripts; `TerminalPane.run` types the command into a new tab and polls the port (500 ms, 2 min) before emitting `preview`.
+- **Validation:** on Xvfb against a local form: typed, clicked by text, read "Hello, Spencer!", console returned log/log/warn in order, bad selector explained, Add to chat wrote a PNG. A launch.json `python3 -m http.server 8765` config ran and fired the preview. Tests added.
+
 ## 2026-10-22 — claude — Terminal and Background panes (v0.111.0)
 
 - **Roadmap Phase 3a/3b.** `widgets/terminal_pane.py`: Adw.TabView of `Vte.Terminal`, shell spawned lazily on first map in the chat's cwd (falls back to `$HOME`), `set_size(40, 10)` so the default 80x24 request does not push the pane past the window, `send-to-chat` → `_on_terminal_send` appends a fenced block to the composer (never auto-sends). PyGObject's `spawn_async` needs BOTH `child_setup` and its data argument despite the docstring (measured, VTE 0.84). Workspace pages appended at the end so saved pane indexes keep their meaning.
