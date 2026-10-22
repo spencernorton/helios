@@ -33,6 +33,7 @@ from pathlib import Path
 
 from helios.backend import model_catalog, projects, session_providers
 from helios.backend.media import image_block
+from helios.backend.attachments import mentioned_images
 from helios.backend.transcript import CONTENT_SCHEMA_KEY, Turn
 from helios.log import get_logger
 
@@ -421,8 +422,13 @@ class CodexTranscriptWriter:
     # ── internals ────────────────────────────────────────────────────────
 
     def _write_user(self, text: str) -> None:
+        # Path-backed blocks for @path images, so a reopened chat shows them.
+        images = [
+            {"type": "image", "source": {"type": "path", "media_type": media, "path": path}}
+            for path, media in mentioned_images(text)
+        ]
         self._append(
-            "user", {"role": "user", "content": [{"type": "text", "text": text}]}
+            "user", {"role": "user", "content": [{"type": "text", "text": text}, *images]}
         )
 
     def _append(self, rec_type: str, message: dict) -> None:

@@ -67,6 +67,7 @@ from helios.backend.composer_state import DraftBook, draft_key
 from helios.backend.conversation_perms import store as conversation_perms_store
 from helios.backend.latest_worker import LatestTaskRunner
 from helios.backend import browser_target
+from helios.backend.attachments import mentioned_images
 from helios.backend import projects as _projects
 from helios.backend.projects import (
     HOME_CWD,
@@ -168,7 +169,7 @@ class _NativeRecoveryAnchor(NamedTuple):
 
 from helios.backend.session_state import context_fill_for
 from helios.backend.session_goals import GoalState
-from helios.backend.transcript import Turn, parse_transcript
+from helios.backend.transcript import ImageRef, Turn, parse_transcript
 from helios.backend.work_coordinator import WorkCoordinator, tag_driver
 from helios.backend.work_store import ExecutionAdmissionError
 from helios.widgets.activity_indicator import (
@@ -5741,6 +5742,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         self._transcript.remove_queued(qid)
         user_turn = Turn(role="user")
         user_turn.text_parts.append(text)
+        user_turn.images.extend(ImageRef(media, path=path) for path, media in mentioned_images(text))
         self._transcript.append_turn(user_turn)
         self._plan.append_turn(user_turn)
         self._composer.set_busy(True)
@@ -5810,6 +5812,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
     def _append_visible_user_turn(self, text: str) -> None:
         user_turn = Turn(role="user")
         user_turn.text_parts.append(text)
+        user_turn.images.extend(ImageRef(media, path=path) for path, media in mentioned_images(text))
         self._transcript.append_turn(user_turn)
         self._plan.append_turn(user_turn)
 

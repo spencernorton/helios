@@ -29,6 +29,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import GLib, GObject
 
+from helios.backend.attachments import muse_inputs
 from helios.backend import model_catalog
 from helios.backend.muse_binary import MuseBinaryNotFound, find_muse_binary
 from helios.backend import browser_tools, muse_env
@@ -505,7 +506,7 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
         params: dict[str, Any] = {
             "commandId": command_id,
             "sessionId": self._session_id,
-            "input": [{"type": "text", "text": prepared.text}],
+            "input": [{"type": "text", "text": prepared.text}, *muse_inputs(text)],
         }
         if self._effort:
             params["reasoningEffort"] = self._effort

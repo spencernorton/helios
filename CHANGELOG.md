@@ -6,6 +6,12 @@ source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
 ## Unreleased
 
+## 0.108.0 — 2026-10-22
+
+- Send images to the model. Paste an image from the clipboard, drop an image file, or take a screenshot with the new camera button (desktop screenshot portal; works on Wayland). The image is attached as an editable `@path` reference, shown as a thumbnail above the composer, and sent natively: Claude gets image content blocks, GPT gets Codex `localImage` input, Muse gets MSP `image` input. All three were verified end to end (each named the colours of a test image with its tools off). Gemini and OpenRouter still receive the path as text.
+- The message you send shows its images immediately, and saved GPT, Gemini and Muse conversations keep them.
+- `gir1.2-xdp-1.0` and `gir1.2-xdpgtk4-1.0` are recommended for screenshots.
+
 ## 0.107.0 — 2026-10-22
 
 - Images are visible. The transcript parser kept only text, so every image a tool returned, a screenshot from the browser pane, or a picture you attached was dropped. Images now render as thumbnails under the message (Claude tool results and attachments; Codex `imageView`, `imageGeneration` and MCP image results; Muse tool images). Click opens the full image in the side pane, which also renders PDFs and HTML; right-click copies it.
