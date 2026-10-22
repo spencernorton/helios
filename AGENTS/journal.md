@@ -1,5 +1,11 @@
 # Helios — Session Journal
 
+## 2026-10-22 — claude — Land the usage-stats branch (v0.105.4)
+
+- **What:** cherry-picked `claude/usage-stats` (2026-10-16, two commits, GPT-reviewed twice) onto 0.105.3 as Phase 0 of `docs/PARITY-ROADMAP-2026-10.md`. Its own entry below still says v0.105.0; that number shipped first as the Accounts page, so it releases as **0.105.4**.
+- **Overlap resolved:** 0.105.2 had independently fixed the Muse meter inline; the branch's `_emit_context_usage` (falls back to the catalog window when `windowTokens` is absent) replaced it. Both Muse meter tests kept. 0.105.2's `set_window(0)` reset and tooltip coexist with the branch's "N used" caption for Gemini.
+- **Validation:** suite green apart from the 2 pre-existing local failures; the branch's own Xvfb verification is in its entry.
+
 ## 2026-10-22 — claude — Keep sessions with background work alive; driver-truth dots (v0.105.3)
 
 - **Reported:** a Claude session "randomly stopped"; another showed a green dot while its caption said working.
