@@ -366,6 +366,14 @@ class SessionList(Gtk.Box):
         if self._local_sessions or self._pool_sessions:
             self._render(preserve_selection=True)
 
+    def set_working_ids_provider(self, provider) -> None:
+        """Helios's own drivers know exactly which sessions are mid-turn or
+        waiting on background work; the transcript tail cannot (a turn's
+        text, thinking and tool records land one at a time, so mid-turn the
+        tail often ends on text and read as ready: a green dot under a
+        "working" caption)."""
+        self._working_ids_provider = provider
+
     def set_live_activity(self, session_id: str, text: str) -> None:
         """Push one session's current activity onto its row, if it has one.
 
@@ -915,10 +923,14 @@ class SessionList(Gtk.Box):
             for sid in providers
         ):
             self._pool_provider_gen = gen
+        provider = getattr(self, "_working_ids_provider", None)
+        working = provider() if provider is not None else set()
         for sid, status in updates.items():
             row = self._rows_by_id.get(sid)
             if row is None:
                 continue
+            if sid in working and status.state != STATE_WORKING:
+                status = SessionStatus(STATE_WORKING, status.last_response_at)
             if row.status.state != status.state:
                 row.update_status(status)
             else:

@@ -6,6 +6,11 @@ source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
 ## Unreleased
 
+## 0.105.3 — 2026-10-22
+
+- Claude sessions waiting on background work are no longer shut down. A turn can end while background shells, monitors or subagents keep running (the CLI wakes the session when they finish); the 10-minute idle reaper and the live-session cap treated that session as idle and ended it, killing the work. The driver now tracks `system/background_tasks_changed` and both leave such sessions alone.
+- The sidebar dot for a session Helios is running follows the driver: mid-turn or waiting on background work shows as working. Read from the transcript alone, the dot flipped to ready mid-turn whenever the newest record was text, under a "working" caption.
+
 ## 0.105.2 — 2026-10-22
 
 - Muse's context meter is real: the driver sent cumulative (prompt, output) token totals as the meter's (used, window), so it read "2k max, 100% used". It now reports Muse's own `session/contextUsage` (`usedTokens` / `windowTokens`, ~1M). Muse manages and compacts its context itself; this was a display bug.

@@ -1,5 +1,12 @@
 # Helios — Session Journal
 
+## 2026-10-22 — claude — Keep sessions with background work alive; driver-truth dots (v0.105.3)
+
+- **Reported:** a Claude session "randomly stopped"; another showed a green dot while its caption said working.
+- **Stopped:** `reaping idle background driver c43124fc` at 08:43 (10 min after its turn). Measured on claude 2.1.308 with a backgrounded `sleep 20`: `result` arrives first, then `system/background_tasks_changed {tasks:[…]}`, `task_started`, later `task_notification` and a wake-up turn. `ClaudeCliDriver` ignored `background_tasks_changed`, so `reap_idle`/`evict_for_cap` saw `is_busy=False` and EOF'd it. Now `has_background_work` gates both via `driver_manager._is_working`.
+- **Dot:** `session_state._scan_tail` reads READY when a bound session's newest record is assistant text, which happens mid-turn because the CLI writes text, thinking and tool_use records separately. `SessionList` now takes a working-ids provider (`driver_manager.working_session_ids`) and forces WORKING for Helios-driven sessions that are busy or have background work; other rows keep the tail heuristic.
+- **Validation:** `tests/test_background_work_keeps_session.py` (driver parsing, reaper/cap, dot override). Suite green apart from the 2 pre-existing local failures.
+
 ## 2026-10-22 — claude — Muse context meter, quiet model switches (v0.105.2)
 
 - **Muse meter:** `session/tokenUsage` emitted `usage-updated(cumulative promptTokens, cumulative outputTokens)`; the signal contract is `(used, window)` (see `openrouter_driver` docstring), so the meter showed the output total as the window. `session/contextUsage` (`usedTokens`, `windowTokens`) — previously routed to `activity-updated` and read by nothing — now drives it. Claude, Codex and OpenRouter already emitted `(used, window)`; Gemini emits none (agy reports no window), and `set_window(0)` now clears the meter instead of being ignored.
