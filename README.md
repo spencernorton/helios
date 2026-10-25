@@ -339,7 +339,8 @@ docs/                        # user guide, agent setup, GTK4 gotchas, screenshot
 
 <p align="center">
   <a href="https://github.com/spencernorton/helios">Helios</a> ·
-  <a href="https://github.com/spencernorton/bitagent">BitAgent</a> ·
+  <a href="https://github.com/spencernorton/DH-Waypoint">DH-Waypoint</a> ·
+  <a href="https://github.com/spencernorton/armiger">Armiger</a> ·
   <a href="https://github.com/spencernorton/xnote">XNote</a> ·
   <a href="https://github.com/spencernorton/xnote-placement">XNote Placement</a> ·
   <a href="https://github.com/spencernorton/snipsnap">SnipSnap</a> ·
