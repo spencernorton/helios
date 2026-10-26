@@ -7927,6 +7927,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         try:
             mirror_path = clone_transcript_for_fork(
                 cwd=cwd, source_thread_id=source_thread_id, fork_thread_id=fork_thread_id,
+                provider=provider,
             )
         except Exception as exc:
             _log.warning("could not mirror native fork %s: %s", fork_thread_id, exc)

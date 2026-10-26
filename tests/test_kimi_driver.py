@@ -134,6 +134,8 @@ def test_native_fork_emits_source_and_fork_ids(tmp_path):
     assert driver.request_fork().pending
     request = driver._proc.stdin.frames()[-1]
     assert request["method"] == "session/fork"
+    assert request["params"]["cwd"] == str(tmp_path)
+    assert request["params"]["mcpServers"] == []
     driver._dispatch_message({"id": request["id"], "result": {"sessionId": "session_fork"}})
     assert forks == [{"source_thread_id": "session_kimi", "thread_id": "session_fork"}]
 

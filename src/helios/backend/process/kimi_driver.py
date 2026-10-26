@@ -280,7 +280,9 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
     def request_fork(self) -> MessageDelivery:
         if self._is_busy or not self.is_accepting_input or not self._session_id:
             return MessageDelivery("rejected")
-        if not self._send("session/fork", {"sessionId": self._session_id}):
+        if not self._send("session/fork", {
+                "sessionId": self._session_id, "cwd": self._cwd,
+                "mcpServers": self._mcp_servers}):
             return MessageDelivery("uncertain")
         return MessageDelivery("pending")
 
