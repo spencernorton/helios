@@ -617,6 +617,7 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
             self._streaming.blocks.append(block)
         title = str(update.get("title") or update.get("kind") or "Tool")
         raw_input = update.get("rawInput") if isinstance(update.get("rawInput"), dict) else {}
+        display = block.tool_use_name or title
         if raw_input or update.get("kind") or not block.tool_use_name:
             display, parsed = _normalize_tool(str(raw_input.get("tool") or update.get("kind") or title), raw_input)
             block.tool_use_name = display
