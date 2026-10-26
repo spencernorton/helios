@@ -94,6 +94,16 @@ def test_tool_call_and_update_create_one_card(tmp_path, monkeypatch):
     assert driver._tool_outputs["call-1"] == "contents"
 
 
+def test_live_execute_and_nested_tool_content_normalize(tmp_path, monkeypatch):
+    driver = _driver(tmp_path, monkeypatch)
+    driver._on_update({"sessionUpdate": "tool_call", "toolCallId": "shell-1",
+                       "kind": "execute", "rawInput": {"command": "pwd"}})
+    driver._on_update({"sessionUpdate": "tool_call_update", "toolCallId": "shell-1",
+                       "content": [{"type": "content", "content": {"type": "text", "text": "ok"}}]})
+    assert driver._streaming.blocks[0].tool_use_name == "Bash"
+    assert driver._tool_outputs["shell-1"] == "ok"
+
+
 def test_permission_answer_uses_native_outcome(tmp_path):
     driver = _driver(tmp_path)
     asked = []

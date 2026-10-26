@@ -41,7 +41,7 @@ _MODES = {
 _TOOL_NAMES = {
     "read": "Read", "read_text_file": "Read", "write": "Write",
     "write_text_file": "Write", "edit": "Edit", "bash": "Bash",
-    "shell": "Bash", "grep": "Grep", "glob": "Glob", "web_search": "WebSearch",
+    "execute": "Bash", "shell": "Bash", "grep": "Grep", "glob": "Glob", "web_search": "WebSearch",
     "web_fetch": "WebFetch", "fetch_url": "FetchURL", "agent": "Agent",
     "task": "Agent", "todo": "TodoWrite", "todowrite": "TodoWrite",
 }
@@ -61,9 +61,10 @@ def _content_text(content: Any) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, dict):
-        if content.get("type") == "text":
+        if content.get("type") == "text" or isinstance(content.get("text"), str):
             return str(content.get("text") or "")
-        return str(content.get("text") or content.get("content") or "")
+        if "content" in content:
+            return _content_text(content["content"])
     if isinstance(content, list):
         return "\n".join(filter(None, (_content_text(row) for row in content)))
     return ""
