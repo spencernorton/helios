@@ -344,7 +344,7 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
     def _on_session_bound(self, session: Any) -> None:
         if self._stopped or self._accounting_failed or not isinstance(session, dict):
             return
-        sid = session.get("sessionId")
+        sid = session.get("sessionId") or self._resume_session_id
         if not isinstance(sid, str) or not sid or "/" in sid or "\\" in sid:
             self._protocol_failure("Kimi did not report a valid native session identity.")
             return

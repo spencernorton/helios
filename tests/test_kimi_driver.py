@@ -66,6 +66,13 @@ def _driver(tmp_path, monkeypatch=None):
     return driver
 
 
+def test_resume_binds_requested_id_when_response_omits_it(tmp_path):
+    driver = KimiAcpDriver(cwd=str(tmp_path), model=MODEL, resume_session_id="session_resume")
+    driver._on_session_bound({"configOptions": []})
+    assert driver.session_id == "session_resume"
+    assert driver.is_accepting_input
+
+
 def test_acp_message_and_thought_chunks_share_stream(tmp_path, monkeypatch):
     driver = _driver(tmp_path, monkeypatch)
     driver._on_update({"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "Think"}})
