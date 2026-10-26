@@ -1524,6 +1524,7 @@ class ChatToolbar(Gtk.Box):
             model_catalog.PROVIDER_OPENAI,
             model_catalog.PROVIDER_GOOGLE,
             model_catalog.PROVIDER_MUSE,
+            model_catalog.PROVIDER_KIMI,
             model_catalog.PROVIDER_OPENROUTER,
         ]
         provider_titles = {
@@ -1531,6 +1532,7 @@ class ChatToolbar(Gtk.Box):
             model_catalog.PROVIDER_OPENAI: "OpenAI (Codex)",
             model_catalog.PROVIDER_GOOGLE: "Google (Gemini)",
             model_catalog.PROVIDER_MUSE: "Muse (Meta)",
+            model_catalog.PROVIDER_KIMI: "Kimi (Kimi Code)",
             model_catalog.PROVIDER_OPENROUTER: "OpenRouter",
         }
 
@@ -2158,6 +2160,9 @@ _LIMITS_EMPTY: dict[str, str] = {
         "Muse reports its usage windows once the session host has observed "
         "them — send a message to populate."
     ),
+    model_catalog.PROVIDER_KIMI: (
+        "Kimi ACP does not expose membership quota windows; token usage is shown per turn."
+    ),
     model_catalog.PROVIDER_OPENROUTER: (
         "OpenRouter reports account credit rather than a rolling window. Add "
         "a key in Settings → Providers to see it."
@@ -2549,9 +2554,10 @@ class _ContextPopover(Gtk.Popover):
                     provider, _LIMITS_EMPTY[model_catalog.PROVIDER_ANTHROPIC]
                 )
             )
-            # Muse publishes no account page to link to.
-            self._usage_link.set_visible(provider != model_catalog.PROVIDER_MUSE)
-            if provider == model_catalog.PROVIDER_MUSE:
+            self._usage_link.set_visible(provider not in {model_catalog.PROVIDER_MUSE, model_catalog.PROVIDER_KIMI})
+            if provider == model_catalog.PROVIDER_KIMI:
+                self._limits_title.set_tooltip_text("Kimi ACP reports no membership quota windows.")
+            elif provider == model_catalog.PROVIDER_MUSE:
                 self._limits_title.set_tooltip_text(
                     "Usage windows reported by Muse for the signed-in Meta account."
                 )

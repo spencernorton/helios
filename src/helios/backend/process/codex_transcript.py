@@ -47,6 +47,7 @@ _VERSION_TAGS: dict[str, str] = {
     model_catalog.PROVIDER_OPENROUTER: "helios-openrouter",
     model_catalog.PROVIDER_GOOGLE: "helios-gemini",
     model_catalog.PROVIDER_MUSE: "helios-muse",
+    model_catalog.PROVIDER_KIMI: "helios-kimi",
 }
 
 # Ordered-content schema marker value (H0.5). Its PRESENCE (the key is owned by

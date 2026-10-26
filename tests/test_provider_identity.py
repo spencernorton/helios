@@ -11,6 +11,7 @@ from helios.backend.provider_identity import (
     ANTHROPIC_NATIVE,
     DEFAULT_PROVIDER_REGISTRY,
     GOOGLE_NATIVE,
+    KIMI_NATIVE,
     LOCAL_WORKER,
     MUSE_NATIVE,
     OPENAI_NATIVE,
@@ -51,6 +52,10 @@ def test_builtin_registry_has_native_gateway_and_local_identities():
     assert MUSE_NATIVE.runtime_kind is RuntimeKind.NATIVE
     assert MUSE_NATIVE.credential_owner is CredentialOwner.NATIVE_RUNTIME
     assert MUSE_NATIVE.native_binding_kind is NativeBindingKind.SESSION
+    assert KIMI_NATIVE.provider_id == model_catalog.PROVIDER_KIMI
+    assert KIMI_NATIVE.runtime_kind is RuntimeKind.NATIVE
+    assert KIMI_NATIVE.credential_owner is CredentialOwner.NATIVE_RUNTIME
+    assert KIMI_NATIVE.native_binding_kind is NativeBindingKind.SESSION
     assert ANTHROPIC_NATIVE.runtime_kind is RuntimeKind.NATIVE
     assert GOOGLE_NATIVE.runtime_kind is RuntimeKind.NATIVE
     assert GOOGLE_NATIVE.native_binding_kind is NativeBindingKind.SESSION
@@ -62,6 +67,7 @@ def test_builtin_registry_has_native_gateway_and_local_identities():
     assert [item.provider_id for item in DEFAULT_PROVIDER_REGISTRY.descriptors] == [
         "anthropic",
         "google",
+        "kimi",
         "local",
         "muse",
         "openai",

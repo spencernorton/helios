@@ -71,6 +71,7 @@ PROVIDER_ANTHROPIC = "anthropic"
 PROVIDER_OPENAI = "openai"
 PROVIDER_GOOGLE = "google"
 PROVIDER_MUSE = "muse"
+PROVIDER_KIMI = "kimi"
 PROVIDER_OPENROUTER = "openrouter"
 
 #: User-facing provider names for toasts, scope chips, and notifications.
@@ -79,6 +80,7 @@ PROVIDER_LABELS: dict[str, str] = {
     PROVIDER_OPENAI: "GPT",
     PROVIDER_GOOGLE: "Gemini",
     PROVIDER_MUSE: "Muse",
+    PROVIDER_KIMI: "Kimi",
     PROVIDER_OPENROUTER: "OpenRouter",
 }
 
@@ -660,6 +662,48 @@ def preferred_muse_model(entries: list[ModelEntry]) -> str:
     return next((entry.id for entry in entries if entry.is_default), entries[0].id if entries else "")
 
 
+# ── Kimi: live managed-subscription ACP catalog ─────────────────────────────
+
+_KIMI_PROVIDER_RE = re.compile(r"^kimi-code/")
+_kimi_windows: dict[str, int] = {}
+
+
+def build_kimi_entries(models: Iterable) -> list[ModelEntry]:
+    entries: list[ModelEntry] = []
+    for model in models:
+        if getattr(model, "context_limit", 0):
+            _kimi_windows[model.id] = model.context_limit
+        entries.append(ModelEntry(
+            id=model.id, label=model.label, group="Kimi", provider=PROVIDER_KIMI,
+            description="Kimi Code membership · native ACP session",
+            reasoning_efforts=model.reasoning_efforts,
+            default_effort=model.default_effort,
+            input_modalities=("text", "image"),
+            is_default=model.is_default,
+        ))
+    return entries
+
+
+def kimi_entries(*, force: bool = False, auth=None, cached_only: bool = False) -> tuple[list[ModelEntry], str]:
+    from helios.backend import kimi_env
+
+    if auth is not None:
+        current_auth = auth
+    elif cached_only:
+        current_auth = kimi_env.cached_auth_status()
+        if current_auth is None:
+            return [], "discovery-pending"
+    else:
+        current_auth = kimi_env.fetch_auth_status(force=force)
+    if not current_auth.ok or not current_auth.logged_in:
+        return [], current_auth.catalog_status or "probe-failed"
+    return build_kimi_entries(current_auth.models), current_auth.catalog_status
+
+
+def preferred_kimi_model(entries: list[ModelEntry]) -> str:
+    return next((entry.id for entry in entries if entry.is_default), entries[0].id if entries else "")
+
+
 # ── OpenRouter: fetched /models catalog ────────────────────────────────────
 
 # Last-known-good rows so the picker is never empty before the first fetch.
@@ -804,6 +848,8 @@ def provider_for(model_id: str) -> str:
     or Google naming wins; everything else is Anthropic.
     """
     m = model_id or ""
+    if _KIMI_PROVIDER_RE.match(m):
+        return PROVIDER_KIMI
     if _MUSE_PROVIDER_RE.match(m):
         return PROVIDER_MUSE
     if "/" in m:
@@ -851,6 +897,10 @@ def context_window_for(model_id: str, default_anthropic: str = "") -> int:
         return or_catalog.context_length_for(m) or 200_000
     if provider == PROVIDER_MUSE:
         return _muse_windows.get(m, _MUSE_CONTEXT_LIMIT)
+    if provider == PROVIDER_KIMI:
+        from helios.backend.kimi_env import context_limit_for
+
+        return _kimi_windows.get(m, context_limit_for(m))
     if provider == PROVIDER_GOOGLE:
         # agy models currently reports no context-window metadata.
         return 0

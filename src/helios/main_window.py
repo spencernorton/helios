@@ -58,6 +58,7 @@ from helios.backend.process.openrouter_driver import (
 )
 from helios.backend.process.gemini_driver import GeminiCliDriver, GeminiDriverSpawnError
 from helios.backend.process.muse_driver import MuseDriverSpawnError, MuseServeDriver
+from helios.backend.process.kimi_driver import KimiAcpDriver, KimiDriverSpawnError
 from helios.backend.process.driver_manager import (
     COMMON_DRIVER_SIGNALS,
     DriverManager,
@@ -558,6 +559,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             model_catalog.PROVIDER_OPENAI,
             model_catalog.PROVIDER_GOOGLE,
             model_catalog.PROVIDER_MUSE,
+            model_catalog.PROVIDER_KIMI,
             model_catalog.PROVIDER_OPENROUTER,
         ):
             remembered = self._ui_state.get(f"model_{prov}", None)
@@ -1199,6 +1201,13 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 )
             except Exception as e:  # noqa: BLE001
                 _log.warning("Muse model catalog refresh failed: %s", e)
+            try:
+                k_entries, k_status = model_catalog.kimi_entries(force=force)
+                if k_entries and k_status == "kimi-acp":
+                    entries = entries + k_entries
+                _log.info("model catalog: %d entries (kimi: %s)", len(entries), k_status)
+            except Exception as e:  # noqa: BLE001
+                _log.warning("Kimi model catalog refresh failed: %s", e)
             GLib.idle_add(
                 self._apply_model_catalog,
                 entries,
@@ -1515,6 +1524,9 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             native_fork = bool(driver.supports_native_fork)
         elif session_ready and isinstance(driver, ClaudeCliDriver):
             manual_compaction = "compact" in driver.init_slash_commands
+        elif session_ready and isinstance(driver, KimiAcpDriver):
+            manual_compaction = driver.supports_manual_compaction
+            native_fork = driver.supports_native_fork
 
         block_reason = ""
         guard = getattr(driver, "_execution_block_reason", None)
@@ -3016,7 +3028,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 default_effort=entry.default_effort,
                 selected_effort=selected_effort,
             )
-        elif provider in (model_catalog.PROVIDER_OPENAI, model_catalog.PROVIDER_GOOGLE, model_catalog.PROVIDER_MUSE):
+        elif provider in (model_catalog.PROVIDER_OPENAI, model_catalog.PROVIDER_GOOGLE, model_catalog.PROVIDER_MUSE, model_catalog.PROVIDER_KIMI):
             entry = self._catalog_entries_by_id.get(execution_model)
             if entry is None:
                 self._chat_toolbar.set_effort_sensitive(False)
@@ -3292,6 +3304,12 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             if remembered in valid:
                 return remembered
             return model_catalog.preferred_muse_model(muse_entries)
+        if provider == model_catalog.PROVIDER_KIMI:
+            kimi_entries = [entry for entry in getattr(self, "_catalog_entries_by_id", {}).values()
+                            if entry.provider == model_catalog.PROVIDER_KIMI]
+            if remembered in {entry.id for entry in kimi_entries}:
+                return remembered
+            return model_catalog.preferred_kimi_model(kimi_entries)
         if provider == model_catalog.PROVIDER_OPENROUTER:
             if model_catalog.openrouter_model_selectable(remembered):
                 return remembered
@@ -3352,6 +3370,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             model_catalog.PROVIDER_OPENROUTER,
             model_catalog.PROVIDER_GOOGLE,
             model_catalog.PROVIDER_MUSE,
+            model_catalog.PROVIDER_KIMI,
         ):
             return
         if provider == self._selected_provider():
@@ -3620,6 +3639,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 model_catalog.PROVIDER_OPENROUTER,
                 model_catalog.PROVIDER_GOOGLE,
                 model_catalog.PROVIDER_MUSE,
+                model_catalog.PROVIDER_KIMI,
             )
             else ""
         )
@@ -3646,6 +3666,8 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             return "Google"
         if provider == model_catalog.PROVIDER_MUSE:
             return "Muse"
+        if provider == model_catalog.PROVIDER_KIMI:
+            return "Kimi"
         return "Claude"
 
     def _sync_assistant_labels(self) -> None:
@@ -4208,9 +4230,10 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 model_catalog.PROVIDER_OPENAI: "OpenAI",
                 model_catalog.PROVIDER_GOOGLE: "Google",
                 model_catalog.PROVIDER_MUSE: "Muse",
+                model_catalog.PROVIDER_KIMI: "Kimi",
                 model_catalog.PROVIDER_OPENROUTER: "OpenRouter",
             }.get(provider, "Claude")
-            action = "sign in" if provider in (model_catalog.PROVIDER_GOOGLE, model_catalog.PROVIDER_MUSE) else "add a key"
+            action = "sign in" if provider in (model_catalog.PROVIDER_GOOGLE, model_catalog.PROVIDER_MUSE, model_catalog.PROVIDER_KIMI) else "add a key"
             self._toast(f"No {label} models available — {action} in Settings → Providers.")
             self._sync_provider_toggle()
             return
@@ -4908,6 +4931,8 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             driver_cls = GeminiCliDriver
         elif _provider == model_catalog.PROVIDER_MUSE:
             driver_cls = MuseServeDriver
+        elif _provider == model_catalog.PROVIDER_KIMI:
+            driver_cls = KimiAcpDriver
         else:
             driver_cls = ClaudeCliDriver
 
@@ -5171,7 +5196,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                         ),
                     ]
                 )
-            if isinstance(driver, MuseServeDriver):
+            if isinstance(driver, (MuseServeDriver, KimiAcpDriver)):
                 # Same native handlers as Gemini/Codex: the driver emits the
                 # same payload shapes, so animations need no provider branch.
                 handlers.extend(
@@ -5195,9 +5220,11 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                         ),
                     ]
                 )
+            if isinstance(driver, KimiAcpDriver):
+                handlers.append(driver.connect("thread-forked", self._on_codex_thread_forked))
             if isinstance(
                 driver,
-                (ClaudeCliDriver, CodexAppServerDriver, OpenRouterDriver, GeminiCliDriver, MuseServeDriver),
+                (ClaudeCliDriver, CodexAppServerDriver, OpenRouterDriver, GeminiCliDriver, MuseServeDriver, KimiAcpDriver),
             ):
                 handlers.append(
                     driver.connect("budget-exhausted", self._on_budget_exhausted)
@@ -5206,7 +5233,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
 
         try:
             self._driver_manager.start_new(make_driver, connect_handlers)
-        except (ClaudeBinaryNotFound, DriverSpawnError, GeminiDriverSpawnError, MuseDriverSpawnError) as e:
+        except (ClaudeBinaryNotFound, DriverSpawnError, GeminiDriverSpawnError, MuseDriverSpawnError, KimiDriverSpawnError) as e:
             self._toast(str(e))
             return False
 
@@ -5306,6 +5333,8 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             provider = model_catalog.PROVIDER_GOOGLE
         elif isinstance(driver, MuseServeDriver):
             provider = model_catalog.PROVIDER_MUSE
+        elif isinstance(driver, KimiAcpDriver):
+            provider = model_catalog.PROVIDER_KIMI
         else:
             return None
         scope = AgentActivityScope(
@@ -5532,7 +5561,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         drv = self._driver
         target = getattr(self, "_next_chat", None)
         if (
-            isinstance(drv, (GeminiCliDriver, MuseServeDriver))
+            isinstance(drv, (GeminiCliDriver, MuseServeDriver, KimiAcpDriver))
             and drv.is_initializing
             and target is not None
             and (
@@ -5644,7 +5673,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             and drv.queued_messages()
         )
         if (
-            isinstance(drv, (GeminiCliDriver, MuseServeDriver))
+            isinstance(drv, (GeminiCliDriver, MuseServeDriver, KimiAcpDriver))
             and drv.is_initializing
             and (drv.is_busy or checkpoint_pending or queued_pending)
         ):
@@ -5725,7 +5754,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             # pre-wire rejection from leaving a false transcript bubble.
             native_pending = isinstance(drv, CodexAppServerDriver)
             identity_pending = not native_pending and (
-                isinstance(drv, (GeminiCliDriver, MuseServeDriver))
+                isinstance(drv, (GeminiCliDriver, MuseServeDriver, KimiAcpDriver))
                 or not str(getattr(drv, "session_id", "") or "")
             )
             if native_pending:
@@ -5908,7 +5937,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         """Promote one quarantined CLI prompt after native provider proof."""
 
         MainWindow._accept_uncertain_pending_user(self, drv)
-        if isinstance(drv, (GeminiCliDriver, MuseServeDriver)):
+        if isinstance(drv, (GeminiCliDriver, MuseServeDriver, KimiAcpDriver)):
             MainWindow._accept_identity_pending_user(self, drv)
 
     def _append_visible_user_turn(self, text: str) -> None:
@@ -6800,6 +6829,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             model_catalog.PROVIDER_OPENROUTER,
             model_catalog.PROVIDER_GOOGLE,
             model_catalog.PROVIDER_MUSE,
+            model_catalog.PROVIDER_KIMI,
         ):
             MainWindow._reject_started_identity(
                 self,
@@ -6895,7 +6925,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             # the native id, but its bubble/ledger entry stayed provisional.
             # Commit both only after every identity fence above succeeded and
             # Work tagging is available.
-            if not isinstance(drv, (GeminiCliDriver, MuseServeDriver)):
+            if not isinstance(drv, (GeminiCliDriver, MuseServeDriver, KimiAcpDriver)):
                 MainWindow._accept_identity_pending_user(self, drv)
             self._driver_manager.register_started(drv, session_id)
             permission_mode = str(
@@ -6968,6 +6998,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 model_catalog.PROVIDER_OPENROUTER,
                 model_catalog.PROVIDER_GOOGLE,
                 model_catalog.PROVIDER_MUSE,
+                model_catalog.PROVIDER_KIMI,
             ):
                 claude_env.save_init_snapshot(drv.init_tools, drv.init_mcp_servers)
         except Exception:
@@ -7849,11 +7880,10 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         self._toast("Forked here — edit the message and send to continue this branch.")
 
     def _fork_current_chat(self) -> bool:
-        """Request one persisted native GPT fork at the conversation head."""
-
+        """Request one persisted native fork at the conversation head."""
         drv = getattr(self, "_driver", None)
-        if not isinstance(drv, CodexAppServerDriver):
-            self._toast("Native Fork is available only for a connected GPT chat.")
+        if not isinstance(drv, (CodexAppServerDriver, KimiAcpDriver)):
+            self._toast("Native Fork requires a connected GPT or Kimi chat.")
             return False
         try:
             delivery = drv.request_fork()
@@ -7868,126 +7898,78 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             self._chat_toolbar.set_busy(True)
             self._activity.set_activity(STATE_THINKING)
             self._toast("Forking conversation…")
-        # UNKNOWN is consumed, never restored/replayed. The driver's error names
-        # the native uncertainty and leaves the source conversation untouched.
         return True
 
     def _on_codex_thread_forked(self, drv, info: dict) -> None:
         """Make an accepted native fork a durable, independently bound chat."""
-
         payload = info if isinstance(info, dict) else {}
         source_thread_id = str(payload.get("source_thread_id") or "")
         fork_thread_id = str(payload.get("thread_id") or "")
+        provider = str(getattr(drv, "provider", "") or self._selected_provider())
         was_visible = bool(
-            isinstance(drv, CodexAppServerDriver) and self._drv_is_current(drv)
+            isinstance(drv, (CodexAppServerDriver, KimiAcpDriver)) and self._drv_is_current(drv)
         )
         if was_visible and not self._destroyed:
-            # Fork has no normal turn/result signal. Its native request is now
-            # terminal, so release the source chat's operation UI before local
-            # mirror and Work registration (including every failure return).
             MainWindow._clear_busy_ui(self)
         if (
-            not isinstance(drv, CodexAppServerDriver)
-            or not source_thread_id
-            or not fork_thread_id
+            provider not in {model_catalog.PROVIDER_OPENAI, model_catalog.PROVIDER_KIMI}
+            or not source_thread_id or not fork_thread_id
             or source_thread_id != str(getattr(drv, "session_id", "") or "")
             or source_thread_id == fork_thread_id
         ):
-            _log.warning("ignored invalid Codex fork result: %r", payload)
+            _log.warning("ignored invalid native fork result: %r", payload)
             return
-
         cwd = str(getattr(drv, "cwd", "") or getattr(drv, "_cwd", "") or "")
         model = str(getattr(drv, "model", "") or "")
+        label = model_catalog.PROVIDER_LABELS.get(provider, provider)
         try:
             mirror_path = clone_transcript_for_fork(
-                cwd=cwd,
-                source_thread_id=source_thread_id,
-                fork_thread_id=fork_thread_id,
+                cwd=cwd, source_thread_id=source_thread_id, fork_thread_id=fork_thread_id,
+                provider=provider,
             )
         except Exception as exc:
-            _log.warning("could not mirror native Codex fork %s: %s", fork_thread_id, exc)
+            _log.warning("could not mirror native fork %s: %s", fork_thread_id, exc)
             if not self._destroyed:
-                self._toast(
-                    "Codex created the native fork, but Helios could not create "
-                    "its local transcript mirror.",
-                    timeout=8,
-                )
+                self._toast(f"{label} created the native fork, but Helios could not create its local transcript mirror.", timeout=8)
             return
-
         coordinator = getattr(self, "_work_coordinator", None)
-        source_work_id = str(
-            getattr(drv, "_helios_work_id", "")
-            or getattr(drv, "_helios_work_id_hint", "")
-            or ""
-        )
+        source_work_id = str(getattr(drv, "_helios_work_id", "") or getattr(drv, "_helios_work_id_hint", "") or "")
         try:
             if coordinator is None:
                 raise RuntimeError("Work coordinator is unavailable")
             if not source_work_id:
-                source_work = coordinator.resolve_native_work(
-                    model_catalog.PROVIDER_OPENAI,
-                    source_thread_id,
-                    cwd=cwd,
-                    model=model,
-                )
+                source_work = coordinator.resolve_native_work(provider, source_thread_id, cwd=cwd, model=model)
                 source_work_id = source_work.work_id
-            coordinator.fork_work(
-                source_work_id=source_work_id,
-                provider=model_catalog.PROVIDER_OPENAI,
-                native_id=fork_thread_id,
-                model=model,
-            )
+            coordinator.fork_work(source_work_id=source_work_id, provider=provider,
+                                  native_id=fork_thread_id, model=model)
         except Exception as exc:
-            # This mirror was created by this exact callback and has never been
-            # exposed as a usable Work. Remove only it; the native fork and the
-            # source transcript remain untouched.
             try:
                 mirror_path.unlink(missing_ok=True)
             except OSError:
                 pass
-            _log.warning("could not bind native Codex fork %s: %s", fork_thread_id, exc)
+            _log.warning("could not bind native fork %s: %s", fork_thread_id, exc)
             if not self._destroyed:
-                self._toast(
-                    "Codex created the native fork, but Helios could not bind "
-                    "its independent Work.",
-                    timeout=8,
-                )
+                self._toast(f"{label} created the native fork, but Helios could not bind its independent Work.", timeout=8)
             return
-
-        source_settings = self._conversation_perms.get_settings(
-            model_catalog.PROVIDER_OPENAI,
-            source_thread_id,
-        )
+        source_settings = self._conversation_perms.get_settings(provider, source_thread_id)
         if source_settings is not None:
             settings_saved = self._conversation_perms.set(
-                model_catalog.PROVIDER_OPENAI,
-                fork_thread_id,
-                source_settings.permission_mode,
-                effort_key=source_settings.effort_key,
-                workflow_mode=source_settings.workflow_mode,
+                provider, fork_thread_id, source_settings.permission_mode,
+                effort_key=source_settings.effort_key, workflow_mode=source_settings.workflow_mode,
             )
         else:
             permission_mode = str(getattr(drv, "permission_mode", "") or "")
             settings_saved = self._conversation_perms.set(
-                model_catalog.PROVIDER_OPENAI,
-                fork_thread_id,
+                provider, fork_thread_id,
                 permission_mode if permission_mode in PERMISSION_MODES else SAFE_FALLBACK_MODE,
                 effort_key=str(getattr(drv, "effort_key", "") or ""),
-                workflow_mode=canonical_workflow_mode(
-                    getattr(drv, "workflow_mode", "")
-                ),
+                workflow_mode=canonical_workflow_mode(getattr(drv, "workflow_mode", "")),
             )
-        provider_saved = session_providers.set_provider(
-            fork_thread_id,
-            model_catalog.PROVIDER_OPENAI,
-        )
+        provider_saved = session_providers.set_provider(fork_thread_id, provider)
         if not settings_saved:
             _log.warning("could not clone execution settings to %s", fork_thread_id)
         if not provider_saved:
-            # The mirror's helios-codex version marker remains a durable
-            # provider-recovery source even if the separate index write fails.
-            _log.warning("could not index GPT provider for %s", fork_thread_id)
-
+            _log.warning("could not index provider for %s", fork_thread_id)
         if self._destroyed:
             return
         self._sessions.reload(preserve_selection=True, rescan_pool=False)
@@ -7995,10 +7977,8 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         if should_select and not self._sessions.reveal_session(fork_thread_id):
             self._toast("Fork created, but its sidebar row could not be selected.")
             return
-        if should_select:
-            self._toast("Conversation forked into a new independent Work.")
-        else:
-            self._toast("Conversation fork created in the background.")
+        self._toast("Conversation forked into a new independent Work." if should_select
+                    else "Conversation fork created in the background.")
 
     def _compact_current_chat(self, arguments: str = "") -> bool:
         """Run the visible provider's native context-compaction operation.
@@ -8028,7 +8008,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         try:
             if isinstance(drv, CodexAppServerDriver):
                 accepted = drv.request_compaction()
-            elif isinstance(drv, ClaudeCliDriver):
+            elif isinstance(drv, (ClaudeCliDriver, KimiAcpDriver)):
                 # `with_context=False` or this is a no-op: the prompt-context
                 # provider prepends the Work envelope, and a slash command
                 # only counts as one when it leads the message.

@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>The desktop that sees everything your coding agents do.</strong><br>
-  A native GTK4/libadwaita workbench for Claude Code, OpenAI Codex, Google Antigravity, Muse Code and OpenRouter models on Linux.
+  A native GTK4/libadwaita workbench for Claude Code, OpenAI Codex, Google Antigravity, Muse Code, Kimi Code and OpenRouter models on Linux.
 </p>
 
 <p align="center">
@@ -96,7 +96,7 @@ like any browser — back, forward, reload, an address bar that also takes a fil
 path or `localhost:5173` — and it keeps its own sign-ins, separate from your
 browser. The project's own files and loopback servers are the agent's to use;
 opening or reading any other site or file asks you first (once per tab, or
-always for a site), and pages you reached yourself are not shared until it does. Claude, GPT, Muse and OpenRouter sessions get the tools;
+always for a site), and pages you reached yourself are not shared until it does. Claude, GPT, Muse, Kimi and OpenRouter sessions get the tools;
 Gemini's CLI has no per-session MCP option and uses its own browser.
 
 **Usage you can read at a glance.** Beside the context ring sits the fill and
@@ -126,18 +126,19 @@ cost figure there is an estimate, not money. OpenRouter always gets a $5
 allowance per Work and 25 tool rounds per turn (up to 100 while they stay
 productive). A trip stops the work and keeps your draft.
 
-**Five providers, one workbench.** Claude sessions drive the official
+**Six providers, one workbench.** Claude sessions drive the official
 `claude` CLI; GPT sessions bind to a persistent Codex App Server; OpenRouter
 sessions run Helios's own agent loop against any model in the live catalog.
 Google sessions use Antigravity CLI (`agy`) with your Google account and models
 discovered from its live catalog. Muse sessions drive Muse Code over
-`muse serve` (MSP) with your Meta account or API key, including its subagent
-and workflow activity in the same dock as the other native providers. The CLIs keep their own sign-in, context
+`muse serve` (MSP) with your Meta account or API key. Kimi sessions use your
+Kimi Code membership through `kimi acp`, with live models and thinking levels,
+native resume/fork, images, tools, approvals and MCP forwarding. The CLIs keep their own sign-in, context
 files and history; OpenRouter's
 key and history are Helios's own files under `~/.helios` — Helios copies no
 credentials and sends no telemetry. Each CLI's own data-use settings still
-apply. See [Google setup and safe trials](docs/google-subscription.md) for
-the current permission limits and account-only routing.
+apply. See [Google setup and safe trials](docs/google-subscription.md) and
+[Kimi membership setup](docs/kimi-subscription.md) for account-only routing.
 
 ## Install
 

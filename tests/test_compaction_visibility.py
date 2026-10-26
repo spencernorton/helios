@@ -430,6 +430,7 @@ def test_accepted_fork_clones_work_settings_then_selects_new_chat(
             "cwd": "/tmp",
             "source_thread_id": "codex-session",
             "fork_thread_id": "fork-thread",
+            "provider": "openai",
         }
     ]
     assert coordinator.calls == [

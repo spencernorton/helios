@@ -36,6 +36,7 @@ _PROVIDER_LABELS = {
     model_catalog.PROVIDER_OPENAI: "GPT",
     model_catalog.PROVIDER_GOOGLE: "Google",
     model_catalog.PROVIDER_MUSE: "Muse",
+    model_catalog.PROVIDER_KIMI: "Kimi",
     model_catalog.PROVIDER_OPENROUTER: "OpenRouter",
 }
 

@@ -176,8 +176,10 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._reload_codex()
         self._reload_google()
         self._reload_muse()
+        self._reload_kimi()
         self._reload_google_mcp()
         self._reload_muse_mcp()
+        self._reload_kimi_mcp()
         self._reload_router()
         self._reload_openrouter()
 
@@ -209,7 +211,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         if (
             selected_model
             and model_catalog.provider_for(selected_model)
-            not in {model_catalog.PROVIDER_OPENAI, model_catalog.PROVIDER_GOOGLE, model_catalog.PROVIDER_MUSE}
+            not in {model_catalog.PROVIDER_OPENAI, model_catalog.PROVIDER_GOOGLE, model_catalog.PROVIDER_MUSE, model_catalog.PROVIDER_KIMI}
             and all(model_id != selected_model for model_id, _label in choices)
         ):
             choices.insert(0, (selected_model, selected_model))
@@ -248,7 +250,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         ):
             if (
                 model_catalog.provider_for(self._selected_model_id)
-                in {model_catalog.PROVIDER_OPENAI, model_catalog.PROVIDER_GOOGLE, model_catalog.PROVIDER_MUSE}
+                in {model_catalog.PROVIDER_OPENAI, model_catalog.PROVIDER_GOOGLE, model_catalog.PROVIDER_MUSE, model_catalog.PROVIDER_KIMI}
             ):
                 # Never resurrect a persisted native id that the current
                 # catalog did not supply. Select a safe visible row instead.
@@ -359,6 +361,7 @@ class SettingsDialog(Adw.PreferencesDialog):
                 model_catalog.PROVIDER_OPENAI: lambda: self._reload_codex(force_models=True),
                 model_catalog.PROVIDER_GOOGLE: lambda: self._reload_google(force=True),
                 model_catalog.PROVIDER_MUSE: lambda: self._reload_muse(force=True),
+                model_catalog.PROVIDER_KIMI: lambda: self._reload_kimi(force=True),
             }.get(provider)
             if refresh is not None:
                 refresh()
@@ -1001,6 +1004,70 @@ class SettingsDialog(Adw.PreferencesDialog):
         )
         muse_key_hint.add_css_class("dim-label")
         self._muse_group.add(muse_key_hint)
+
+        self._kimi_group = Adw.PreferencesGroup()
+        self._kimi_group.set_title("Kimi · Kimi Code")
+        self._kimi_group.set_description(
+            "Helios drives `kimi acp` with your Kimi Code membership. "
+            "Models and thinking levels come from the live ACP catalog; "
+            "credentials stay in Kimi's own store and no API-key fallback is used."
+        )
+        page.add(self._kimi_group)
+        refresh_kimi = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
+        refresh_kimi.add_css_class("flat")
+        refresh_kimi.set_tooltip_text("Re-check Kimi subscription and models")
+        refresh_kimi.set_valign(Gtk.Align.CENTER)
+        refresh_kimi.connect("clicked", lambda *_: self._reload_kimi(force=True))
+        self._kimi_group.set_header_suffix(refresh_kimi)
+        self._kimi_status_row = Adw.ActionRow()
+        self._kimi_status_row.set_title("Checking…")
+        self._kimi_icon = Gtk.Image.new_from_icon_name("content-loading-symbolic")
+        self._kimi_icon.add_css_class("dim-label")
+        self._kimi_status_row.add_prefix(self._kimi_icon)
+        self._kimi_group.add(self._kimi_status_row)
+        self._kimi_catalog_row = Adw.ActionRow()
+        self._kimi_catalog_row.set_title("Model catalog")
+        self._kimi_catalog_row.set_subtitle("Loading Kimi models…")
+        self._kimi_group.add(self._kimi_catalog_row)
+
+    def _reload_kimi(self, *, force: bool = False) -> None:
+        self._kimi_status_row.set_title("Checking…")
+        self._kimi_status_row.set_subtitle("")
+
+        def work():
+            from helios.backend import kimi_env
+            from helios.backend.kimi_binary import kimi_version
+            auth = kimi_env.fetch_auth_status(force=force)
+            models, status = model_catalog.kimi_entries(auth=auth)
+            return auth, models, status, kimi_version()
+
+        def on_done(result):
+            if self._closed or isinstance(result, Exception):
+                return
+            auth, models, status, version = result
+            if auth.ok and auth.logged_in:
+                self._kimi_status_row.set_title("Kimi Code membership verified")
+                self._kimi_status_row.set_subtitle(f"CLI {version}" if version else "Managed subscription")
+                self._set_kimi_icon("object-select-symbolic", "success")
+            else:
+                self._kimi_status_row.set_title("Kimi unavailable")
+                self._kimi_status_row.set_subtitle(auth.error or "Sign in with `kimi login`, then refresh.")
+                self._set_kimi_icon("dialog-warning-symbolic", "warning")
+            self._kimi_catalog_row.set_subtitle(
+                f"{len(models)} models discovered by kimi acp ({', '.join(m.id for m in models[:3])})"
+                if models else "No verified model catalog available."
+            )
+            other_choices = [choice for choice in getattr(self, "_all_model_choices", self._model_choices)
+                             if model_catalog.provider_for(choice[0]) != model_catalog.PROVIDER_KIMI]
+            self._set_model_choices(other_choices + self._entry_pairs(models))
+
+        self._run_async(work, on_done)
+
+    def _set_kimi_icon(self, icon_name: str, css: str) -> None:
+        self._kimi_icon.set_from_icon_name(icon_name)
+        for c in ("success", "warning", "error", "dim-label"):
+            self._kimi_icon.remove_css_class(c)
+        self._kimi_icon.add_css_class(css)
 
     def _reload_google(self, *, force: bool = False) -> None:
         self._google_status_row.set_title("Checking…")
@@ -1781,6 +1848,19 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._muse_mcp_group.set_header_suffix(refresh_muse_mcp)
         self._muse_mcp_rows: list[Gtk.Widget] = []
 
+        self._kimi_mcp_group = Adw.PreferencesGroup()
+        self._kimi_mcp_group.set_title("Kimi MCP servers")
+        self._kimi_mcp_group.set_description(
+            "Kimi's configured servers plus reviewed Helios estate and browser MCP forwarding."
+        )
+        page.add(self._kimi_mcp_group)
+        refresh_kimi_mcp = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
+        refresh_kimi_mcp.add_css_class("flat")
+        refresh_kimi_mcp.set_valign(Gtk.Align.CENTER)
+        refresh_kimi_mcp.connect("clicked", lambda *_: self._reload_kimi_mcp())
+        self._kimi_mcp_group.set_header_suffix(refresh_kimi_mcp)
+        self._kimi_mcp_rows: list[Gtk.Widget] = []
+
         # --- Built-in tools ----------------------------------------------
         self._builtin_group = Adw.PreferencesGroup()
         self._builtin_group.set_title("Built-in tools")
@@ -2155,6 +2235,33 @@ class SettingsDialog(Adw.PreferencesDialog):
                 row.add_prefix(icon)
                 self._muse_mcp_group.add(row)
                 self._muse_mcp_rows.append(row)
+
+        self._run_async(work, on_done)
+
+    def _reload_kimi_mcp(self) -> None:
+        def work():
+            from helios.backend import kimi_env
+            return kimi_env.list_mcp_servers()
+
+        def on_done(servers):
+            if self._closed or isinstance(servers, Exception):
+                return
+            for row in self._kimi_mcp_rows:
+                self._kimi_mcp_group.remove(row)
+            self._kimi_mcp_rows = []
+            if not servers:
+                row = Adw.ActionRow()
+                row.set_title("No Kimi MCP servers configured")
+                row.set_subtitle("Add servers to ~/.kimi-code/config.toml; Helios estate forwarding is automatic.")
+                self._kimi_mcp_group.add(row)
+                self._kimi_mcp_rows.append(row)
+            else:
+                for server in servers:
+                    row = Adw.ActionRow()
+                    row.set_title(str(server.get("name") or "MCP server"))
+                    row.set_subtitle(str(server.get("command") or "Configured"))
+                    self._kimi_mcp_group.add(row)
+                    self._kimi_mcp_rows.append(row)
 
         self._run_async(work, on_done)
 
