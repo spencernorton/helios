@@ -20,7 +20,7 @@ Open Helios **Settings → Accounts** to verify the membership or start sign-in/
 - Kimi's live model and thinking-level choices, including changes while a session is idle.
 - Default, Plan, Auto, and YOLO modes through Helios's per-conversation permission controls. HOME-directory safety restrictions still apply.
 - Streaming answers and thinking, plans, tool calls and results, questions, and permission prompts.
-- Native first turns, follow-ups, exact session resume, head forks, `/review`, `/compact`, cancellation, and queued messages.
+- Native first turns, follow-ups, exact session resume, head forks, `/compact`, cancellation, and queued messages.
 - Native image blocks for supported image attachments and embedded text resources for explicit `@/absolute/path` references. Images retain the shared 5 MB limit; text resources must be UTF-8 and no larger than 1 MiB.
 - Kimi-configured MCP servers, the reviewed Helios estate MCP selection, and the Helios browser MCP server. ACP stdio, HTTP, and SSE forwarding remains subject to the installed CLI's advertised capabilities.
 - Durable Helios Work receipts and Claude-compatible display transcripts. Kimi's own session store remains authoritative for model context.

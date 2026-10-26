@@ -6,7 +6,7 @@ source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
 ## 0.114.0 — 2026-10-26
 
-- Native Kimi Code membership provider over ACP: managed sign-in, live model/thinking catalogs, streaming turns and plans, tool approvals, images/resources, MCP forwarding, exact resume/fork, native Review and Compact, durable Work receipts and transcripts, Settings/Accounts integration, and provider-safe session routing. Audio and unsupported ACP methods are not advertised.
+- Native Kimi Code membership provider over ACP: managed sign-in, live model/thinking catalogs, streaming turns and plans, tool approvals, images/resources, MCP forwarding, exact resume/fork, native Compact, durable Work receipts and transcripts, Settings/Accounts integration, and provider-safe session routing. Audio and unsupported ACP methods are not advertised.
 
 ## 0.113.0 — 2026-10-22
 

@@ -91,7 +91,7 @@ def commands_for_provider(
     elif provider == model_catalog.PROVIDER_KIMI:
         actor = "Kimi"
         compact_source = "Kimi ACP · /compact"
-        review_source = "Kimi ACP · /review"
+        review_source = "No verified native Kimi review action"
         fork_source = "Kimi ACP · session/fork"
     elif provider == model_catalog.PROVIDER_OPENROUTER:
         actor = "OpenRouter"

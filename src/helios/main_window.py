@@ -1526,7 +1526,6 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             manual_compaction = "compact" in driver.init_slash_commands
         elif session_ready and isinstance(driver, KimiAcpDriver):
             manual_compaction = driver.supports_manual_compaction
-            native_review = True
             native_fork = driver.supports_native_fork
 
         block_reason = ""
@@ -7792,12 +7791,11 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         """Dispatch a native, read-only GPT Review control action."""
 
         drv = getattr(self, "_driver", None)
-        if not isinstance(drv, (CodexAppServerDriver, KimiAcpDriver)):
-            self._toast("Native Review requires a connected GPT or Kimi chat.")
+        if not isinstance(drv, CodexAppServerDriver):
+            self._toast("Native Review is available only for a connected GPT chat.")
             return False
         visible_text = f"/review {arguments.strip()}" if arguments.strip() else "/review"
-        pending_users = self._native_pending_user if isinstance(drv, CodexAppServerDriver) else self._identity_pending_user
-        pending_users[id(drv)] = (drv, visible_text)
+        self._native_pending_user[id(drv)] = (drv, visible_text)
         admissions = getattr(self, "_provider_dispatch_in_progress", None)
         if not isinstance(admissions, set):
             admissions = set()
@@ -7812,17 +7810,17 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             # (a review finding). The compaction path already treats this as a
             # fallible boundary.
             _log.warning("native review request failed: %s", exc)
-            pending = pending_users.get(id(drv))
+            pending = self._native_pending_user.get(id(drv))
             if pending == (drv, visible_text):
-                pending_users.pop(id(drv), None)
+                self._native_pending_user.pop(id(drv), None)
             self._toast(f"Couldn't start Review: {exc}")
             return False
         finally:
             admissions.discard(id(drv))
         if delivery.rejected:
-            pending = pending_users.get(id(drv))
+            pending = self._native_pending_user.get(id(drv))
             if pending == (drv, visible_text):
-                pending_users.pop(id(drv), None)
+                self._native_pending_user.pop(id(drv), None)
             return False
         if delivery.uncertain:
             # The driver has already quarantined/closed the acceptance-unknown

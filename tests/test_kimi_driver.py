@@ -68,6 +68,7 @@ def _driver(tmp_path, monkeypatch=None):
 
 def test_resume_binds_requested_id_when_response_omits_it(tmp_path):
     driver = KimiAcpDriver(cwd=str(tmp_path), model=MODEL, resume_session_id="session_resume")
+    driver._proc = _Process()
     driver._on_session_bound({"configOptions": []})
     assert driver.session_id == "session_resume"
     assert driver.is_accepting_input

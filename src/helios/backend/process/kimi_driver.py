@@ -274,10 +274,6 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
     def supports_native_fork(self) -> bool:
         return True
 
-    def request_review(self, arguments: str = "") -> MessageDelivery:
-        text = f"/review {arguments.strip()}" if arguments.strip() else "/review"
-        return self.send_user_text(text, with_context=False)
-
     def request_fork(self) -> MessageDelivery:
         if self._is_busy or not self.is_accepting_input or not self._session_id:
             return MessageDelivery("rejected")
