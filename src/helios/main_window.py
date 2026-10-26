@@ -7907,7 +7907,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         payload = info if isinstance(info, dict) else {}
         source_thread_id = str(payload.get("source_thread_id") or "")
         fork_thread_id = str(payload.get("thread_id") or "")
-        provider = self._driver_provider(drv)
+        provider = str(getattr(drv, "provider", "") or self._selected_provider())
         was_visible = bool(
             isinstance(drv, (CodexAppServerDriver, KimiAcpDriver)) and self._drv_is_current(drv)
         )
