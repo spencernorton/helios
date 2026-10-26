@@ -2,9 +2,9 @@
 
 ## 2026-10-26 — kimi — Native Kimi Code membership provider (v0.114.0)
 
-- `backend/kimi_{binary,env}.py` discovers the official CLI and performs bounded, tool-free managed-auth/model probes. `process/kimi_driver.py` implements ACP models, thinking, modes, streaming, tools, questions/approvals, images/resources, MCP, usage, compact/review/fork, cancellation and native identity. The account probe has no tracker credential; interactive sessions receive only the standard grant.
-- Provider identity, model picker, Settings/Accounts/Tools, Work admission/receipts, mirrored transcripts, exact resume, provider chips and native command palette are wired. Docs: `docs/kimi-subscription.md`. ACP audio, quota windows and unsupported methods are honestly absent.
-- **Validation:** focused Kimi/provider tests and the real macOS managed-account ACP catalog probe pass (six models, K3.1 Pro default). Full macOS suite has only the two known `/private` path-prefix failures. Ruff F rules, compileall and diff checks pass. Ubuntu GTK/live-turn acceptance is pending device authorization on Apollo.
+- `backend/kimi_{binary,env}.py` discovers the official CLI and performs bounded, tool-free managed-auth/model probes. `process/kimi_driver.py` implements ACP models, thinking, modes, streaming, tools, questions/approvals, images/resources, MCP, usage, compact/fork, cancellation and native identity. The account probe has no tracker credential; interactive sessions receive only the standard grant.
+- Provider identity, model picker, Settings/Accounts/Tools, Work admission/receipts, mirrored transcripts, exact resume, provider chips and native command palette are wired. Docs: `docs/kimi-subscription.md`. ACP audio, quota windows and unsupported/undocumented methods are honestly absent.
+- **Validation:** focused Kimi/provider tests and the real macOS managed-account ACP catalog probe pass (six models, K3.1 Pro default). Full macOS suite has only the two known `/private` path-prefix failures. Full Ubuntu GTK suite, Ruff F rules, compileall, gitleaks and diff checks pass. Apollo live acceptance passed a real Work receipt, real-window turn, exact resume/fork context, dynamic settings, tool approval/denial, 64×64 vision, text resource, cancellation and native compact.
 
 ## 2026-10-22 — claude — Opt-in worktrees (v0.113.0)
 
