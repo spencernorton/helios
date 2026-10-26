@@ -1074,6 +1074,7 @@ _ASSISTANT_NAMES = {
     model_catalog.PROVIDER_OPENROUTER: "OpenRouter",
     model_catalog.PROVIDER_GOOGLE: "Google",
     model_catalog.PROVIDER_MUSE: "Muse",
+    model_catalog.PROVIDER_KIMI: "Kimi",
     model_catalog.PROVIDER_ANTHROPIC: "Claude",
 }
 

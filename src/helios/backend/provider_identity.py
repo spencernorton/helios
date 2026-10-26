@@ -32,6 +32,7 @@ __all__ = [
     "GOOGLE_NATIVE",
     "IdentityValidationError",
     "LOCAL_WORKER",
+    "KIMI_NATIVE",
     "MUSE_NATIVE",
     "ModelRef",
     "NativeBindingKind",
@@ -40,6 +41,7 @@ __all__ = [
     "PROVIDER_ANTHROPIC",
     "PROVIDER_GOOGLE",
     "PROVIDER_LOCAL",
+    "PROVIDER_KIMI",
     "PROVIDER_MUSE",
     "PROVIDER_OPENAI",
     "PROVIDER_OPENROUTER",
@@ -57,6 +59,7 @@ PROVIDER_ANTHROPIC = "anthropic"
 PROVIDER_OPENAI = "openai"
 PROVIDER_GOOGLE = "google"
 PROVIDER_MUSE = "muse"
+PROVIDER_KIMI = "kimi"
 PROVIDER_OPENROUTER = "openrouter"
 PROVIDER_LOCAL = "local"
 
@@ -728,6 +731,20 @@ MUSE_NATIVE = ProviderDescriptor(
     supports_delegated_worker=False,
 )
 
+KIMI_NATIVE = ProviderDescriptor(
+    provider_id=PROVIDER_KIMI,
+    display_name="Kimi",
+    runtime_kind=RuntimeKind.NATIVE,
+    credential_owner=CredentialOwner.NATIVE_RUNTIME,
+    catalog_source="kimi-acp",
+    driver_factory_key="kimi-acp",
+    capability_discovery_key="kimi-acp",
+    transcript_kind="helios-kimi-jsonl",
+    native_binding_kind=NativeBindingKind.SESSION,
+    supports_primary_driver=True,
+    supports_delegated_worker=False,
+)
+
 OPENROUTER_GATEWAY = ProviderDescriptor(
     provider_id=PROVIDER_OPENROUTER,
     display_name="OpenRouter",
@@ -762,6 +779,7 @@ DEFAULT_PROVIDER_REGISTRY = ProviderRegistry(
         OPENAI_NATIVE,
         GOOGLE_NATIVE,
         MUSE_NATIVE,
+        KIMI_NATIVE,
         OPENROUTER_GATEWAY,
         LOCAL_WORKER,
     )

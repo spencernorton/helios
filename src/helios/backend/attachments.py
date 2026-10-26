@@ -87,6 +87,33 @@ def muse_inputs(text: str) -> list[dict]:
     return items
 
 
+def kimi_blocks(text: str) -> list[dict]:
+    """ACP image and explicitly mentioned text-resource content blocks."""
+    blocks = []
+    images = {path for path, _media in mentioned_images(text)}
+    for path, media in mentioned_images(text):
+        data = _b64(path)
+        if data:
+            blocks.append({"type": "image", "data": data, "mimeType": media})
+    seen: set[str] = set()
+    for quoted, bare in _MENTION.findall(text or ""):
+        path = re.sub(r"\\(.)", r"\1", quoted) if quoted else bare.rstrip(".,;:!?)]}'")
+        if path in seen or path in images or not os.path.isabs(path) or not os.path.isfile(path):
+            continue
+        seen.add(path)
+        try:
+            if os.path.getsize(path) > 1024 * 1024:
+                continue
+            raw = open(path, "rb").read()
+            content = raw.decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        blocks.append({"type": "resource", "resource": {
+            "uri": f"file://{path}", "mimeType": "text/plain", "text": content,
+        }})
+    return blocks
+
+
 def openai_parts(text: str) -> list[dict]:
     """OpenAI-compatible ``image_url`` content parts (OpenRouter)."""
     parts = []

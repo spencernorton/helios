@@ -225,6 +225,7 @@ class WorkCoordinator:
             model_catalog.PROVIDER_OPENAI,
             model_catalog.PROVIDER_GOOGLE,
             model_catalog.PROVIDER_MUSE,
+            model_catalog.PROVIDER_KIMI,
             model_catalog.PROVIDER_OPENROUTER,
         ):
             work_id = self.store.work_id_for_native_session(provider, native_id)

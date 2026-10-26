@@ -1,5 +1,11 @@
 # Helios — Session Journal
 
+## 2026-10-26 — kimi — Native Kimi Code membership provider (v0.114.0)
+
+- `backend/kimi_{binary,env}.py` discovers the official CLI and performs bounded, tool-free managed-auth/model probes. `process/kimi_driver.py` implements ACP models, thinking, modes, streaming, tools, questions/approvals, images/resources, MCP, usage, compact/review/fork, cancellation and native identity. The account probe has no tracker credential; interactive sessions receive only the standard grant.
+- Provider identity, model picker, Settings/Accounts/Tools, Work admission/receipts, mirrored transcripts, exact resume, provider chips and native command palette are wired. Docs: `docs/kimi-subscription.md`. ACP audio, quota windows and unsupported methods are honestly absent.
+- **Validation:** focused Kimi/provider tests and the real macOS managed-account ACP catalog probe pass (six models, K3.1 Pro default). Full macOS suite has only the two known `/private` path-prefix failures. Ruff F rules, compileall and diff checks pass. Ubuntu GTK/live-turn acceptance is pending device authorization on Apollo.
+
 ## 2026-10-22 — claude — Opt-in worktrees (v0.113.0)
 
 - **Roadmap Phase 3e.** `backend/worktrees.py`: `create` (`git worktree add -b helios/<repo>-<time> state_dir()/worktrees/<name> HEAD`), `is_helios_worktree`, `remove` (refuses foreign folders and dirty trees; runs from the common dir; keeps the branch). New-chat popover entry → `_start_new_chat_in_worktree` (thread, then `_show_fresh_chat_ui`); Changes pane shows *Remove worktree* only for Helios worktrees.

@@ -20,6 +20,7 @@ PROVIDERS = (
     model_catalog.PROVIDER_OPENAI,
     model_catalog.PROVIDER_GOOGLE,
     model_catalog.PROVIDER_MUSE,
+    model_catalog.PROVIDER_KIMI,
     model_catalog.PROVIDER_OPENROUTER,
 )
 
@@ -123,6 +124,19 @@ def _muse() -> Account:
     )
 
 
+def _kimi() -> Account:
+    from helios.backend import kimi_env
+
+    status = kimi_env.fetch_auth_status(force=True)
+    return Account(
+        model_catalog.PROVIDER_KIMI,
+        status.ok and status.logged_in,
+        "",
+        "Kimi Code membership" if status.logged_in else "",
+        error=status.error,
+    )
+
+
 def _openrouter() -> Account:
     from helios.backend.openrouter import key as or_key
 
@@ -140,6 +154,7 @@ _READERS = {
     model_catalog.PROVIDER_OPENAI: _openai,
     model_catalog.PROVIDER_GOOGLE: _google,
     model_catalog.PROVIDER_MUSE: _muse,
+    model_catalog.PROVIDER_KIMI: _kimi,
     model_catalog.PROVIDER_OPENROUTER: _openrouter,
 }
 
@@ -157,6 +172,13 @@ def terminal_command(provider: str, action: str) -> str:
         }[action]
         # agy has no login subcommand; its own TUI owns the flow.
         return f"echo {shlex.quote(hint)}; echo; {agy}{_CLOSE}"
+    if provider == model_catalog.PROVIDER_KIMI:
+        from helios.backend.kimi_binary import find_kimi_binary
+
+        if action != "sign-in":
+            raise ValueError("Kimi sign-out uses the ACP credential owner directly.")
+        cli = shlex.quote(str(find_kimi_binary().path))
+        return f"{cli} login{_CLOSE}"
     if provider == model_catalog.PROVIDER_ANTHROPIC:
         from helios.backend import claude_env
 
@@ -188,6 +210,12 @@ def launch(provider: str, action: str) -> tuple[bool, str]:
     """Open the provider's own flow in a terminal. Returns (ok, message)."""
     from helios.backend.claude_env import _launch_in_terminal
 
+    if provider == model_catalog.PROVIDER_KIMI and action in {"sign-out", "switch"}:
+        from helios.backend import kimi_env
+
+        ok, message = kimi_env.logout()
+        if not ok or action == "sign-out":
+            return ok, message
     try:
         inner = terminal_command(provider, action)
     except Exception as exc:  # noqa: BLE001 — a missing CLI is a message, not a crash
