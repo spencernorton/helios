@@ -3068,7 +3068,18 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
             self.request_context_usage()
             provider_status = str(obj.get("subtype") or "unknown")
             normalized_status = provider_status.lower()
-            if normalized_status == "success":
+            # A refused turn still arrives as subtype "success": measured on
+            # claude 2.1.310 at the weekly limit, the terminal carries
+            # is_error=true, api_error="usage_limit_reached", HTTP 429 and
+            # zero usage, with the refusal prose in `result`. Keying off the
+            # subtype alone booked that as a completed zero-token success
+            # and — the synthetic assistant record producing no stream
+            # deltas — showed the user no reply at all.
+            api_error = str(obj.get("api_error") or "").strip()
+            api_error_result = normalized_status == "success" and (
+                bool(obj.get("is_error")) or bool(api_error)
+            )
+            if normalized_status == "success" and not api_error_result:
                 terminal_status = "completed"
             elif normalized_status in {
                 "aborted",
@@ -3130,6 +3141,22 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
                 self._deferred_task_results.clear()
                 self.end_input()
                 return
+            if api_error_result:
+                # Surface the refusal before the ordinary result signal
+                # clears busy state, or the turn ends as silently as it did
+                # when this was booked as a success. The prose is the
+                # provider's own (`result` above); a refusal without prose
+                # still names its machine code rather than going quiet.
+                detail = str(obj.get("result") or "").strip()
+                if detail:
+                    detail, _changed = scrub_sensitive(detail)
+                if not detail:
+                    detail = (
+                        f"Claude reported an error: {api_error}"
+                        if api_error
+                        else "Claude reported an error but gave no detail."
+                    )
+                self.emit("error", detail)
             self.emit("result", obj)
             # Any background-subagent wake-up that landed mid-turn was held
             # rather than dropped. The live turn has now reported, so the

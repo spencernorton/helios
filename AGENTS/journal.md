@@ -1,5 +1,11 @@
 # Helios — Session Journal
 
+## 2026-10-26 — claude — Claude API-error turns no longer read as empty successes
+
+- **Live failure:** a send at the Claude weekly limit completed in ~2 s with zero tokens and no visible reply. The transcript held the synthetic `You've hit your weekly limit` record and the Work attempt was booked `completed`/`success`.
+- **Wire probe (claude 2.1.310, isolated cwd):** `rate_limit_event` rejected, then `result` with `subtype: "success"`, `is_error: true`, `api_error: "usage_limit_reached"`, `api_error_status: 429`, `terminal_reason: "api_error"` and the refusal prose in `result`. A refused turn produces no stream deltas, and canonical `assistant` records are ignored live, so nothing rendered.
+- **Fix (`backend/process/cli_driver.py`):** a success-subtype terminal carrying `is_error`/`api_error` now closes the attempt as `failed` and emits its result text (scrubbed) as a driver `error` before the ordinary `result` signal. Regression coverage in `tests/test_claude_api_error_result.py`.
+
 ## 2026-10-22 — claude — Opt-in worktrees (v0.113.0)
 
 - **Roadmap Phase 3e.** `backend/worktrees.py`: `create` (`git worktree add -b helios/<repo>-<time> state_dir()/worktrees/<name> HEAD`), `is_helios_worktree`, `remove` (refuses foreign folders and dirty trees; runs from the common dir; keeps the branch). New-chat popover entry → `_start_new_chat_in_worktree` (thread, then `_show_fresh_chat_ui`); Changes pane shows *Remove worktree* only for Helios worktrees.

@@ -6,6 +6,8 @@ source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
 ## Unreleased
 
+- A Claude turn refused by the API (for example at the weekly usage limit) no longer reads as an instant, empty success. The CLI reports those turns as `subtype: "success"` with `is_error`/`api_error` set and the refusal in its result text; Helios now books the attempt as failed and shows that text as an error in the transcript.
+
 ## 0.113.0 — 2026-10-22
 
 - *Chat in a Worktree* (new-chat menu): an opt-in git worktree of the current repository on its own `helios/…` branch under `~/.helios/worktrees/`, with a new chat in it. The Changes pane commits, pushes and opens a PR from there, and *Remove worktree* deletes the folder once it is clean, keeping the branch. The automatic redirect removed in 0.66.0 stays removed.
