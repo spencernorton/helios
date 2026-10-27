@@ -403,3 +403,9 @@ def test_the_right_pane_pages_do_not_double_paint_the_column() -> None:
     )
     for page in (".helios-plan-pane", ".helios-context", ".helios-mission-pane"):
         assert page in cleared.group(1), f"{page} still paints over the column"
+
+
+def test_window_alpha_matches_the_os_glass_token() -> None:
+    m = re.search(r"window\.helios-glass\s*\{[^}]*alpha\(@window_bg_color,\s*([\d.]+)\)", RULES)
+    assert m, "window glass rule not found"
+    assert float(m.group(1)) == appearance.GLASS_WINDOW_ALPHA
