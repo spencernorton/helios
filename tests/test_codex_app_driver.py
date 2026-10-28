@@ -4109,3 +4109,40 @@ def test_live_permission_change_enters_and_leaves_bypass_without_rebinding(drive
     assert [p["approvalPolicy"] for p in turns] == ["never", "on-request"]
     assert len([row for row in hub.calls if row[0] in {"thread/start", "thread/resume"}]) == 1
     driver.stop(interrupt=False)
+
+
+def test_terminal_retires_its_interactions_and_ignores_late_delivery(driver_factory):
+    driver = driver_factory(FakeHub())
+    _start(driver)
+    driver.send_user_text('FIRST')
+    _drain_main_context()
+    turn_id = driver._app_turn_id
+    assert turn_id
+    asked, resolved = [], []
+    driver.connect('question-asked', lambda _d, _p, token: asked.append(token))
+    driver.connect('interaction-resolved', lambda _d, token: resolved.append(token))
+    params = {'threadId': driver.session_id, 'turnId': turn_id,
+              'questions': [{'id': 'q', 'question': 'Continue?', 'options': []}]}
+    request = FakeRequest('pending-input', 'item/tool/requestUserInput', params)
+    driver._consume_app_request(request)
+    token = asked[-1]
+    other = FakeRequest('other-turn', 'item/tool/requestUserInput', {
+        **params, 'turnId': 'background-turn'})
+    driver._consume_app_request(other)
+    other_token = asked[-1]
+    driver._dispatch_app_action(events.Action(events.ACT_RESULT, {
+        'turnId': 'stale-turn', 'subtype': 'aborted', 'usage': {}}))
+    assert resolved == []
+    driver._dispatch_app_action(events.Action(events.ACT_RESULT, {
+        'turnId': turn_id, 'subtype': 'aborted', 'usage': {}}))
+    assert resolved == [token]
+    assert request.abandoned == 1
+    driver.answer_question(token, 'late answer')
+    assert request.responses == []
+    late = FakeRequest('late-input', 'item/tool/requestUserInput', params)
+    driver._consume_app_request(late)
+    assert asked == [token, other_token]
+    assert late.abandoned == 1
+    assert other.abandoned == 0
+    driver.answer_question(other_token, 'still current')
+    assert len(other.responses) == 1

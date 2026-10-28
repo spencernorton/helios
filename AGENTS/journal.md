@@ -14,6 +14,23 @@
 - The 0.114.1 signed-archive scan found pre-existing comment markers, internal roadmap references and synthetic test identifiers. Removed the markers/references and used documentation-range addresses and a standard example username; no scanner exception or runtime behavior change. Preserve immutable v0.114.1 and publish the same reliability fixes as v0.114.2.
 
 
+## 2026-10-28 — codex — Cross-provider question and approval lifetime audit
+
+- **Branch:** `codex/provider-interaction-audit`; tracker OP#1278, extending the pending dialog-cleanup PR47.
+- **Reproduced/fixed:** OpenRouter Stop and permission changes left approval dialogs alive; permission changes did not wake the worker. Deferred presentations now check current approval state, permissions and cancellation. Invalidations dismiss dialogs and wake workers without reviving consent.
+- **Claude:** a root terminal left root questions/tool/plan approvals answerable. Clear root prompts on terminal, preserve background child prompts even before actor projection, and clear every prompt on process exit. No synthetic answers are sent after terminal evidence.
+- **GPT:** terminal results did not retire pending interactive requests; a delayed delivery could prompt for an ended turn. Resolve only matching-turn interactions and keep bounded completed-turn IDs to ignore late questions. Other turns and stale terminal events remain isolated.
+- **Google/Gemini:** current Antigravity headless adapter explicitly lacks interactive questions/approvals. Inspected receipt correlation, duplicate results, cancellation, failed persistence, unknown exits and queue handling; its existing regressions pass, with no matching defect reproduced.
+- **Validation:** four new regression cases failed before implementation; expanded focused suite **477 passed**. Full native and final integrated checks follow. Provider-specific signal-wiring coverage now includes all six native/provider paths. No provider process, paid API, installed package or live session was touched.
+
+## 2026-10-28 — codex — Close settled Muse questions and approvals
+
+- **Branch:** `codex/muse-question-cleanup`, based on the separate Muse reliability release PR46; tracker OP#1274.
+- **Reproduced:** `userInput/settled` cleared driver state while leaving the active/retried dialog open, blocking queued questions. `approval/resolved` was ignored, and terminal turns retained pending approvals.
+- **Fix:** emit the existing `interaction-resolved` window signal for exact presentation IDs, invalidate callbacks before closing dialogs, and clear approvals when a turn ends. Keep native session matching and stale-answer fencing. Add the real window queue and catalog-worker tests to native CI; isolate worker tests from installed provider CLIs.
+- **Validation:** the Apollo development tree passed all **3,546** isolated GTK tests after correcting intentional caret/motion expectations. The follow-up release tree is separately validated, retaining upstream Kimi and the release PR's additional lifecycle fixes. New queue tests cover original/retried prompts, timeout/turn cancellation, foreign-session settlement, late clicks, and external/terminal approval resolution.
+- **Deployment:** review branch only; no installed package or running app modified. Version remains the parent release's 0.114.1 until landing.
+
 ## 2026-10-28 — codex — Release Muse session reliability (v0.114.1)
 
 - Reconciled the two local Muse hotfix commits onto GitHub main in an independent worktree. Original Apollo main and its unrelated UI commits remain preserved on `preserve/lifecycle-import-20261028`; its obsolete GitLab tracking branch explains the misleading ahead/behind count.

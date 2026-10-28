@@ -122,6 +122,68 @@ def test_duplicate_tool_use_id_ignored(win):
     assert len(win._question_queue) == 0
 
 
+@pytest.mark.parametrize("retry", [False, True])
+@pytest.mark.parametrize("terminal", [False, True])
+def test_muse_native_settlement_closes_dialog_and_advances_queue(win, tmp_path, retry, terminal):
+    from helios.backend.process.muse_driver import MuseServeDriver
+    from helios.backend.process.streaming import StreamingAssistant
+
+    driver = MuseServeDriver(cwd=str(tmp_path), model="muse-wonder-1.0")
+    driver._session_id = "session"
+    driver._proc = types.SimpleNamespace(stdin=io.BytesIO(), poll=lambda: None)
+    driver.connect("question-asked", win._on_question_asked)
+    # The same signal is wired by MainWindow for native Muse drivers.
+    driver.connect("interaction-resolved", win._on_interaction_resolved)
+    driver._on_user_input_requested({"userInputId": "prompt", "questions": [{"id": "url"}]})
+    if retry:
+        win.captured[0][1]("x" * 501)
+    stale_answer = win.captured[-1][1]
+    dialog = win.captured[-1][3]
+    other = FakeDrv("other")
+    win._on_question_asked(other, {"q": 2}, "next")
+    driver._dispatch_message({"method": "userInput/settled", "params": {
+        "sessionId": "another-session", "userInputId": "prompt"}})
+    assert not dialog.closed
+    if terminal:
+        driver._streaming = StreamingAssistant()
+        driver._finish_turn("cancelled")
+    else:
+        driver._dispatch_message({"method": "userInput/settled", "params": {
+            "sessionId": "session", "userInputId": "prompt", "outcome": "timedOut"}})
+    assert dialog.closed
+    assert win._question_active_key == (other, "next")
+    stale_answer("too late")
+    assert not driver._proc.stdin.getvalue()
+    assert win._question_active_key == (other, "next")
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_muse_resolved_approval_cannot_be_answered_late(win, tmp_path, terminal):
+    from helios.backend.process.muse_driver import MuseServeDriver
+    from helios.backend.process.streaming import StreamingAssistant
+
+    driver = MuseServeDriver(cwd=str(tmp_path), model="muse-wonder-1.0")
+    driver._session_id = "session"
+    driver._proc = types.SimpleNamespace(stdin=io.BytesIO(), poll=lambda: None)
+    driver.connect("question-asked", win._on_question_asked)
+    driver.connect("interaction-resolved", win._on_interaction_resolved)
+    driver._on_approval_requested({"approvalId": "approval", "availableChoices": [
+        {"label": "Allow once", "choiceId": "yes", "decision": "approved"}]})
+    stale_answer = win.captured[-1][1]
+    dialog = win.captured[-1][3]
+    if terminal:
+        driver._streaming = StreamingAssistant()
+        driver._finish_turn("cancelled")
+    else:
+        driver._dispatch_message({"method": "approval/resolved", "params": {
+            "sessionId": "session", "approvalId": "approval"}})
+    assert dialog.closed
+    assert not win._question_active
+    stale_answer("Allow once")
+    assert not driver._proc.stdin.getvalue()
+    assert driver._pending_approvals == {}
+
+
 def test_muse_retries_survive_window_dedup_and_fence_old_dialog_callbacks(win, tmp_path):
     from helios.backend.process.muse_driver import MuseServeDriver
 
@@ -371,3 +433,72 @@ def test_a_cancelled_prompt_closes_its_dialog_and_can_be_reissued(win):
     # Reissued under the same id → presented again, not dropped as a duplicate.
     win._on_question_asked(d1, {"q": 3}, "t1")
     assert len(win.captured) == 3
+
+
+@pytest.mark.parametrize('action', ['stop', 'permissions'])
+def test_openrouter_invalidation_closes_approval_and_wakes_worker(win, tmp_path, monkeypatch, action):
+    from helios.backend.process import openrouter_driver as od
+
+    driver = od.OpenRouterDriver(cwd=str(tmp_path), model='vendor/model')
+    driver._started = True
+    driver.connect('question-asked', win._on_question_asked)
+    driver.connect('interaction-resolved', win._on_interaction_resolved)
+    monkeypatch.setattr(od.GLib, 'idle_add', lambda cb, *a: cb(*a))
+
+    class BoundedEvent:
+        done = False
+
+        def set(self):
+            self.done = True
+
+        def is_set(self):
+            return self.done
+
+        def wait(self, _timeout):
+            assert self.done, 'permission change left the approval worker blocked'
+            return True
+
+    monkeypatch.setattr(od.threading, 'Event', BoundedEvent)
+    stale = []
+
+    def invalidate(_driver, _payload, _token):
+        stale.append(win.captured[-1][1])
+        if action == 'stop':
+            driver.stop()
+        else:
+            assert driver.set_permission_mode('plan')
+        assert win.captured[-1][3].closed
+        assert not win._question_active
+
+    driver.connect('question-asked', invalidate)
+    assert not driver._request_approval('Bash', {'command': 'pwd'})
+    stale[0]('Allow once')
+    assert not driver._pending_approvals
+    assert not driver._session_grants
+
+
+@pytest.mark.parametrize('action', ['stop', 'permissions'])
+def test_openrouter_cancelled_before_glib_delivery_never_presents(tmp_path, monkeypatch, action):
+    from helios.backend.process import openrouter_driver as od
+
+    driver = od.OpenRouterDriver(cwd=str(tmp_path), model='vendor/model')
+    driver._started = True
+    callbacks, asked = [], []
+    driver.connect('question-asked', lambda _d, payload, token: asked.append(token))
+
+    def queue_then_cancel(callback, *args):
+        first = not callbacks
+        callbacks.append((callback, args))
+        if first:
+            if action == 'stop':
+                driver.stop()
+            else:
+                driver.set_permission_mode('plan')
+        return len(callbacks)
+
+    monkeypatch.setattr(od.GLib, 'idle_add', queue_then_cancel)
+    assert not driver._request_approval('Bash', {'command': 'pwd'})
+    for callback, args in callbacks:
+        callback(*args)
+    assert asked == []
+    assert not driver._pending_approvals

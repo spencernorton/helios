@@ -384,6 +384,7 @@ class OpenRouterDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object)
         "context-compacted": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
         "budget-exhausted": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
         "question-asked": (GObject.SignalFlags.RUN_FIRST, None, (object, str)),
+        "interaction-resolved": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
         "queued-user-sent": (GObject.SignalFlags.RUN_FIRST, None, (int, str)),
         "error": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
         "exited": (GObject.SignalFlags.RUN_FIRST, None, (int,)),
@@ -808,6 +809,7 @@ class OpenRouterDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object)
         self._permission_mode = mode
         self._permission_epoch += 1
         self._session_grants.clear()
+        self._resolve_all_approvals(False)
         self._notify(callback, True)
         return True
 
@@ -2327,7 +2329,7 @@ class OpenRouterDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object)
                 "options": options,
             }],
         }
-        GLib.idle_add(self.emit, "question-asked", payload, token)
+        GLib.idle_add(self._present_approval, token, payload, epoch)
 
         # Bounded wait, re-checking for shutdown. stop() only resolves the
         # approvals registered at that instant; a question raised afterwards is
@@ -2340,6 +2342,7 @@ class OpenRouterDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object)
                 self._pending_approvals.pop(token, None)
                 self._approval_choices.pop(token, None)
                 self._session_answers.pop(token, None)
+                GLib.idle_add(self.emit, "interaction-resolved", token)
                 return False
         _, allowed = self._pending_approvals.pop(token, (None, False))
         self._approval_choices.pop(token, None)
@@ -2354,10 +2357,18 @@ class OpenRouterDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object)
             self._session_grants.add(grant_key)
         return bool(allowed)
 
+    def _present_approval(self, token: str, payload: dict, epoch: int) -> bool:
+        pending = self._pending_approvals.get(token)
+        if (pending is not None and not pending[0].is_set()
+                and epoch == self._permission_epoch and not self._is_cancelled()):
+            self.emit("question-asked", payload, token)
+        return False
+
     def _resolve_all_approvals(self, allowed: bool) -> None:
         for token, (event, _) in list(self._pending_approvals.items()):
             self._pending_approvals[token] = (event, allowed)
             event.set()
+            GLib.idle_add(self.emit, "interaction-resolved", token)
 
     # ── helpers ──────────────────────────────────────────────────────────
 

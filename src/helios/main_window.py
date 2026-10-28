@@ -5183,6 +5183,9 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                         ),
                     ]
                 )
+            if isinstance(driver, OpenRouterDriver):
+                handlers.append(driver.connect(
+                    "interaction-resolved", self._on_interaction_resolved))
             if isinstance(driver, GeminiCliDriver):
                 handlers.extend(
                     [
@@ -5205,6 +5208,9 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                         ),
                     ]
                 )
+            if isinstance(driver, MuseServeDriver):
+                handlers.append(driver.connect(
+                    "interaction-resolved", self._on_interaction_resolved))
             if isinstance(driver, (MuseServeDriver, KimiAcpDriver)):
                 # Same native handlers as Gemini/Codex: the driver emits the
                 # same payload shapes, so animations need no provider branch.

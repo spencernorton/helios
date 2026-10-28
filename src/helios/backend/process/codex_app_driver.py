@@ -370,6 +370,7 @@ class CodexAppServerDriver(CodexCliDriver):
         self._interaction_token_by_id: dict[int | str, str] = {}
         self._interaction_seq = 0
         self._resolved_before_delivery: set[int | str] = set()
+        self._completed_interaction_turns: dict[str, None] = {}
         self._answered_interaction_ids: set[int | str] = set()
         self._mcp_by_name: dict[str, dict[str, Any]] = {}
         self._agents: dict[str, dict[str, Any]] = {}
@@ -3027,6 +3028,7 @@ class CodexAppServerDriver(CodexCliDriver):
             # A terminal notification can precede the JSON-RPC response for
             # this same turn. Retire its callback identity before releasing
             # the slot or auto-sending a queued successor.
+            self._resolve_turn_interactions(terminal_turn_id)
             self._retire_turn_start_dispatch()
             budget_exceeded = _is_session_budget_exceeded(payload)
             provider_status = str(payload.get("subtype") or "unknown")
@@ -3500,13 +3502,18 @@ class CodexAppServerDriver(CodexCliDriver):
         if self._closed or not self._native_mode:
             request.respond_error(-32000, "Helios session is no longer active")
             return False
+        params = request.params if isinstance(request.params, dict) else {}
+        turn_id = params.get("turnId")
+        if (request.method in APPROVAL_METHODS | {USER_INPUT_METHOD, PERMISSIONS_METHOD}
+                and isinstance(turn_id, str) and turn_id in self._completed_interaction_turns):
+            request.abandon()
+            return False
         if request.id in self._resolved_before_delivery:
             self._resolved_before_delivery.discard(request.id)
             request.abandon()
             return False
         self._answered_interaction_ids.discard(request.id)
         method = request.method
-        params = request.params if isinstance(request.params, dict) else {}
         disposition = codex_protocol.classify_server_request(method)
         if disposition == "unknown":
             self._note_unknown_server_request(method)
@@ -3594,6 +3601,20 @@ class CodexAppServerDriver(CodexCliDriver):
             request, _method = pending
             request.abandon()
         self.emit("interaction-resolved", token)
+
+    def _resolve_turn_interactions(self, turn_id: str) -> None:
+        if not turn_id:
+            return
+        # The terminal event and queued request delivery can arrive in either
+        # order. Keep a bounded set of finished turns to fence late prompts.
+        self._completed_interaction_turns[turn_id] = None
+        while len(self._completed_interaction_turns) > 512:
+            self._completed_interaction_turns.pop(next(iter(self._completed_interaction_turns)))
+        request_ids = [request.id for request, _method in self._pending_interactions.values()
+                       if isinstance(request.params, dict)
+                       and request.params.get("turnId") == turn_id]
+        for request_id in request_ids:
+            self._resolve_interaction_by_request_id(request_id)
 
     def _drain_interactions(self, *, respond: bool) -> list[str]:
         pending = list(self._pending_interactions.items())

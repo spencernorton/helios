@@ -299,6 +299,31 @@ def test_a_cancelled_request_is_forgotten_and_the_ui_told():
     assert _writes == []
 
 
+@pytest.mark.parametrize("tool", ["Bash", "AskUserQuestion", "ExitPlanMode"])
+def test_root_terminal_retires_root_prompts_but_preserves_background_child(monkeypatch, tool):
+    driver, writes = _driver()
+    asked = _asked(driver)
+    cancelled = []
+    driver.connect("question-cancelled", lambda _d, token: cancelled.append(token))
+    monkeypatch.setattr(driver, "request_context_usage", lambda: None)
+    monkeypatch.setattr(driver, "_finish_execution_with_evidence", lambda *_a: True)
+    driver._dispatch_record(_can_use_tool(tool, {
+        "command": "ls", "questions": [{"question": "Root choice?"}], "plan": "A plan"}))
+    root = asked[-1][1]
+    # An unknown background agent still owns its prompt; it must survive the
+    # root's terminal record even when no actor has been projected yet.
+    driver._dispatch_record(_can_use_tool("AskUserQuestion", {
+        "questions": [{"question": "Child choice?"}]}, agent_id="background-child", tool_use_id="child-question"))
+    child = asked[-1][1]
+    driver._dispatch_record({"type": "result", "subtype": "success", "usage": {}})
+    assert cancelled == [root]
+    driver.answer_question(root, "Allow once")
+    assert writes == []
+    assert child in driver._pending_questions
+    driver.answer_question(child, "keep going")
+    assert len(writes) == 1
+
+
 # --- Fan-out projection ------------------------------------------------------
 
 
@@ -430,3 +455,21 @@ def test_hook_records_are_forwarded_without_the_envelope():
             "stderr": "",
         }
     ]
+
+
+def test_process_exit_retires_background_prompts_without_answering(monkeypatch):
+    from types import SimpleNamespace
+
+    driver, writes = _driver()
+    asked, cancelled = _asked(driver), []
+    driver.connect('question-cancelled', lambda _d, token: cancelled.append(token))
+    monkeypatch.setattr(driver, '_finish_execution_with_evidence', lambda *_a: True)
+    driver._dispatch_record(_can_use_tool('AskUserQuestion', {
+        'questions': [{'question': 'Child choice?'}]}, agent_id='background-child'))
+    token = asked[-1][1]
+    proc = SimpleNamespace(get_if_exited=lambda: True, get_exit_status=lambda: 0)
+    driver._on_exit(proc, None, None)
+    assert cancelled == [token]
+    driver.answer_question(token, 'late answer')
+    assert writes == []
+    assert driver._prompt_agent_ids == {}
