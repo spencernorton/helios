@@ -143,19 +143,20 @@ AUTONOMY_MODE = "bypassPermissions"
 GLOBAL_DEFAULT_MODES = PERMISSION_MODES
 
 
+def permission_label(mode: str, *, provider: str) -> str:
+    if provider == "google":
+        return {"default": "Sandboxed", "plan": "Read only"}.get(mode, MODE_LABELS.get(mode, mode))
+    return MODE_LABELS.get(mode, mode)
+
+
 def permission_description(mode: str, *, provider: str) -> str:
     """Describe the selected runtime's actual approval scope in the picker."""
     if provider == "google":
         descriptions = {
-            "default": "Work inside the project in the Antigravity sandbox; ask before broader or unsandboxed access.",
-            "acceptEdits": "Auto-approve trusted edits in the Antigravity sandbox; still review untrusted actions.",
-            "auto": "Use guarded automation in the Antigravity sandbox and prompt only when escalation is needed.",
-            "bypassPermissions": (
-                "Full agentic access with auto-approved tool permissions (--dangerously-skip-permissions). "
-                "HOME as cwd stays read-only regardless."
-            ),
-            "plan": "Read-only investigation with Antigravity plan mode.",
-            "dontAsk": "Stay workspace-scoped in the Antigravity sandbox and refuse actions requiring escalation.",
+            "default": "Run inside the Antigravity sandbox under the CLI policy. This headless integration cannot show or answer approval prompts.",
+            "acceptEdits": "Auto-approve trusted edits in the Antigravity sandbox. Requests needing further approval cannot be approved in this headless integration.",
+            "bypassPermissions": "Full agentic access with auto-approved tool permissions (--dangerously-skip-permissions). HOME as cwd stays read-only.",
+            "plan": "Read-only investigation using Antigravity plan mode and sandbox.",
         }
         if mode in descriptions:
             return descriptions[mode]
@@ -184,7 +185,7 @@ def modes_for_provider(provider: str) -> tuple[str, ...]:
     return tuple(
         mode.key
         for mode in PERMISSION_MODE_DESCRIPTORS
-        if provider in mode.providers
+        if provider_allows_mode(provider, mode.key)
     )
 
 
@@ -192,6 +193,8 @@ def provider_allows_mode(provider: str, mode: str) -> bool:
     """Whether ``provider`` may execute ``mode`` at all."""
 
     descriptor = _MODE_BY_KEY.get(mode)
+    if provider == "google" and mode in {"auto", "dontAsk"}:
+        return False  # these aliases have no distinct headless CLI mode
     return descriptor is not None and provider in descriptor.providers
 
 

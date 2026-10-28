@@ -132,21 +132,41 @@ def supports_tools(row: object) -> bool:
 
 #: Reasoning-effort choices offered for a row that declares `reasoning`.
 #:
-#: Deliberately the four levels Helios's own mapping distinguishes
-#: (`chat._REASONING_FOR_EFFORT`). OpenRouter documents `minimal`, `xhigh` and
-#: `max` as well, but Helios collapses everything above "high" onto "high", and
-#: offering a level that silently becomes another one is worse than not
-#: offering it. The pinned endpoint remains authoritative either way: the
-#: driver refuses `set_effort` when the endpoint does not declare `reasoning`,
-#: because `require_parameters: true` would otherwise route the request away.
-#:
-#: Widen this when the wire mapping learns to distinguish them.
-_REASONING_EFFORTS: tuple[tuple[str, str], ...] = (
-    ("off", "No reasoning"),
-    ("low", "Low reasoning effort"),
-    ("medium", "Medium reasoning effort"),
-    ("high", "High reasoning effort"),
-)
+_GATEWAY_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def reasoning_options(row: dict) -> tuple[tuple[tuple[str, str], ...], str]:
+    """Use per-model metadata; missing effort selection is not universal support."""
+    metadata = row.get("reasoning")
+    if not supports_reasoning(row) or not isinstance(metadata, dict):
+        return (), ""
+    if "supported_efforts" not in metadata:
+        return (), ""
+    levels = metadata["supported_efforts"]
+    if levels is None:
+        levels = list(_GATEWAY_EFFORTS)
+    if not isinstance(levels, list):
+        return (), ""
+    mandatory = metadata.get("mandatory") is True
+    allowed = {level for level in levels if isinstance(level, str) and level in _GATEWAY_EFFORTS}
+    if not allowed:
+        return (), ""
+    # enabled:false is separate from effort:none. Explicit optional/off
+    # metadata permits disabling even if none is not an effort enum value.
+    if not mandatory and (metadata.get("mandatory") is False
+                          or metadata.get("default_enabled") is False):
+        allowed.add("none")
+    keys = tuple("off" if level == "none" else level for level in _GATEWAY_EFFORTS
+                 if level in allowed and not (mandatory and level == "none"))
+    default = metadata.get("default_effort")
+    default = "off" if default == "none" else default
+    if metadata.get("default_enabled") is False and not mandatory and "off" in keys:
+        default = "off"
+    if default not in keys:
+        default = next((key for key in ("medium", "high", "low") if key in keys),
+                       keys[0] if keys else "")
+    return tuple((key, "No reasoning" if key == "off" else f"{key.title()} reasoning effort")
+                 for key in keys), default
 
 
 def supports_reasoning(row: object) -> bool:
@@ -192,14 +212,15 @@ def build_entries(rows: list[dict]) -> list[ModelEntry]:
             name = rest
         tooled = supports_tools(row)
         detail = f"{context // 1000}k context"
+        efforts, default_effort = reasoning_options(row)
         entries.append(ModelEntry(
             id=mid,
             label=name if tooled else f"{name}{_NO_TOOLS_SUFFIX}",
             group=_group_label(vendor),
             provider=PROVIDER_OPENROUTER,
             description=detail if tooled else f"{detail}\n{_NO_TOOLS_DETAIL}",
-            reasoning_efforts=_REASONING_EFFORTS if supports_reasoning(row) else (),
-            default_effort="medium" if supports_reasoning(row) else "",
+            reasoning_efforts=efforts,
+            default_effort=default_effort,
         ))
     prio = {v: i for i, v in enumerate(_VENDOR_PRIORITY)}
     entries.sort(key=lambda e: (prio.get(_vendor_of(e.id), len(prio)), e.group, e.label.lower()))
@@ -302,6 +323,19 @@ def context_length_for(model_id: str) -> int:
     return 0
 
 
+def capability_cache_stale(*, max_age_seconds: float = 86400) -> bool:
+    """Only background discovery opts into schema migration/TTL refresh."""
+    try:
+        payload = json.loads(_self.CACHE_PATH.read_text(encoding="utf-8"))
+        stamp = payload.get("fetched_at")
+        return (payload.get("reasoning_schema") != 1
+                or not isinstance(stamp, (int, float)) or isinstance(stamp, bool)
+                or not math.isfinite(stamp) or stamp > time.time() + 300
+                or time.time() - stamp >= max_age_seconds)
+    except (OSError, ValueError, AttributeError):
+        return True
+
+
 def _read_cache() -> list[dict]:
     try:
         payload = json.loads(_self.CACHE_PATH.read_text(encoding="utf-8"))
@@ -325,7 +359,7 @@ def _write_cache(rows: list[dict]) -> None:
         )
         tmp = Path(tmp_name)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps({"fetched_at": int(time.time()), "rows": rows}))
+            handle.write(json.dumps({"fetched_at": int(time.time()), "reasoning_schema": 1, "rows": rows}))
         os.chmod(tmp, 0o600)
         tmp.replace(cache_path)
     except OSError as e:

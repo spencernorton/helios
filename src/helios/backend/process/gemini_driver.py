@@ -20,6 +20,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import GLib, GObject
 
+from helios.backend.effort_policy import EffortPolicyMixin
 from helios.backend import model_catalog
 from helios.backend import google_env
 from helios.backend.google_env import (
@@ -45,7 +46,7 @@ class GeminiDriverSpawnError(RuntimeError):
     """Native subscription session could not be started."""
 
 
-class GeminiCliDriver(UserMessageQueueMixin, GObject.Object):
+class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
     display_name = "gemini"
     provider = "google"
 
@@ -169,14 +170,15 @@ class GeminiCliDriver(UserMessageQueueMixin, GObject.Object):
             env = google_subscription_env(keep=NORVI_TRACKER_ENV)
         except (GoogleBinaryNotFound, ValueError) as exc:
             raise GeminiDriverSpawnError(str(exc)) from exc
-        effort = self._effort or "high"
+        effort = self._effort
         cmd = [
             str(binary.path),
             "--input-format", "stream-json",
             "--output-format", "stream-json",
             "--model", self._model,
-            "--effort", effort,
         ]
+        if effort:
+            cmd.extend(["--effort", effort])
         if self._resume_session_id:
             cmd.extend(["--conversation", self._resume_session_id])
         if self._permission_mode == "bypassPermissions":

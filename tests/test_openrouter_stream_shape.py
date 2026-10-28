@@ -219,6 +219,8 @@ class TestReasoningEffortIsOffered:
             "name": "Vendor: Model",
             "context_length": 128_000,
             "supported_parameters": ["tools", "tool_choice", "reasoning"],
+            "reasoning": {"supported_efforts": ["none", "low", "medium", "high"],
+                          "default_effort": "medium", "mandatory": False},
         }
         row.update(over)
         return row

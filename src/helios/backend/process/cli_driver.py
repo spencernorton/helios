@@ -1170,29 +1170,10 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
 
         self._send_control_request({"subtype": "get_context_usage"}, landed)
 
-    def supported_effort_levels(self) -> list[str]:
-        """Effort stops the CURRENT model offers, or [] if the CLI did not say.
-
-        [] means "no statement" and the caller must keep its own constants. It
-        deliberately covers two cases that both have the same safe answer:
-        the CLI never sent models[], and the CLI sent models[] but this model
-        is not in it.
-
-        NEVER returns another model's levels. An earlier cut fell back to the
-        first effort-capable entry, so an unmatched model — or one explicitly
-        marked `supportsEffort: false` — inherited someone else's capability.
-        That is worse than not knowing, because the UI would offer stops the
-        model does not have and the user could submit one.
-
-        A model present with `supportsEffort: false` also returns [], so the
-        caller shows its full constant set rather than an empty slider. That
-        matches the behaviour before this method existed; narrowing the slider
-        to nothing for such a model is a separate UI decision, not something
-        to smuggle in here.
-        """
-
+    def supported_effort_levels(self) -> list[str] | None:
+        """Exact native levels; [] means unsupported, None means unknown."""
         if not self._cli_models:
-            return []
+            return None
         # The requested alias may include [1m], while initialize lists the
         # bare alias and its resolved id. Only use the CLI-reported live id
         # as a second exact match; do not infer capabilities from a family.
@@ -1207,13 +1188,13 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
                 resolved = str(entry.get("resolvedModel") or "")
                 if target not in (value, resolved):
                     continue
-                if not entry.get("supportsEffort"):
+                if entry.get("supportsEffort") is False:
                     return []
                 levels = entry.get("supportedEffortLevels")
-                if isinstance(levels, list) and levels:
-                    return [str(x) for x in levels]
-                return []
-        return []
+                if isinstance(levels, list):
+                    return [str(x) for x in levels if isinstance(x, str) and x]
+                return None
+        return None
 
     def _handle_control_response(self, obj: dict) -> None:
         response = obj.get("response") or {}
@@ -1404,8 +1385,12 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
         key: str,
         callback: _ExecutionCallback | None = None,
     ) -> bool:
-        if not isinstance(key, str) or key not in _EFFORT_KEYS:
+        levels = self.supported_effort_levels()
+        if not isinstance(key, str) or (key not in _EFFORT_KEYS and key not in (levels or [])):
             self._notify_execution_callback(callback, False, "unknown effort level")
+            return False
+        if levels is not None and (not levels or key not in {*levels, "off"}):
+            self._notify_execution_callback(callback, False, "this model does not support that effort")
             return False
         if key == self.effort_key:
             self._notify_execution_callback(callback, True)

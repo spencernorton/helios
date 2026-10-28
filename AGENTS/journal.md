@@ -1,5 +1,14 @@
 # Helios — Session Journal
 
+
+## 2026-10-28 — codex — Align effort and headless permission capabilities
+
+- **Branch:** `codex/capability-alignment`.
+- **Changed:** OpenRouter uses per-model reasoning levels, defaults and mandatory reasoning; minimal/xhigh/max retain their exact wire values. Background catalog discovery migrates old capability caches and refreshes after24hours; UI/send reads remain cached-only. Missing/malformed effort declarations do not invent controls.
+- **Native policy:** shared catalog snapshots validate staged/live GPT, Muse and Google choices, repair incompatible restored/model-switch choices, and never implicitly select an Ultra lease. Muse rejects arbitrary values; live GPT/Muse/OpenRouter changes require model capabilities. Claude distinguishes unknown metadata from explicit no-effort support, disables explicitly unsupported controls, and preserves newly advertised levels rather than filtering through static constants. Kimi retains native config acknowledgement.
+- **Google:** omit the unadvertised High startup default. Expose only distinct native permission modes; use Sandboxed/Read only labels and explain that headless approvals cannot be answered. Existing Auto/Don't ask aliases resolve to the same sandboxed native behavior they previously invoked.
+- **Validation:** seven new initial regressions fail on unchanged release source. First full isolated Apollo GTK run passed3567 tests; final cache/default edge cases and integrated validation follow. Ruff and diff checks pass. No installed package, live provider or paid model request was changed.
+
 ## 2026-10-28 — codex — Qualify Muse reliability package ingress (v0.114.2)
 
 - The 0.114.1 signed-archive scan found pre-existing comment markers, internal roadmap references and synthetic test identifiers. Removed the markers/references and used documentation-range addresses and a standard example username; no scanner exception or runtime behavior change. Preserve immutable v0.114.1 and publish the same reliability fixes as v0.114.2.
