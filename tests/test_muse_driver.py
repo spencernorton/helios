@@ -153,8 +153,9 @@ def test_approval_uses_question_dialog_and_decides(tmp_path):
 
 def test_translate_answers_shapes():
     prompt = {"questions": [
-        {"id": "q1", "selection": {"mode": "single"}},
-        {"id": "q2", "selection": {"mode": "multiple"}},
+        {"id": "q1", "selection": {"mode": "single"}, "options": [{"label": "A"}]},
+        {"id": "q2", "selection": {"mode": "multiple"},
+         "options": [{"label": "X"}, {"label": "Y"}]},
     ]}
     rows = _translate_answers(prompt, {"0": {"answers": ["A"]}, "1": {"answers": ["X", "Y"]}})
     assert rows == [
@@ -163,7 +164,105 @@ def test_translate_answers_shapes():
     ]
     assert _translate_answers(prompt, None) is None
     assert _translate_answers({"questions": [{"id": "q", "selection": {"mode": "single"}}]}, "B") == [
-        {"questionId": "q", "selectedLabel": "B"}]
+        {"questionId": "q", "freeText": "B"}]
+
+
+def test_user_input_dialog_roundtrip_retains_question_until_native_ack(tmp_path):
+    from helios.widgets.question_dialog import _format_answers, _normalize_questions
+
+    driver = _driver(tmp_path)
+    asked = []
+    driver.connect("question-asked", lambda _d, payload, token: asked.append((payload, token)))
+    driver._on_user_input_requested({"userInputId": "prompt", "questions": [
+        {"id": "which_url", "question": "Which URL?", "options": [{"label": "example.com/ops"}]},
+        {"id": "details", "question": "Details?", "options": []},
+    ]})
+    payload, token = asked[0]
+    answer = _format_answers(_normalize_questions(payload), [["example.com"], ["After login"]])
+    driver.answer_question(token, answer)
+    frame = driver._proc.stdin.frames()[-1]
+    assert frame["method"] == "userInput/answer"
+    assert frame["params"]["answers"] == [
+        {"questionId": "which_url", "freeText": "example.com"},
+        {"questionId": "details", "freeText": "After login"},
+    ]
+    assert token in driver._pending_inputs
+    # A second click while delivery is pending must not mint another command.
+    driver.answer_question(token, answer)
+    assert len(driver._proc.stdin.frames()) == 1
+    driver._dispatch_message({"id": frame["id"], "result": {"status": "accepted"}})
+    assert token not in driver._pending_inputs
+    assert driver.is_busy  # answering never releases the running Work
+
+
+def test_rejected_answer_reopens_question_without_replaying(tmp_path):
+    driver = _driver(tmp_path)
+    asked = []
+    driver.connect("question-asked", lambda _d, payload, token: asked.append((payload, token)))
+    driver._on_user_input_requested({"userInputId": "prompt", "questions": [{"id": "q"}]})
+    driver.answer_question("prompt", "an answer")
+    frame = driver._proc.stdin.frames()[-1]
+    driver._dispatch_message({"id": frame["id"], "error": {
+        "code": -32057, "message": "answer is invalid for user input prompt"}})
+    assert len(asked) == 2 and asked[-1][1] != "prompt"
+    assert driver._input_presentations[asked[-1][1]] == "prompt"
+    assert "did not accept" in asked[-1][0]["caption"]
+    assert "prompt" in driver._pending_inputs
+    assert driver._input_commands == {}
+    assert len(driver._proc.stdin.frames()) == 1
+    driver.answer_question("prompt", "stale answer")
+    assert len(driver._proc.stdin.frames()) == 1
+    driver.answer_question(asked[-1][1], "corrected answer")
+    assert len(driver._proc.stdin.frames()) == 2
+    assert driver._proc.stdin.frames()[-1]["params"]["userInputId"] == "prompt"
+
+
+def test_long_answer_reopens_locally_without_cancelling_or_truncating(tmp_path):
+    driver = _driver(tmp_path)
+    asked = []
+    driver.connect("question-asked", lambda _d, payload, token: asked.append((payload, token)))
+    driver._on_user_input_requested({"userInputId": "prompt", "questions": [{"id": "q"}]})
+    driver.answer_question("prompt", "x" * 501)
+    assert len(asked) == 2 and "500" in asked[-1][0]["caption"]
+    assert not driver._proc.stdin.frames()
+    assert "prompt" in driver._pending_inputs
+
+
+def test_cancel_waits_for_native_ack(tmp_path):
+    driver = _driver(tmp_path)
+    driver._on_user_input_requested({"userInputId": "prompt", "questions": [{"id": "q"}]})
+    driver.answer_question("prompt", None)
+    frame = driver._proc.stdin.frames()[-1]
+    assert frame["method"] == "userInput/cancel"
+    assert "prompt" in driver._pending_inputs
+    driver._dispatch_message({"id": frame["id"], "result": {"status": "accepted"}})
+    assert driver._pending_inputs == {}
+
+
+def test_settled_question_cannot_reopen_on_late_rejection(tmp_path):
+    driver = _driver(tmp_path)
+    asked = []
+    driver.connect("question-asked", lambda _d, payload, token: asked.append((payload, token)))
+    driver._on_user_input_requested({"userInputId": "prompt", "questions": [{"id": "q"}]})
+    driver.answer_question("prompt", "answer")
+    frame = driver._proc.stdin.frames()[-1]
+    driver._dispatch_message({"method": "userInput/settled", "params": {
+        "sessionId": "session-1", "userInputId": "prompt"}})
+    driver._dispatch_message({"id": frame["id"], "error": {"code": -32057}})
+    assert len(asked) == 1
+    assert driver._pending_inputs == {}
+
+
+def test_failed_answer_write_retains_prompt_without_automatic_replay(tmp_path, monkeypatch):
+    driver = _driver(tmp_path)
+    driver._on_user_input_requested({"userInputId": "prompt", "questions": [{"id": "q"}]})
+    monkeypatch.setattr(driver, "_write", lambda _message: False)
+    errors = []
+    driver.connect("error", lambda _d, message: errors.append(message))
+    driver.answer_question("prompt", "answer")
+    assert "uncertain" in errors[-1]
+    assert "prompt" in driver._pending_inputs
+    assert driver.is_busy
 
 
 def test_serve_args_follow_permission_mode():

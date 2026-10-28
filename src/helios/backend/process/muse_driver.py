@@ -46,6 +46,7 @@ from helios.backend.process.message_queue import (
     UserMessageQueueMixin,
 )
 from helios.backend.process.streaming import Block, StreamingAssistant
+from helios.backend.process.muse_questions import question_payload, translate_answers as _translate_answers
 from helios.backend.project_perms import effective_execution_mode, is_home_cwd
 from helios.backend.rate_limits import muse_rate_limit_rows
 from helios.backend.sensitive_text import scrub_sensitive
@@ -185,6 +186,8 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
         self._agents: dict[str, dict[str, str]] = {}
         self._pending_approvals: dict[str, dict] = {}
         self._pending_inputs: dict[str, dict] = {}
+        self._input_commands: dict[int, str] = {}
+        self._input_presentations: dict[str, str] = {}
         self._transcript = CodexTranscriptWriter(cwd, provider=model_catalog.PROVIDER_MUSE)
         self.init_tools: list[str] = []
         self.init_mcp_servers: list[dict[str, Any]] = []
@@ -602,6 +605,10 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
         # Result / error for one of our requests.
         if "id" in msg and ("result" in msg or "error" in msg):
             method = self._pending_rpc.pop(msg["id"], "")
+            input_token = self._input_commands.pop(msg["id"], "")
+            if input_token:
+                self._on_input_command_result(input_token, msg)
+                return False
             change = self._model_changes.pop(msg["id"], None)
             if change is not None:
                 model, callback = change
@@ -676,6 +683,10 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
             self._on_approval_requested(params)
         elif method == "userInput/requested":
             self._on_user_input_requested(params)
+        elif method == "userInput/settled" and params.get("sessionId") == self._session_id:
+            token = str(params.get("userInputId") or "")
+            self._pending_inputs.pop(token, None)
+            self._clear_input_presentations(token)
         elif method == "turn/completed":
             terminal = str(params.get("terminal") or "")
             usage = params.get("usage") if isinstance(params.get("usage"), dict) else {}
@@ -856,24 +867,50 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
         if not user_input_id or user_input_id in self._pending_inputs:
             return
         self._pending_inputs[user_input_id] = params
-        questions = []
-        for question in params.get("questions") or []:
-            if not isinstance(question, dict):
-                continue
-            selection = question.get("selection") if isinstance(question.get("selection"), dict) else {}
-            questions.append({
-                "question": str(question.get("question") or ""),
-                "header": str(question.get("header") or ""),
-                "options": [{"label": str(o.get("label") or ""),
-                             "description": str(o.get("description") or "")}
-                            for o in (question.get("options") or []) if isinstance(o, dict)],
-                "multiSelect": selection.get("mode") == "multiple",
-            })
-        self.emit("question-asked", {"questions": questions}, user_input_id)
+        self._present_user_input(user_input_id)
+
+    def _clear_input_presentations(self, token: str) -> None:
+        for presentation, native in list(self._input_presentations.items()):
+            if native == token:
+                del self._input_presentations[presentation]
+
+    def _present_user_input(self, token: str, *, caption: str = "", retry: bool = False) -> None:
+        prompt = self._pending_inputs.get(token)
+        if prompt is None:
+            return
+        self._clear_input_presentations(token)
+        # The window deduplicates presentation IDs and fences late callbacks
+        # by that ID. A retry is a new presentation of the SAME native prompt.
+        presentation = uuid7() if retry else token
+        self._input_presentations[presentation] = token
+        self.emit("question-asked", question_payload(prompt, caption=caption), presentation)
+
+    def _on_input_command_result(self, token: str, message: dict) -> None:
+        prompt = self._pending_inputs.get(token)
+        if prompt is None:
+            return  # a terminal turn already settled this prompt
+        error = message.get("error")
+        if isinstance(error, dict):
+            detail, _ = scrub_sensitive(str(error.get("message") or "Muse refused the answer."))
+            self.emit("error", detail[:400])
+            if error.get("code") in (-32057, -32602):
+                # A definite validation rejection leaves the native question
+                # open. Re-present it for a new answer, never auto-resubmit.
+                self._present_user_input(token, retry=True,
+                    caption=f"Muse did not accept the answer. {detail[:400]}")
+            return
+        result = message.get("result")
+        if isinstance(result, dict) and result.get("status") == "accepted":
+            self._pending_inputs.pop(token, None)
+            self._clear_input_presentations(token)
+        else:
+            self.emit("error", "Muse did not confirm the answer; the question remains pending.")
 
     def answer_question(self, token: str, answer: Any) -> None:
-        """Route a dialog answer back over MSP. Anything unrecognized
-        denies/cancels — a refusal is the default outcome, never a hang."""
+        """Route a dialog answer over MSP, retaining questions until settled.
+
+        Unknown approval choices deny; invalid user answers remain answerable.
+        """
         approval = self._pending_approvals.pop(token, None)
         if approval is not None:
             label = answer.strip() if isinstance(answer, str) else ""
@@ -894,18 +931,27 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
                     "approvalId": token, "choiceId": str(chosen.get("choiceId") or ""),
                     "requirementId": approval.get("currentRequirementId")})
             return
-        prompt = self._pending_inputs.pop(token, None)
-        if prompt is None:
+        token = self._input_presentations.pop(token, "")
+        prompt = self._pending_inputs.get(token)
+        if prompt is None or token in self._input_commands.values():
             return
-        answers = _translate_answers(prompt, answer)
+        try:
+            answers = _translate_answers(prompt, answer)
+        except ValueError as exc:
+            self._present_user_input(token, caption=str(exc), retry=True)
+            return
         if answers is None:
-            self._send("userInput/cancel", {
+            sent = self._send("userInput/cancel", {
                 "commandId": uuid7(), "sessionId": self._session_id,
                 "userInputId": token, "reason": "Dismissed in Helios."})
         else:
-            self._send("userInput/answer", {
+            sent = self._send("userInput/answer", {
                 "commandId": uuid7(), "sessionId": self._session_id,
                 "userInputId": token, "answers": answers})
+        if sent:
+            self._input_commands[self._rpc_seq] = token
+        else:
+            self.emit("error", "Muse answer delivery is uncertain; the pending question was retained.")
 
     # ── turn terminal ───────────────────────────────────────────────────────
 
@@ -959,6 +1005,9 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
                 "Helios could not finish the Muse execution receipt. This Work remains blocked.")
             return
         self._is_busy = False
+        self._pending_inputs.clear()
+        self._input_commands.clear()
+        self._input_presentations.clear()
         self._streaming = None
         self._blocks = {}
         self._summary_part = {}
@@ -1081,44 +1130,3 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
             self.emit("error", self._stderr.strip())
         self.emit("exited", code)
         return False
-
-
-def _translate_answers(prompt: dict, answer: Any) -> list[dict] | None:
-    """Map the Helios dialog result onto MSP `UserInputAnswer` rows.
-
-    Accepts the dialog's `{"0": {"answers": [...]}}` map or a plain label
-    string (single-question prompts). Anything else returns None so the
-    caller cancels instead of guessing.
-    """
-    questions = [q for q in (prompt.get("questions") or []) if isinstance(q, dict)]
-    if not questions:
-        return None
-    picked: dict[str, list[str]] = {}
-    if isinstance(answer, str) and answer.strip() and len(questions) == 1:
-        picked[str(questions[0].get("id") or "")] = [answer.strip()]
-    elif isinstance(answer, dict):
-        for index, question in enumerate(questions):
-            entry = answer.get(str(index))
-            labels: list[str] = []
-            if isinstance(entry, dict):
-                raw = entry.get("answers")
-                if isinstance(raw, list):
-                    labels = [str(v) for v in raw if str(v).strip()]
-            elif isinstance(entry, str) and entry.strip():
-                labels = [entry.strip()]
-            if labels:
-                picked[str(question.get("id") or "")] = labels
-    else:
-        return None
-    rows: list[dict] = []
-    for question in questions:
-        question_id = str(question.get("id") or "")
-        labels = picked.get(question_id)
-        if not question_id or not labels:
-            return None
-        selection = question.get("selection") if isinstance(question.get("selection"), dict) else {}
-        if selection.get("mode") == "multiple":
-            rows.append({"questionId": question_id, "selectedLabels": labels})
-        else:
-            rows.append({"questionId": question_id, "selectedLabel": labels[0]})
-    return rows
