@@ -214,6 +214,27 @@ class TestOpenRouterEntries:
         # Preserve pricing and history metadata for existing conversations.
         assert oc.context_length_for("openai/gpt-6-astra") == 200000
 
+    def test_stale_cache_refreshes_only_when_asked(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(oc, "CACHE_PATH", tmp_path / "models.json")
+        monkeypatch.setattr(ok, "load_key", lambda: "fixture-key")
+        oc._write_cache([{"id": "qwen/model", "context_length": 200000}])
+        # Backdate past the TTL.
+        import json as _json
+        import time as _time
+
+        payload = _json.loads((tmp_path / "models.json").read_text())
+        payload["fetched_at"] = int(_time.time()) - oc.CACHE_TTL_SECONDS - 60
+        (tmp_path / "models.json").write_text(_json.dumps(payload))
+
+        calls = []
+        monkeypatch.setattr(
+            oc, "refresh_models", lambda: calls.append(1) or oc.cached_models()
+        )
+        entries, status = mc.openrouter_entries()
+        assert status == "cached" and not calls  # send paths never fetch
+        entries, status = mc.openrouter_entries(refresh_if_stale=True)
+        assert status == "fetched" and calls == [1]
+
     def test_preferred_model_never_restores_a_native_provider_row(self):
         entries = [
             mc.ModelEntry("openai/gpt-6-astra", "Astra", "OpenAI"),

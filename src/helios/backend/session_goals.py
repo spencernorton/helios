@@ -10,6 +10,7 @@ lazily when a native session is attached to a Work.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -180,12 +181,51 @@ def objective_validation_error(objective: str) -> str:
     return ""
 
 
-def wrap_user_prompt(text: str, goal: GoalState | None) -> str:
+def goal_fingerprint(goal: GoalState | None) -> str:
+    """Stable hash of everything the full envelope carries.
+
+    Callers that have already delivered the full envelope to a live driver
+    compare fingerprints: an identical goal needs only the compact reminder
+    from ``wrap_user_prompt(..., repeat=True)``; any edit earns the full
+    envelope again.
+    """
+    if goal is None:
+        return ""
+    goal = _normalize_goal(goal)
+    payload = json.dumps(
+        [
+            goal.objective,
+            goal.definition_of_done,
+            goal.status,
+            [[item.text, item.status] for item in goal.items],
+        ],
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def wrap_user_prompt(text: str, goal: GoalState | None, *, repeat: bool = False) -> str:
     if goal is None or goal.status != GOAL_ACTIVE:
         return text
     goal = _normalize_goal(goal)
     if not goal.objective:
         return text
+    if repeat:
+        # The full contract already sits in this driver's history (Claude's
+        # long-lived stream, OpenRouter's replayed array). Re-sending it
+        # verbatim every turn re-bills the same ~250 tokens and stacks a
+        # duplicate copy into the window each time; the reminder keeps the
+        # stopping condition in view at a fraction of the size.
+        done = f" Done when: {goal.definition_of_done}" if goal.definition_of_done else ""
+        return (
+            f"{_BEGIN}\n"
+            f"Goal unchanged: {goal.objective}.{done} "
+            "The full acceptance contract was sent earlier in this session; "
+            "keep working to it and stop when it is satisfied.\n"
+            f"{_END}\n\n"
+            f"{_USER_PREFIX}\n"
+            f"{text}"
+        )
 
     plan_lines = []
     for item in goal.items:

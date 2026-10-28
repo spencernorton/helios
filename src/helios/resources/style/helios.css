@@ -437,8 +437,8 @@ window.helios-glass .helios-session-list list {
     padding: 1px;
     transition:
         background-color 220ms cubic-bezier(0.4, 0, 0.2, 1),
-        box-shadow 240ms cubic-bezier(0.4, 0, 0.2, 1),
-        color 200ms cubic-bezier(0.4, 0, 0.2, 1);
+        box-shadow 220ms cubic-bezier(0.4, 0, 0.2, 1),
+        color 220ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .helios-session-row:hover {
@@ -485,7 +485,7 @@ window.helios-glass .helios-session-list list {
     min-height: 8px;
     border-radius: 100%;
     background-color: alpha(@view_fg_color, 0.25);
-    transition: background-color 240ms cubic-bezier(0.4, 0, 0.2, 1);
+    transition: background-color 220ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* The palette, as one sentence per state:
@@ -666,7 +666,7 @@ window.helios-glass .helios-session-list list {
 }
 
 .helios-bubble-enter {
-    animation: helios-bubble-in 260ms cubic-bezier(0.4, 0, 0.2, 1);
+    animation: helios-bubble-in 220ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .helios-window.reduced-motion .helios-bubble-enter {
@@ -859,7 +859,7 @@ window.helios-glass .helios-session-list list {
    converges; revealed in one piece, already parked at the bottom. The
    transition only animates the reveal (opacity 0 → 1). */
 .helios-transcript-list {
-    transition: opacity 170ms cubic-bezier(0.4, 0, 0.2, 1);
+    transition: opacity 140ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .helios-transcript-list.helios-loading {
@@ -996,9 +996,9 @@ window.helios-glass .helios-session-list list {
     background-color: alpha(@view_fg_color, 0.30);
     box-shadow: inset 0 0 0 1px alpha(@view_fg_color, 0.10);
     transition:
-        background-color 180ms cubic-bezier(0.4, 0, 0.2, 1),
-        box-shadow 180ms cubic-bezier(0.4, 0, 0.2, 1),
-        opacity 180ms cubic-bezier(0.4, 0, 0.2, 1);
+        background-color 220ms cubic-bezier(0.4, 0, 0.2, 1),
+        box-shadow 220ms cubic-bezier(0.4, 0, 0.2, 1),
+        opacity 220ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* RUNNING — the child has actually emitted content under its parent tool_use
@@ -1056,7 +1056,7 @@ window.helios-glass .helios-session-list list {
 }
 
 .helios-agent-terminal-arrival {
-    animation: helios-agent-terminal-in 440ms cubic-bezier(0.4, 0, 0.2, 1) 1;
+    animation: helios-agent-terminal-in 320ms cubic-bezier(0.4, 0, 0.2, 1) 1;
 }
 
 .helios-agent-dock-details {
@@ -1251,11 +1251,11 @@ button:hover .helios-execution-plan {
     font-size: 11pt;
 }
 
-/* Causal send acknowledgement. The 160ms duration is the single compact
+/* Causal send acknowledgement. The 140ms duration is the single compact
  * token mirrored by SEND_ACCEPTANCE_ACK_MS in Composer; GTK CSS has no custom
  * time properties. MainWindow adds this class only after durable acceptance. */
 .helios-send-button.helios-send-accepted {
-    animation: helios-send-accepted 160ms cubic-bezier(0.4, 0, 0.2, 1) 1;
+    animation: helios-send-accepted 140ms cubic-bezier(0.4, 0, 0.2, 1) 1;
 }
 
 @keyframes helios-send-accepted {
@@ -1325,8 +1325,8 @@ button:hover .helios-execution-plan {
     border-radius: 9px;
     padding: 6px 8px;
     transition:
-        background-color 180ms cubic-bezier(0.4, 0, 0.2, 1),
-        box-shadow 180ms cubic-bezier(0.4, 0, 0.2, 1);
+        background-color 220ms cubic-bezier(0.4, 0, 0.2, 1),
+        box-shadow 220ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .helios-execution-popover .helios-permission-option:hover {
@@ -1362,7 +1362,7 @@ button:hover .helios-execution-plan {
 .helios-model-popover button {
     border-radius: 8px;
     padding: 6px 10px;
-    transition: background-color 200ms cubic-bezier(0.4, 0, 0.2, 1);
+    transition: background-color 220ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .helios-model-popover button.helios-model-selected {
@@ -1380,9 +1380,9 @@ button:hover .helios-execution-plan {
 headerbar button,
 headerbar togglebutton {
     transition:
-        background-color 200ms cubic-bezier(0.4, 0, 0.2, 1),
-        box-shadow 200ms cubic-bezier(0.4, 0, 0.2, 1),
-        color 200ms cubic-bezier(0.4, 0, 0.2, 1);
+        background-color 220ms cubic-bezier(0.4, 0, 0.2, 1),
+        box-shadow 220ms cubic-bezier(0.4, 0, 0.2, 1),
+        color 220ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* Engaged panel toggles read clearly as "on" with an accent wash. */
@@ -1686,10 +1686,10 @@ paned > separator:hover {
 
 /* Effort level changed — one accent flash on the collapsed Execution chip,
    because the popover is usually covering the slider that moved. Removed by
-   the widget after ~420ms; skipped entirely under reduced motion. */
+   the widget after ~320ms; skipped entirely under reduced motion. */
 .helios-effort-bump {
     color: @accent_color;
-    transition: color 160ms cubic-bezier(0.4, 0, 0.2, 1);
+    transition: color 140ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* "Older models" disclosure in the model picker. Quiet by construction: it

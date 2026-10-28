@@ -511,6 +511,7 @@ class StreamingBubble(Gtk.Box):
         self._body.add_css_class("helios-bubble-body-assistant")
         self.append(self._body)
 
+        self._flush_count = 0  # streaming-caret blink cadence
         self._segments: list[_Segment] = []
         self._source = None  # the StreamingAssistant we're rendering
         self._activity_expander: Gtk.Expander | None = None
@@ -612,7 +613,19 @@ class StreamingBubble(Gtk.Box):
                 )
         if seg.label is not None:
             tail = content[seg.stable_len :]
-            seg.label.set_text(tail)
+            if tail:
+                # Streaming caret: a dim block after the live tail, toggled
+                # by flush cadence (~8 flushes ≈ 0.5 s) so it blinks while
+                # deltas arrive and vanishes with the bubble — no timer to
+                # leak, and nothing to honour for reduced motion.
+                self._flush_count += 1
+                caret = " ▍" if (self._flush_count // 8) % 2 == 0 else ""
+                seg.label.set_markup(
+                    GLib.markup_escape_text(tail, -1)
+                    + (f'<span alpha="55%">{caret}</span>' if caret else "")
+                )
+            else:
+                seg.label.set_text(tail)
             # An empty label still claims a line's height; hiding it keeps the
             # settled text from growing a blank gap under it between flushes.
             seg.label.set_visible(bool(tail))

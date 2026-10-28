@@ -265,6 +265,7 @@ class WorkCoordinator:
         goal: GoalState | None,
         include_goal_envelope: bool = True,
         include_goal_supplement: bool = False,
+        goal_repeat: bool = False,
     ) -> str | PreparedPrompt:
         """Build the next bounded ledger delta with post-delivery cursor ACK."""
 
@@ -274,6 +275,7 @@ class WorkCoordinator:
                 goal,
                 include_envelope=include_goal_envelope,
                 include_supplement=include_goal_supplement,
+                repeat=goal_repeat,
             )
         participant = self.participant(work_id, provider)
         if participant is None:
@@ -292,6 +294,7 @@ class WorkCoordinator:
                 safe_goal,
                 include_envelope=include_goal_envelope,
                 include_supplement=include_goal_supplement,
+                repeat=goal_repeat,
             )
         packet = build_packet(
             work_id,
@@ -308,6 +311,7 @@ class WorkCoordinator:
             safe_goal,
             include_envelope=include_goal_envelope,
             include_supplement=include_goal_supplement,
+            repeat=goal_repeat,
         )
         through_seq = _contiguous_prompt_boundary(
             participant.last_event_seq,
@@ -742,9 +746,10 @@ def _wrap_goal_context(
     *,
     include_envelope: bool,
     include_supplement: bool,
+    repeat: bool = False,
 ) -> str:
     if include_envelope:
-        return session_goals.wrap_user_prompt(text, goal)
+        return session_goals.wrap_user_prompt(text, goal, repeat=repeat)
     if include_supplement:
         return session_goals.wrap_goal_supplement(text, goal)
     return text

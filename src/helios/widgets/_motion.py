@@ -5,12 +5,11 @@ properties / `var()` landed in 4.16, and `@define-color` is colors only. So
 "declare the duration once" is achievable only as a Python constant for the
 Python side plus normalised literals in the stylesheet.
 
-**The stylesheet does NOT yet mirror these values.** It still carries
-140/160/170/180/200/220/240/260/420/440, of which only 140 and 220 are in
-`DURATIONS`, and nothing pins the two in sync — `tests/test_style_tokens.py`
-guards the Python side only. Reconciling the sheet is M-3b, which has to land
-last in the stylesheet queue because it rewrites every literal in the file and
-would invalidate the line citations of every other pending CSS item.
+**The stylesheet mirrors these values.** Every `transition` duration and
+one-shot `animation` duration in `helios.css` is one of `DURATIONS`, and
+`tests/test_style_tokens.py` guards both sides. Keyframe loop periods
+(`infinite` animations) are exempt — a 1.5–2.8s pulse period is not a
+transition.
 
 Pure ints: no `import gi`, so this is importable from the `python:3.13-slim`
 `tests` lane, and `test_style_tokens.py` imports it to prove exactly that.

@@ -11,20 +11,30 @@ import shlex
 from dataclasses import dataclass
 
 from helios.backend import model_catalog
+from helios.backend.provider_identity import (
+    DEFAULT_PROVIDER_REGISTRY,
+    CredentialOwner,
+)
 from helios.log import get_logger
 
 _log = get_logger("accounts")
 
-PROVIDERS = (
-    model_catalog.PROVIDER_ANTHROPIC,
-    model_catalog.PROVIDER_OPENAI,
-    model_catalog.PROVIDER_GOOGLE,
-    model_catalog.PROVIDER_MUSE,
-    model_catalog.PROVIDER_OPENROUTER,
+# Derived from the provider registry so a new provider appears here by
+# registering once: primary-driver providers with a real credential owner.
+PROVIDERS = tuple(
+    d.provider_id
+    for d in DEFAULT_PROVIDER_REGISTRY.descriptors
+    if d.supports_primary_driver and d.credential_owner is not CredentialOwner.NONE
 )
 
-# OpenRouter is an API key, not a sign-in: its row points at the key field.
-TERMINAL_PROVIDERS = PROVIDERS[:-1]
+# Terminal sign-in belongs to providers whose own CLI owns the credential;
+# the gateway (OpenRouter) is an API key field, not a sign-in.
+TERMINAL_PROVIDERS = tuple(
+    p
+    for p in PROVIDERS
+    if DEFAULT_PROVIDER_REGISTRY.require(p).credential_owner
+    is CredentialOwner.NATIVE_RUNTIME
+)
 
 _CLOSE = "; echo; read -rp 'Press Enter to close…'"
 

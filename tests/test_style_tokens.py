@@ -79,6 +79,30 @@ def test_no_literal_transition_duration_survives() -> None:
     )
 
 
+def test_css_transition_durations_use_motion_tokens() -> None:
+    """Every CSS `transition` duration and one-shot animation duration is a
+    `_motion` token. Keyframe loops (`infinite`) are periods, not transitions,
+    and are exempt. Guards the M-3b reconciliation from drifting again."""
+    css = (_SRC / "resources" / "style" / "helios.css").read_text()
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    allowed = {f"{d}ms" for d in DURATIONS}
+    offenders: list[str] = []
+    for m in re.finditer(r"transition\s*:([^;]+);", css):
+        for d in re.findall(r"(\d+)ms", m.group(1)):
+            if f"{d}ms" not in allowed:
+                offenders.append(f"transition {d}ms")
+    for m in re.finditer(r"animation\s*:([^;]+);", css):
+        if "infinite" in m.group(1):
+            continue
+        for d in re.findall(r"(\d+)ms", m.group(1)):
+            if f"{d}ms" not in allowed:
+                offenders.append(f"animation {d}ms")
+    assert not offenders, (
+        f"use a _motion token {sorted(allowed)} in helios.css: "
+        + ", ".join(offenders)
+    )
+
+
 def test_motion_module_stays_importable_without_pygobject() -> None:
     """The slim `tests` lane has no PyGObject, and `_motion` lives under
     `helios/widgets/` — a package full of `gi` importers. That is exactly the

@@ -172,30 +172,47 @@ class GoalWorkMixin:
         # Keep that single objective authority while supplying the accepted
         # definition-of-done and checklist through Helios' prompt context.
         include_goal_supplement = native_goal_synced and goal is not None
+        # Token saving: the full Goal envelope is delivered once per driver;
+        # while the goal is byte-identical, later turns carry the compact
+        # reminder. A goal edit changes the fingerprint and earns the full
+        # envelope again; a fresh driver has no fingerprint and starts full.
+        fingerprint = (
+            session_goals.goal_fingerprint(goal) if include_goal_envelope else ""
+        )
+        goal_repeat = bool(fingerprint) and (
+            getattr(drv, "_helios_goal_fingerprint", "") == fingerprint
+        )
 
         def with_goal_context(value: str) -> str:
             if include_goal_envelope:
-                return session_goals.wrap_user_prompt(value, goal)
+                return session_goals.wrap_user_prompt(value, goal, repeat=goal_repeat)
             if include_goal_supplement:
                 return session_goals.wrap_goal_supplement(value, goal)
             return value
 
         coordinator = getattr(self, "_work_coordinator", None)
         if coordinator is None or not work_id:
-            return with_goal_context(text)
+            prepared = with_goal_context(text)
+            if fingerprint:
+                drv._helios_goal_fingerprint = fingerprint
+            return prepared
         provider = str(
             getattr(drv, "_helios_participant_provider", "")
             or self._driver_provider(drv)
         )
         try:
-            return coordinator.prepare_prompt(
+            prepared = coordinator.prepare_prompt(
                 work_id=work_id,
                 provider=provider,
                 text=text,
                 goal=goal,
                 include_goal_envelope=include_goal_envelope,
                 include_goal_supplement=include_goal_supplement,
+                goal_repeat=goal_repeat,
             )
+            if fingerprint:
+                drv._helios_goal_fingerprint = fingerprint
+            return prepared
         except Exception as exc:
             _log.warning("could not prepare Work context for %s: %s", work_id, exc)
             try:
@@ -225,7 +242,10 @@ class GoalWorkMixin:
                 )
             except Exception as toast_exc:
                 raise RequiredPromptContextError() from toast_exc
-            return with_goal_context(text)
+            prepared = with_goal_context(text)
+            if fingerprint:
+                drv._helios_goal_fingerprint = fingerprint
+            return prepared
 
     def _goal_with_current_metadata(self, goal: GoalState) -> GoalState:
         # replace(): these helpers only re-stamp cwd/provider, so enumerating

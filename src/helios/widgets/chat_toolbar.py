@@ -59,7 +59,7 @@ EFFORT_ICON_NAME = "power-profile-performance-symbolic"
 
 # The accent flash on the collapsed chip. (The handle-glide duration is
 # _motion.FAST_MS — one token for every Helios micro-transition.)
-_EFFORT_BUMP_MS = 420
+_EFFORT_BUMP_MS = SLOW_MS  # hold for the 140ms flash; tokenised with _motion
 
 #: libadwaita's default *blue* standalone accent, light and dark. Only used when
 #: the accent API is missing — see _accent_rgb.

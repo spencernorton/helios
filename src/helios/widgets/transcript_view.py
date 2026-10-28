@@ -748,6 +748,10 @@ class TranscriptView(Gtk.Box):
             self._append_turn_bubble(turn, animate_in=animate)
         return len(tail.turns)
 
+    def current_session(self) -> Session | None:
+        """The session whose transcript is on screen, if any."""
+        return self._session
+
     def set_session(self, session: Session | None) -> None:
         if self._destroyed:
             return

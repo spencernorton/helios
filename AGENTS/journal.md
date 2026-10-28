@@ -1,5 +1,21 @@
 # Helios — Session Journal
 
+## 2026-10-28 — claude — Provider audit: catalog self-refresh, registry-derived accounts, streaming caret (unreleased)
+
+- **Audit (Claude/GPT/Gemini/Muse/OpenRouter + Kimi):** limits already show for Claude, Codex, Muse and OpenRouter (credit row) in the toolbar; Gemini honestly reports tokens with no published window/limit. All five catalogs refresh at startup, on credential change, and on the 6 h tick — except OpenRouter's network fetch, which only ran on force.
+- **Fix:** `openrouter.catalog.cache_age_seconds` + `openrouter_entries(refresh_if_stale=True)` (24 h TTL), passed only by the background catalog worker — send paths never fetch. Kimi models arrive through this catalog; no native Moonshot driver is warranted.
+- **Seamlessness:** `accounts.PROVIDERS`/`TERMINAL_PROVIDERS` now derive from `DEFAULT_PROVIDER_REGISTRY` (same membership); `docs/ADDING-A-PROVIDER.md` lists the remaining manual seams (driver spawn `isinstance` branches included, honestly).
+- **Animation:** streaming caret (dim `▍`, blink by flush cadence, no timer) in `StreamingBubble`; verified on Xvfb with markup-hostile text. The context arc already sweeps on `SLOW_MS` — left alone.
+- **Validation:** full GTK-free suite green, `ruff check .` clean, GTK tests green on Xvfb, caret probe passed.
+
+## 2026-10-28 — claude — Motion tokens, Goal-envelope diet, chat export (unreleased)
+
+- **Audit vs Codex / Claude Code / Antigravity (Oct 2026):** Helios already leads on multi-provider Works, prompt-cache prefix stabilisation, deferred-tool accounting and subscription-aware budgets; the three gaps worth closing now were motion drift, per-turn Goal re-billing, and no session export.
+- **Animations (M-3b, the documented pending sweep):** every `transition` and one-shot `animation` duration in `helios.css` is now a `_motion` token (140/220/320 ms); keyframe loop periods exempt. `_EFFORT_BUMP_MS` uses `SLOW_MS`. `test_css_transition_durations_use_motion_tokens` guards both sides.
+- **Tokens:** `session_goals.goal_fingerprint` + `wrap_user_prompt(repeat=True)` — first turn per driver sends the full Goal envelope, unchanged repeats send a 254-char reminder vs 576 chars measured. Wired via `window_goal` (per-driver fingerprint) through `work_coordinator.prepare_prompt(goal_repeat=…)`. A goal edit or fresh driver earns the full envelope again.
+- **Feature:** `backend/transcript_export.export_markdown` (thinking/tool-results/sidechain omitted, goal envelopes stripped) behind header-menu *Export chat to Markdown…* (`win.export-chat`); parse + write run on a thread, dialog pinned per the GC rule.
+- **Validation:** full GTK-free suite green, `ruff check .` clean, GTK signal/checkpoint tests green on Xvfb. Live app left running; changes land on next restart.
+
 ## 2026-10-22 — claude — Opt-in worktrees (v0.113.0)
 
 - **Roadmap Phase 3e.** `backend/worktrees.py`: `create` (`git worktree add -b helios/<repo>-<time> state_dir()/worktrees/<name> HEAD`), `is_helios_worktree`, `remove` (refuses foreign folders and dirty trees; runs from the common dir; keeps the branch). New-chat popover entry → `_start_new_chat_in_worktree` (thread, then `_show_fresh_chat_ui`); Changes pane shows *Remove worktree* only for Helios worktrees.

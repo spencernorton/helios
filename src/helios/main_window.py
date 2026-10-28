@@ -5,6 +5,7 @@ import os
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import NamedTuple
 
 import gi
@@ -171,6 +172,7 @@ class _NativeRecoveryAnchor(NamedTuple):
 from helios.backend.session_state import context_fill_for
 from helios.backend.session_goals import GoalState
 from helios.backend.transcript import ImageRef, Turn, parse_transcript
+from helios.backend.transcript_export import export_markdown
 from helios.backend.work_coordinator import WorkCoordinator, tag_driver
 from helios.backend.work_store import ExecutionAdmissionError
 from helios.widgets.activity_indicator import (
@@ -890,6 +892,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         menu.append("Emergency stop all sessions", "win.stop-all")
         menu.append("Clear budget block", "win.clear-budget-block")
         menu.append("Rewind files…", "win.rewind")
+        menu.append("Export chat to Markdown…", "win.export-chat")
         menu.append("Settings", "win.preferences")
         menu.append("About Helios", "app.about")
         menu.append("Quit", "app.quit")
@@ -939,6 +942,11 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         rewind_act = Gio.SimpleAction.new("rewind", None)
         rewind_act.connect("activate", lambda *_a: self._show_rewind())
         self.add_action(rewind_act)
+
+        export_act = Gio.SimpleAction.new("export-chat", None)
+        export_act.connect("activate", lambda *_a: self._export_current_chat())
+        self.add_action(export_act)
+        self._export_dialog: Gtk.FileDialog | None = None
         self.connect("close-request", self._on_close_request)
 
         # App-level action so a "session finished" notification can deep-link
@@ -1163,7 +1171,9 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             # OpenRouter catalog (cached; no network on the refresh thread
             # unless the user just added a key, which triggers a force).
             try:
-                or_entries, or_status = model_catalog.openrouter_entries(force=force)
+                or_entries, or_status = model_catalog.openrouter_entries(
+                    force=force, refresh_if_stale=True
+                )
                 if or_entries:
                     entries = entries + or_entries
                 _log.info(
@@ -9195,6 +9205,43 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 drv._helios_pending_checkpoints = pending
             pending.append(point)
         return False
+
+    def _export_current_chat(self) -> None:
+        """Save the visible chat as Markdown (parse off the main thread)."""
+        session = self._transcript.current_session()
+        if session is None:
+            self._toast("No chat is open to export.")
+            return
+        dialog = Gtk.FileDialog()
+        dialog.set_title("Export chat to Markdown")
+        dialog.set_modal(True)
+        dialog.set_initial_name("helios-chat.md")
+        self._export_dialog = dialog  # pin across the async save
+
+        def on_save(dlg, result) -> None:
+            try:
+                gfile = dlg.save_finish(result)
+            except GLib.Error:
+                return  # cancelled
+            path = gfile.get_path() if gfile is not None else None
+            if not path:
+                return
+
+            def work() -> None:
+                try:
+                    text = export_markdown(
+                        parse_transcript(session.path),
+                        title=session.display_title,
+                    )
+                    Path(path).write_text(text, encoding="utf-8")
+                    note = f"Exported chat to {path}"
+                except OSError as exc:
+                    note = f"Could not export chat: {exc}"
+                GLib.idle_add(self._toast, note)
+
+            threading.Thread(target=work, daemon=True, name="chat-export").start()
+
+        dialog.save(self, None, on_save)
 
     def _show_rewind(self, before: float | None = None) -> None:
         """Open Rewind. ``before`` (unix time of one of your messages) narrows

@@ -253,6 +253,23 @@ def refresh_models(*, transport: HttpTransport | None = None) -> list[ModelEntry
     return entries
 
 
+#: A cached catalog older than this is refreshed on the next background
+#: catalog pass, so new models appear without waiting for a credential change.
+CACHE_TTL_SECONDS = 24 * 3600
+
+
+def cache_age_seconds() -> float | None:
+    """Age of the on-disk catalog, or None when there is no usable cache."""
+    try:
+        payload = json.loads(_self.CACHE_PATH.read_text(encoding="utf-8"))
+        fetched_at = payload.get("fetched_at") if isinstance(payload, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(fetched_at, (int, float)) or isinstance(fetched_at, bool):
+        return None
+    return max(0.0, time.time() - float(fetched_at))
+
+
 def cached_models() -> list[ModelEntry]:
     """Last fetched catalog as picker entries; [] when never fetched."""
     return build_entries(_read_cache())

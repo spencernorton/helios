@@ -699,7 +699,9 @@ def preferred_openrouter_model(entries: list[ModelEntry]) -> str:
     return next((entry.id for entry in entries if openrouter_model_selectable(entry.id)), "")
 
 
-def openrouter_entries(*, force: bool = False) -> tuple[list[ModelEntry], str]:
+def openrouter_entries(
+    *, force: bool = False, refresh_if_stale: bool = False
+) -> tuple[list[ModelEntry], str]:
     """Return OpenRouter models and a diagnostic source status.
 
     The catalog comes from OpenRouter's public ``/models`` endpoint, cached on
@@ -708,14 +710,18 @@ def openrouter_entries(*, force: bool = False) -> tuple[list[ModelEntry], str]:
     there is nothing to chat with until Settings has a credential. With a key,
     cached rows are returned immediately; ``force=True`` performs the network
     refresh synchronously (callers run it on a worker thread) and falls back
-    to the previous cache when the fetch fails.
+    to the previous cache when the fetch fails. ``refresh_if_stale=True`` does
+    the same once the cache passes ``CACHE_TTL_SECONDS`` — background callers
+    only, never a send path.
     """
     from helios.backend.openrouter import catalog as or_catalog
     from helios.backend.openrouter import key as or_key
 
     if not or_key.load_key():
         return [], "no-key"
-    if force:
+    age = or_catalog.cache_age_seconds() if refresh_if_stale else None
+    stale = refresh_if_stale and (age is None or age > or_catalog.CACHE_TTL_SECONDS)
+    if force or stale:
         try:
             entries = or_catalog.refresh_models()
             if entries:
@@ -724,7 +730,7 @@ def openrouter_entries(*, force: bool = False) -> tuple[list[ModelEntry], str]:
             _log.warning("OpenRouter catalog fetch failed (%s); using cache", e)
     cached = or_catalog.cached_models()
     if cached:
-        return cached, "cached" if not force else "cached-stale"
+        return cached, "cached" if not (force or stale) else "cached-stale"
     return list(FALLBACK_OPENROUTER), "fallback"
 
 

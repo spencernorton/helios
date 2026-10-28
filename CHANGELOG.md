@@ -6,6 +6,13 @@ source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
 ## Unreleased
 
+- Export chat to Markdown… (header menu): saves the visible chat — your messages and the assistant's replies, with tool calls named — as one Markdown file.
+- Motion: every stylesheet transition and one-shot animation now uses the shared 140/220/320 ms tokens, so hovers, revealers and message entrances move at the same three speeds everywhere.
+- Goal context: after the first turn, an unchanged Goal is re-sent as a short reminder instead of the full acceptance envelope, saving roughly half its tokens on every later turn.
+- OpenRouter's model list now refreshes itself once the cached catalog is a day old (background pass only), so new models such as Kimi releases appear without changing a credential.
+- Streaming replies show a blinking caret at the writing edge.
+- `docs/ADDING-A-PROVIDER.md` documents the provider checklist; the Accounts page now derives its providers from the registry.
+
 ## 0.113.0 — 2026-10-22
 
 - *Chat in a Worktree* (new-chat menu): an opt-in git worktree of the current repository on its own `helios/…` branch under `~/.helios/worktrees/`, with a new chat in it. The Changes pane commits, pushes and opens a PR from there, and *Remove worktree* deletes the folder once it is clean, keeping the branch. The automatic redirect removed in 0.66.0 stays removed.

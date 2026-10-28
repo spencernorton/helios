@@ -135,6 +135,30 @@ def test_prompt_wrap_and_strip_roundtrip():
     assert sg.strip_goal_envelope(wrapped) == "please proceed"
 
 
+def test_repeat_wrap_is_compact_and_still_strips():
+    goal = sg.GoalState(
+        "Finish the project",
+        definition_of_done="Tests pass",
+        items=[sg.GoalPlanItem("implement", sg.PLAN_IN_PROGRESS)],
+    )
+    full = sg.wrap_user_prompt("please proceed", goal)
+    repeat = sg.wrap_user_prompt("please proceed", goal, repeat=True)
+    assert "Goal unchanged: Finish the project" in repeat
+    assert "Done when: Tests pass" in repeat
+    assert "Acceptance checklist:" not in repeat
+    assert len(repeat) < len(full)
+    assert sg.strip_goal_envelope(repeat) == "please proceed"
+
+
+def test_goal_fingerprint_tracks_envelope_content():
+    goal = sg.GoalState("Ship it", items=[sg.GoalPlanItem("a", sg.PLAN_PENDING)])
+    same = sg.GoalState("Ship it", items=[sg.GoalPlanItem("a", sg.PLAN_PENDING)])
+    edited = sg.GoalState("Ship it", items=[sg.GoalPlanItem("a", sg.PLAN_COMPLETED)])
+    assert sg.goal_fingerprint(goal) == sg.goal_fingerprint(same)
+    assert sg.goal_fingerprint(goal) != sg.goal_fingerprint(edited)
+    assert sg.goal_fingerprint(None) == ""
+
+
 def test_native_goal_supplement_preserves_acceptance_without_objective_duplication():
     goal = sg.GoalState(
         "Native objective already synchronized",
