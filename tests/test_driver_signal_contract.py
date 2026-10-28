@@ -82,7 +82,7 @@ def test_real_window_wiring_uses_only_supported_provider_signals(tmp_path, provi
     cls = {"claude": ClaudeCliDriver, "gpt": CodexAppServerDriver,
            "gemini": GeminiCliDriver, "openrouter": OpenRouterDriver,
            "muse": MuseServeDriver, "kimi": KimiAcpDriver}[provider]
-    driver = cls(cwd=str(tmp_path))
+    driver = cls(cwd=str(tmp_path), model="gpt-test" if provider == "gpt" else "")
     handlers = namespace["connect_handlers"](driver)
     assert len(handlers) > len(COMMON_DRIVER_SIGNALS)
     for handler in handlers:
