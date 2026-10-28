@@ -1,5 +1,14 @@
 # Helios — Session Journal
 
+## 2026-10-28 — codex — Release Muse session reliability (v0.114.1)
+
+- Reconciled the two local Muse hotfix commits onto GitHub main in an independent worktree. Original Apollo main and its unrelated UI commits remain preserved on `preserve/lifecycle-import-20261028`; its obsolete GitLab tracking branch explains the misleading ahead/behind count.
+- Host continuations stream and persist, background work protects drivers from eviction, native goals and busy state reach the window, and active Goal envelopes request all unblocked steps before yielding. Typed answers and rejected-question retry retain native IDs and stale-dialog fencing.
+- Additional release checks fence stale turn terminals, retain workflow IDs across partial updates, and fail closed when a continuation transcript cannot be saved. No automatic goal retry loop or changed concurrency/budget policy is introduced.
+- Validation: 192 focused native GTK, question, driver-manager, Goal and Work-store tests pass; Ruff passes. Release checks and deployment evidence are recorded in the tracker and shared project status.
+- The running packaged Helios process is preserved while the migration's XNote session finishes. Installing a package does not load these changes into an already-running process.
+
+
 ## 2026-10-28 — agy — Muse background continuation turns, background task tracking, and end-to-end execution
 
 - **Report:** Sessions stopped or appeared finished before work was complete compared to macOS agent apps. Investigation identified four compounding causes: (1) `MuseServeDriver` dropped host-initiated continuation turns when a background `workflow`, `subagent`, `monitor`, or background `toolCall` completed because `_finish_turn` exited early whenever `_execution_attempt_id` was `None` and `turn/started` only allocated `StreamingAssistant` inside `send_user_text`; (2) `MuseServeDriver` lacked `has_background_work`, so `DriverManager._is_working` treated Muse sessions with running background workflows/subagents/tools as idle (exposing them to the 4-driver LRU cache and 30-minute idle reaper) and never populated `BackgroundPane`; (3) `MainWindow._on_native_turn_status` only cleared busy state on terminal statuses and never set busy on `inProgress` for host-initiated turns, nor did `MainWindow` wire `background-tasks-changed` or `native-goal-updated` for `MuseServeDriver`; (4) Goal envelopes and global `AGENTS.md` / `CLAUDE.md` lacked explicit instructions against stopping after one slice of a multi-step request.

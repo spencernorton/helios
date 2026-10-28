@@ -4,6 +4,12 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.114.1 — 2026-10-28
+
+- Muse background continuations now stream and persist their replies, and active workflows, subagents and tools protect their sessions from idle eviction.
+- Muse typed question answers use the native free-text field; rejected answers remain available to retry.
+- Active Goal instructions ask agents to complete all unblocked steps before yielding.
+
 ## 0.114.0 — 2026-10-26
 
 - Native Kimi Code membership provider over ACP: managed sign-in, live model/thinking catalogs, streaming turns and plans, tool approvals, images/resources, MCP forwarding, exact resume/fork, native Compact, durable Work receipts and transcripts, Settings/Accounts integration, and provider-safe session routing. Audio and unsupported ACP methods are not advertised.

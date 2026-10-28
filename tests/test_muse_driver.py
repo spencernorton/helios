@@ -569,3 +569,41 @@ def test_session_goal_changed_emits_native_goal_updated(tmp_path):
         {"goal": {"goalId": "g-1", "objective": "Ship feature", "status": "active"}, "cleared": False},
         {"goal": None, "cleared": True},
     ]
+
+
+def test_stale_terminal_does_not_finish_newer_continuation(tmp_path):
+    driver = _driver(tmp_path)
+    driver._root_turn_id = "continuation-2"
+    results = []
+    driver.connect("result", lambda _d, result: results.append(result))
+    driver._dispatch_message({"method": "turn/completed", "params": {
+        "turnId": "turn-1", "terminal": "completed"}})
+    assert driver.is_busy
+    assert driver._streaming is not None
+    assert not results
+
+
+def test_continuation_transcript_failure_blocks_instead_of_claiming_saved(tmp_path):
+    driver = _driver(tmp_path)
+    driver._on_item({"itemId": "reply", "kind": "agentMessage", "text": "Done"}, terminal=True)
+    class BrokenTranscript:
+        def append_assistant(self, *args, **kwargs):
+            raise OSError("disk full")
+    driver._transcript = BrokenTranscript()
+    appended, results = [], []
+    driver.connect("turn-appended", lambda _d, turn: appended.append(turn))
+    driver.connect("result", lambda _d, result: results.append(result))
+    driver._finish_turn("completed")
+    assert driver._accounting_failed
+    assert not appended
+    assert not results
+
+
+def test_agent_updates_preserve_native_task_identity(tmp_path):
+    driver = _driver(tmp_path)
+    driver._on_item({"itemId": "w1", "kind": "workflow", "status": "inProgress",
+                     "workflowRunId": "native-workflow"}, terminal=False)
+    driver._on_item({"itemId": "w1", "kind": "workflow", "status": "inProgress"}, terminal=False)
+    assert driver.background_task_rows[0]["task_id"] == "native-workflow"
+    assert driver.stop_background_task("native-workflow")
+    assert driver._proc.stdin.frames()[-1]["params"]["workflowRunId"] == "native-workflow"

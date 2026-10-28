@@ -801,6 +801,9 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
             self._pending_inputs.pop(token, None)
             self._clear_input_presentations(token)
         elif method == "turn/completed":
+            turn_id = params.get("turnId")
+            if turn_id and self._root_turn_id and turn_id != self._root_turn_id:
+                return False  # a late terminal must not finish a newer continuation
             terminal = str(params.get("terminal") or "")
             usage = params.get("usage") if isinstance(params.get("usage"), dict) else {}
             for key, value in usage.items():
@@ -908,13 +911,15 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
             mapped = "starting"  # delegation proven; nothing observed yet
         message = (item.get("failureReason") or item.get("objective")
                    or item.get("message") or item.get("fallbackText") or "")
+        previous = self._agents.get(item_id, {})
         self._agents[item_id] = {
             "status": mapped,
             "name": str(item.get("role") or item.get("agentPath") or kind),
             "role": str(item.get("role") or kind),
             "message": str(message)[:500],
             "tool": kind,
-            "task_id": str(item.get("subagentId") or item.get("workflowRunId") or item_id),
+            "task_id": str(item.get("subagentId") or item.get("workflowRunId")
+                           or previous.get("task_id") or item_id),
         }
         children = item.get("children")
         if kind == "workflow" and isinstance(children, list):
@@ -1104,7 +1109,9 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
                         self._hold_accounting_failure(
                             "Helios could not save the Muse transcript. This Work remains blocked.")
                         return
-                    _log.warning("could not save continuation Muse transcript", exc_info=True)
+                    self._hold_accounting_failure(
+                        "Helios could not save the Muse continuation. This Work remains blocked.")
+                    return
                 self.emit("turn-appended", turn)
                 appended_turn = True
         usage = self._turn_usage
