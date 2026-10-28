@@ -5229,6 +5229,11 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                         ),
                     ]
                 )
+            if isinstance(driver, MuseServeDriver):
+                handlers.extend([
+                    driver.connect("background-tasks-changed", self._on_background_tasks),
+                    driver.connect("native-goal-updated", self._on_native_goal_updated),
+                ])
             if isinstance(driver, KimiAcpDriver):
                 handlers.append(driver.connect("thread-forked", self._on_codex_thread_forked))
             if isinstance(
