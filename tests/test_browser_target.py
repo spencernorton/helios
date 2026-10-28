@@ -55,7 +55,7 @@ def test_project_files_and_loopback_are_free_everything_else_asks(tmp_path):
         assert consent_scope(url, cwd) == "", url
     assert consent_scope("https://mail.example.com/inbox", cwd) == "mail.example.com"
     assert consent_scope("http://localhost.evil.com/", cwd) == "localhost.evil.com"
-    assert consent_scope("http://10.0.0.5:8000", cwd) == "10.0.0.5"
+    assert consent_scope("http://192.0.2.5:8000", cwd) == "192.0.2.5"
     # A file:// page can frame any file, so it is never free — even in the project.
     assert consent_scope((project / "out" / "r.html").as_uri(), cwd) == str(project / "out" / "r.html")
     assert consent_scope("file:///etc/passwd", cwd) == "/etc/passwd"

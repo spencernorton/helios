@@ -1,5 +1,10 @@
 # Helios — Session Journal
 
+## 2026-10-28 — codex — Qualify Muse reliability package ingress (v0.114.2)
+
+- The 0.114.1 signed-archive scan found pre-existing comment markers, internal roadmap references and synthetic test identifiers. Removed the markers/references and used documentation-range addresses and a standard example username; no scanner exception or runtime behavior change. Preserve immutable v0.114.1 and publish the same reliability fixes as v0.114.2.
+
+
 ## 2026-10-28 — codex — Release Muse session reliability (v0.114.1)
 
 - Reconciled the two local Muse hotfix commits onto GitHub main in an independent worktree. Original Apollo main and its unrelated UI commits remain preserved on `preserve/lifecycle-import-20261028`; its obsolete GitLab tracking branch explains the misleading ahead/behind count.
