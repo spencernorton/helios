@@ -29,6 +29,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import GLib, GObject
 
+from helios.backend.effort_policy import EffortPolicyMixin
 from helios.backend.attachments import muse_inputs
 from helios.backend import model_catalog
 from helios.backend.muse_binary import MuseBinaryNotFound, find_muse_binary
@@ -122,7 +123,7 @@ def serve_args(model: str, permission_mode: str) -> list[str]:
     return args
 
 
-class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
+class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
     display_name = "muse"
     provider = "muse"
 
@@ -352,7 +353,7 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
 
     def set_effort(self, key: str, callback=None) -> bool:
         # turn/start carries reasoningEffort, so this is just the next turn's.
-        if not isinstance(key, str) or not key.strip():
+        if not isinstance(key, str) or key not in _EFFORTS or not self._effort_is_supported(key):
             self._notify(callback, False, "unknown effort level")
             return False
         self._effort = key
@@ -464,6 +465,7 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
         model_id = session.get("modelId")
         if isinstance(model_id, str) and model_id:
             self._model = model_id
+            self._normalize_model_effort()
         workspace = session.get("workspaceRoot")
         if isinstance(workspace, str) and workspace \
                 and os.path.realpath(workspace) != os.path.realpath(self._cwd):
@@ -698,6 +700,7 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
                 result = msg.get("result")
                 if isinstance(result, dict) and result.get("status") == "accepted":
                     self._model = model
+                    self._normalize_model_effort()
                     self._notify(callback, True)
                 else:
                     detail, _ = scrub_sensitive(str(

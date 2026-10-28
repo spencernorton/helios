@@ -69,10 +69,10 @@ def test_effort_levels_come_from_the_selected_model() -> None:
     assert drv.supported_effort_levels() == ["low", "medium"]
 
 
-def test_effort_levels_are_empty_when_the_cli_never_answered() -> None:
-    """Empty must mean "fall back to the constants", never "no effort"."""
+def test_effort_support_is_unknown_when_the_cli_never_answered() -> None:
+    """Unknown and explicit unsupported capability remain distinct."""
 
-    assert _driver(model="sonnet").supported_effort_levels() == []
+    assert _driver(model="sonnet").supported_effort_levels() is None
 
 
 def test_a_model_marked_unsupported_never_inherits_another_models_levels() -> None:
@@ -94,7 +94,7 @@ def test_an_unlisted_model_gets_no_statement_not_a_neighbours_levels() -> None:
     drv = _driver(model="some-model-the-cli-never-listed")
     drv._cli_models = INITIALIZE_PAYLOAD["models"]
 
-    assert drv.supported_effort_levels() == []
+    assert drv.supported_effort_levels() is None
 
 
 def test_context_alias_uses_cli_resolved_model_for_effort_capabilities() -> None:
@@ -105,7 +105,7 @@ def test_context_alias_uses_cli_resolved_model_for_effort_capabilities() -> None
         "supportsEffort": True,
         "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"],
     }]
-    assert drv.supported_effort_levels() == []
+    assert drv.supported_effort_levels() is None
     # The real system/init record provides the resolved model; no family
     # heuristic is needed and the context-qualified requested id is retained.
     drv._dispatch_record({"type": "system", "subtype": "init", "model": "claude-fable-5-1"})

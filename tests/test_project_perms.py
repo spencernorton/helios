@@ -160,7 +160,7 @@ def test_home_is_forced_to_plan_below_the_ui(provider):
     assert effective_execution_mode("auto", home, provider=provider) == "plan"
     assert (
         effective_execution_mode("auto", f"{home}/project", provider=provider)
-        == "auto"
+        == ("default" if provider == "google" else "auto")
     )
     # HOME outranks Bypass: full access still cannot execute in $HOME itself.
     assert (
@@ -174,7 +174,8 @@ def test_supported_providers_offer_and_execute_bypass(provider):
     assert AUTONOMY_MODE in project_perms.modes_for_provider(provider)
     assert effective_execution_mode(AUTONOMY_MODE, "/repo", provider=provider) == AUTONOMY_MODE
     for mode in PERMISSION_MODES:
-        assert project_perms.provider_allows_mode(provider, mode)
+        assert project_perms.provider_allows_mode(provider, mode) == (
+            provider != "google" or mode not in {"auto", "dontAsk"})
 
 
 def test_google_descriptions_disclose_sandbox_and_bypass_scope():

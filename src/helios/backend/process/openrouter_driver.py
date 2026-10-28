@@ -30,6 +30,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import GLib, GObject  # noqa: E402
 
+from helios.backend.effort_policy import EffortPolicyMixin
 from helios.backend import browser_tools, model_catalog
 from helios.backend.openrouter import chat as or_chat
 from helios.backend.openrouter import key as or_key
@@ -349,7 +350,7 @@ class OpenRouterDriverSpawnError(DriverSpawnError):
     """
 
 
-class OpenRouterDriver(UserMessageQueueMixin, GObject.Object):
+class OpenRouterDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
     """Drives an OpenRouter chat session with in-process tool execution.
 
     Signals (identical to ClaudeCliDriver — the window connects the same set):
@@ -365,6 +366,8 @@ class OpenRouterDriver(UserMessageQueueMixin, GObject.Object):
       error (message)
       exited (exit_code)
     """
+
+    _effort_attribute = "_effort_key"
 
     display_name = "openrouter"
     provider = model_catalog.PROVIDER_OPENROUTER
@@ -821,7 +824,7 @@ class OpenRouterDriver(UserMessageQueueMixin, GObject.Object):
         parameter the provider will ignore — ``require_parameters`` would then
         route the request away or fail it outright.
         """
-        if or_chat.reasoning_for_effort(key) is None:
+        if or_chat.reasoning_for_effort(key) is None or not self._effort_is_supported(key):
             self._notify(callback, False, f"unknown effort level: {key}")
             return False
         if self._route is not None and not self._route.supports_reasoning:

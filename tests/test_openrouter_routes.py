@@ -430,10 +430,10 @@ class TestEffortMapping:
         ("low", {"effort": "low"}),
         ("medium", {"effort": "medium"}),
         ("high", {"effort": "high"}),
-        # OpenRouter exposes only low/medium/high, so the keys above high map
-        # down rather than being silently dropped.
-        ("xhigh", {"effort": "high"}),
-        ("ultracode", {"effort": "high"}),
+        # Advertised gateway levels retain their exact wire value.
+        ("xhigh", {"effort": "xhigh"}),
+        ("minimal", {"effort": "minimal"}),
+        ("max", {"effort": "max"}),
     ])
     def test_every_helios_effort_key_maps(self, key, expected):
         assert or_chat.reasoning_for_effort(key) == expected

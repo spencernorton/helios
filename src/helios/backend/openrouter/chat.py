@@ -84,17 +84,12 @@ PROVIDER_ROUTING: dict = {
     "allow_fallbacks": False,
 }
 
-# Helios effort keys mapped onto OpenRouter's unified ``reasoning`` parameter.
-# OpenRouter exposes only low/medium/high, so the two keys above "high" map to
-# "high" rather than being silently dropped — and "off" disables reasoning
-# explicitly instead of leaving the provider default in place.
+# Preserve the selected gateway effort exactly. Per-model metadata determines
+# which of these choices is offered; high must never stand in for xhigh/max.
 _REASONING_FOR_EFFORT: dict[str, dict] = {
     "off": {"enabled": False},
-    "low": {"effort": "low"},
-    "medium": {"effort": "medium"},
-    "high": {"effort": "high"},
-    "xhigh": {"effort": "high"},
-    "ultracode": {"effort": "high"},
+    "none": {"enabled": False},
+    **{key: {"effort": key} for key in ("minimal", "low", "medium", "high", "xhigh", "max")},
 }
 
 
