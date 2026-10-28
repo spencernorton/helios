@@ -371,3 +371,72 @@ def test_a_cancelled_prompt_closes_its_dialog_and_can_be_reissued(win):
     # Reissued under the same id → presented again, not dropped as a duplicate.
     win._on_question_asked(d1, {"q": 3}, "t1")
     assert len(win.captured) == 3
+
+
+@pytest.mark.parametrize('action', ['stop', 'permissions'])
+def test_openrouter_invalidation_closes_approval_and_wakes_worker(win, tmp_path, monkeypatch, action):
+    from helios.backend.process import openrouter_driver as od
+
+    driver = od.OpenRouterDriver(cwd=str(tmp_path), model='vendor/model')
+    driver._started = True
+    driver.connect('question-asked', win._on_question_asked)
+    driver.connect('interaction-resolved', win._on_interaction_resolved)
+    monkeypatch.setattr(od.GLib, 'idle_add', lambda cb, *a: cb(*a))
+
+    class BoundedEvent:
+        done = False
+
+        def set(self):
+            self.done = True
+
+        def is_set(self):
+            return self.done
+
+        def wait(self, _timeout):
+            assert self.done, 'permission change left the approval worker blocked'
+            return True
+
+    monkeypatch.setattr(od.threading, 'Event', BoundedEvent)
+    stale = []
+
+    def invalidate(_driver, _payload, _token):
+        stale.append(win.captured[-1][1])
+        if action == 'stop':
+            driver.stop()
+        else:
+            assert driver.set_permission_mode('plan')
+        assert win.captured[-1][3].closed
+        assert not win._question_active
+
+    driver.connect('question-asked', invalidate)
+    assert not driver._request_approval('Bash', {'command': 'pwd'})
+    stale[0]('Allow once')
+    assert not driver._pending_approvals
+    assert not driver._session_grants
+
+
+@pytest.mark.parametrize('action', ['stop', 'permissions'])
+def test_openrouter_cancelled_before_glib_delivery_never_presents(tmp_path, monkeypatch, action):
+    from helios.backend.process import openrouter_driver as od
+
+    driver = od.OpenRouterDriver(cwd=str(tmp_path), model='vendor/model')
+    driver._started = True
+    callbacks, asked = [], []
+    driver.connect('question-asked', lambda _d, payload, token: asked.append(token))
+
+    def queue_then_cancel(callback, *args):
+        first = not callbacks
+        callbacks.append((callback, args))
+        if first:
+            if action == 'stop':
+                driver.stop()
+            else:
+                driver.set_permission_mode('plan')
+        return len(callbacks)
+
+    monkeypatch.setattr(od.GLib, 'idle_add', queue_then_cancel)
+    assert not driver._request_approval('Bash', {'command': 'pwd'})
+    for callback, args in callbacks:
+        callback(*args)
+    assert asked == []
+    assert not driver._pending_approvals

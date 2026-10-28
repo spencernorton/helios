@@ -62,7 +62,7 @@ def test_every_driver_defines_the_common_signal_contract(driver_cls) -> None:
     )
 
 
-@pytest.mark.parametrize("provider", ["muse", "kimi"])
+@pytest.mark.parametrize("provider", ["claude", "gpt", "gemini", "openrouter", "muse", "kimi"])
 def test_real_window_wiring_uses_only_supported_provider_signals(tmp_path, provider):
     # Exercise the actual closure without constructing a desktop window or
     # spawning a provider. A provider-specific signal in a shared branch used
@@ -79,7 +79,9 @@ def test_real_window_wiring_uses_only_supported_provider_signals(tmp_path, provi
     namespace = {cls.__name__: cls for cls in (*DRIVERS, KimiAcpDriver)}
     namespace.update(self=WindowCallbacks(), COMMON_DRIVER_SIGNALS=COMMON_DRIVER_SIGNALS)
     exec(compile(ast.Module(body=[wiring], type_ignores=[]), str(path), "exec"), namespace)
-    cls = MuseServeDriver if provider == "muse" else KimiAcpDriver
+    cls = {"claude": ClaudeCliDriver, "gpt": CodexAppServerDriver,
+           "gemini": GeminiCliDriver, "openrouter": OpenRouterDriver,
+           "muse": MuseServeDriver, "kimi": KimiAcpDriver}[provider]
     driver = cls(cwd=str(tmp_path))
     handlers = namespace["connect_handlers"](driver)
     assert len(handlers) > len(COMMON_DRIVER_SIGNALS)

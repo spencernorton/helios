@@ -1,5 +1,15 @@
 # Helios — Session Journal
 
+
+## 2026-10-28 — codex — Cross-provider question and approval lifetime audit
+
+- **Branch:** `codex/provider-interaction-audit`; tracker OP#1278, extending the pending dialog-cleanup PR47.
+- **Reproduced/fixed:** OpenRouter Stop and permission changes left approval dialogs alive; permission changes did not wake the worker. Deferred presentations now check current approval state, permissions and cancellation. Invalidations dismiss dialogs and wake workers without reviving consent.
+- **Claude:** a root terminal left root questions/tool/plan approvals answerable. Clear root prompts on terminal, preserve background child prompts even before actor projection, and clear every prompt on process exit. No synthetic answers are sent after terminal evidence.
+- **GPT:** terminal results did not retire pending interactive requests; a delayed delivery could prompt for an ended turn. Resolve only matching-turn interactions and keep bounded completed-turn IDs to ignore late questions. Other turns and stale terminal events remain isolated.
+- **Google/Gemini:** current Antigravity headless adapter explicitly lacks interactive questions/approvals. Inspected receipt correlation, duplicate results, cancellation, failed persistence, unknown exits and queue handling; its existing regressions pass, with no matching defect reproduced.
+- **Validation:** four new regression cases failed before implementation; expanded focused suite **477 passed**. Full native and final integrated checks follow. Provider-specific signal-wiring coverage now includes all six native/provider paths. No provider process, paid API, installed package or live session was touched.
+
 ## 2026-10-28 — codex — Release Muse session reliability (v0.114.1)
 
 - Reconciled the two local Muse hotfix commits onto GitHub main in an independent worktree. Original Apollo main and its unrelated UI commits remain preserved on `preserve/lifecycle-import-20261028`; its obsolete GitLab tracking branch explains the misleading ahead/behind count.

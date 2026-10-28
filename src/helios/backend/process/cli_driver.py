@@ -382,6 +382,7 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
         # tool_use_id -> (control_request id, original input) for questions
         # awaiting an answer; the reply echoes the input with answers folded in.
         self._pending_questions: dict[str, tuple[str, dict]] = {}
+        self._prompt_agent_ids: dict[str, str] = {}
         #: `initialize.commands`, normalized: [{name, description, argument_hint}].
         self._cli_commands: list[dict] = []
         #: The task plan Claude maintains with its task tools: task number ->
@@ -1759,6 +1760,24 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
             token,
         )
 
+    def _clear_pending_prompts(self, *, include_children: bool) -> None:
+        # Root completion must not dismiss questions from a still-running
+        # background child, even when its actor has not been projected yet.
+        tokens = set(self._pending_questions) | set(self._pending_tool_approvals)
+        resolved = []
+        for token in tokens:
+            approval = self._pending_tool_approvals.get(token)
+            agent_id = self._prompt_agent_ids.get(token) or (
+                str(approval[1].get("agent_id") or "") if approval else "")
+            if agent_id and not include_children:
+                continue
+            self._pending_questions.pop(token, None)
+            self._pending_tool_approvals.pop(token, None)
+            self._release_prompt_asker(token)
+            resolved.append(token)
+        for token in resolved:
+            self.emit("question-cancelled", token)
+
     def _handle_control_cancel(self, obj: dict) -> None:
         """The CLI withdrew a pending can_use_tool: forget it and tell the UI."""
         request_id = str(obj.get("request_id") or "")
@@ -1785,6 +1804,7 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
         task_started gave the actor. Returns the caption, "" for the root.
         """
         agent_id = str(req.get("agent_id") or "")
+        self._prompt_agent_ids[token] = agent_id
         if not agent_id:
             return ""
         actor_id = next(
@@ -1801,6 +1821,7 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
         return f"Asked by subagent: {actor.get('name') or actor_id}."
 
     def _release_prompt_asker(self, token: str) -> None:
+        self._prompt_agent_ids.pop(token, None)
         actor_id = self._prompt_actors.pop(token, None)
         if not actor_id or actor_id in self._prompt_actors.values():
             return  # another prompt from the same child is still open
@@ -2630,6 +2651,7 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
 
     def _on_exit(self, proc: Gio.Subprocess, _res, _data) -> None:
         self._closed = True
+        self._clear_pending_prompts(include_children=True)
         self._fail_pending_control("the Claude process exited before acknowledging the change")
         # If we killed it via signal, get_exit_status would assert. Check
         # whether it exited normally first.
@@ -3047,6 +3069,7 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
                 return
             # A terminal record is provider-native proof even when no streamed
             # assistant message preceded it (for example an early error).
+            self._clear_pending_prompts(include_children=False)
             self._confirm_uncertain_delivery()
             self._busy = False
             self._active_root_tools.clear()

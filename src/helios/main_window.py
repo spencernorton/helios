@@ -5174,6 +5174,9 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                         ),
                     ]
                 )
+            if isinstance(driver, OpenRouterDriver):
+                handlers.append(driver.connect(
+                    "interaction-resolved", self._on_interaction_resolved))
             if isinstance(driver, GeminiCliDriver):
                 handlers.extend(
                     [
