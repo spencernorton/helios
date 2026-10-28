@@ -4,6 +4,12 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.114.3 — 2026-10-28
+
+- Close settled questions and approvals across Muse, Claude, GPT and OpenRouter, including cancellation, terminal events and late delivery, while preserving background-agent prompt ownership.
+- Use model-specific reasoning levels, defaults and mandatory-reasoning metadata; validate restored/live settings and model changes without creating implicit Ultra leases.
+- Show accurate Gemini headless permission choices and omit unadvertised High effort. Refresh reasoning capabilities in the background while keeping UI/send paths cached-only.
+
 ## 0.114.2 — 2026-10-28
 
 - Remove internal roadmap references and comment markers from release sources, and use documented example identifiers in tests so the Muse reliability package passes archive ingress checks.

@@ -1,6 +1,12 @@
 # Helios — Session Journal
 
 
+## 2026-10-28 — codex — Release capability and interaction fixes (0.114.3)
+
+- Prepare the merged model-capability and interaction-lifetime fixes for the normal signed package release. Update version metadata, changelog and installation documentation together; preserve earlier immutable tags.
+- Source validation already passed3593 isolated native tests with exact-head CI. Release-source checks, artifact provenance, archive admission and installed-package verification are recorded with the release. No provider session is interrupted by package preparation.
+
+
 ## 2026-10-28 — codex — Align effort and headless permission capabilities
 
 - **Branch:** `codex/capability-alignment`.
