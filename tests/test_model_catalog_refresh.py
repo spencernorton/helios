@@ -214,7 +214,7 @@ def test_authoritative_catalog_reenables_valid_persisted_gpt():
 def isolated_worker_catalogs(monkeypatch):
     # These worker tests exercise Claude/OpenAI races, never the host's
     # installed providers, credentials, network, or CLI model catalogs.
-    for name in ("google_entries", "muse_entries", "openrouter_entries"):
+    for name in ("google_entries", "muse_entries", "kimi_entries", "openrouter_entries"):
         monkeypatch.setattr(model_catalog, name, lambda **_kwargs: ([], "test-empty"))
 
 
