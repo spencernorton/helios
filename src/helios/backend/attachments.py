@@ -24,7 +24,7 @@ IMAGE_TYPES = {
     ".gif": "image/gif",
     ".webp": "image/webp",
 }
-# ponytail: the Anthropic per-image cap; a larger image stays a text @path the
+# the Anthropic per-image cap; a larger image stays a text @path the
 # agent can open with its own tools. Downscale here if that proves common.
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 

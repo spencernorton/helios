@@ -4,6 +4,10 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.114.2 — 2026-10-28
+
+- Remove internal roadmap references and comment markers from release sources, and use documented example identifiers in tests so the Muse reliability package passes archive ingress checks.
+
 ## 0.114.1 — 2026-10-28
 
 - Muse background continuations now stream and persist their replies, and active workflows, subagents and tools protect their sessions from idle eviction.
