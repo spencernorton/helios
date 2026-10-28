@@ -1,5 +1,11 @@
 # Helios — Session Journal
 
+## 2026-10-28 — claude — Local markdown links open in the pane (unreleased)
+
+- **Report:** an image-gen chat's `![logo](/home/spencer/Pictures/…png)` and `[Download the PNG](/home/…)` did nothing. The PNG exists (880 KB, 1024×1024); the renderer was the defect — bare absolute paths become scheme-less hrefs Gtk.Label cannot activate, `file:` was stripped at render, and no `activate-link` handler existed.
+- **Fix:** `markdown._local_link_path` + `_on_activate_link` on every linked label (via `_selectable_text`): bare paths and `file://` URIs route to the existing `win.open-media` (browser pane, consent-scoped); web links keep the default. `file:` removed from `_BAD_SCHEMES` since interception means it never reaches xdg-open.
+- **Validation:** Xvfb probe replaying the session's exact links — both activate `win.open-media` with the real path; `tests/test_markdown_local_links.py` added. Note `![…](…)` still renders as a link, not an inline image; clicking opens it in the pane.
+
 ## 2026-10-28 — claude — Session board preview + asked-you badge (unreleased)
 
 - Board dialog is now a split view: cards left (1–2 per line), a second `TranscriptView` previewing the selected chat right, *Open chat* routing through `app.focus-session` as before. `BoardDialog` shuts its preview down on close. Snapshot now also carries each row's pending-question flag; those cards show the question dot and an *Asked you* label.

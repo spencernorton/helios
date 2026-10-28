@@ -30,7 +30,7 @@ from dataclasses import dataclass
 import gi
 
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk  # noqa: E402
+from gi.repository import GLib, Gtk  # noqa: E402
 
 from helios.widgets.code_block import CodeBlock
 
@@ -293,6 +293,34 @@ def _parse(text: str) -> list[_Block]:
 # --- Block renderers -------------------------------------------------------
 
 
+def _local_link_path(uri: str) -> str | None:
+    """Filesystem path for a local link target, else None.
+
+    Models hand back bare absolute paths (`[logo](/home/…/logo.png)`) and
+    `file://` URIs. Neither is a URL Gtk.Label can activate — the click
+    silently did nothing — so local targets are routed to the window's
+    in-app opener (`win.open-media`, consent-scoped) instead of xdg-open.
+    """
+    from urllib.parse import unquote
+
+    if uri.startswith("file://"):
+        rest = uri[len("file://"):]
+        if rest.startswith("localhost/"):
+            rest = rest[len("localhost"):]
+        return unquote(rest) or None
+    if uri.startswith("/"):
+        return uri
+    return None
+
+
+def _on_activate_link(label: Gtk.Label, uri: str) -> bool:
+    path = _local_link_path(uri)
+    if path is None:
+        return False  # web link: Gtk.Label's default (xdg-open) applies
+    label.activate_action("win.open-media", GLib.Variant.new_string(path))
+    return True
+
+
 def _selectable_text(label: Gtk.Label, markup: str) -> None:
     """Selectable by pointer, but a tab stop only when it holds a link.
 
@@ -307,6 +335,8 @@ def _selectable_text(label: Gtk.Label, markup: str) -> None:
     """
     label.set_selectable(True)
     has_link = '<a href="' in markup
+    if has_link:
+        label.connect("activate-link", _on_activate_link)
     label.set_focusable(has_link)
     # A selectable Gtk.Label can report focus traversal handled even when
     # focusable=False, leaving Tab stuck on the preceding Copy button. Keep
@@ -496,8 +526,10 @@ def _inline_markup(text: str) -> str:
     #     (Gtk.Label use_markup) or arbitrary attributes.
     #   * drop obviously dangerous schemes (javascript:, data:, vbscript:)
     #     because Gtk.Label's link activation hands the URL to the user's
-    #     `xdg-open`, which will happily launch most things.
-    _BAD_SCHEMES = ("javascript:", "data:", "vbscript:", "file:")
+    #     `xdg-open`, which will happily launch most things. `file:` is NOT
+    #     blocked here: `_on_activate_link` intercepts local targets and
+    #     opens them in-app, so they never reach xdg-open either.
+    _BAD_SCHEMES = ("javascript:", "data:", "vbscript:")
 
     def link_repl(m):
         label = m.group(1)  # already &<>-escaped

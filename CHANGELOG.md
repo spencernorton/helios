@@ -13,6 +13,7 @@ source (`source.tar.gz`) and `SHA256SUMS.txt`.
 - Streaming replies show a blinking caret at the writing edge.
 - `docs/ADDING-A-PROVIDER.md` documents the provider checklist; the Accounts page now derives its providers from the registry.
 - Session board… (header menu): every chat as a card — status, provider, folder — with working and waiting-on-you sessions first; clicking a card previews its transcript beside the cards, and *Open chat* jumps to it. Sessions that asked you a question show an *Asked you* badge.
+- Local file links in replies (for example `[logo](/home/you/Pictures/logo.png)` or a `file://` link) now open in the side pane when clicked; before, they rendered as links that silently did nothing.
 
 ## 0.113.0 — 2026-10-22
 
