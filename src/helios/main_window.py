@@ -5219,12 +5219,6 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                             "agents-updated", self._on_native_agents_updated
                         ),
                         driver.connect(
-                            "background-tasks-changed", self._on_background_tasks
-                        ),
-                        driver.connect(
-                            "native-goal-updated", self._on_native_goal_updated
-                        ),
-                        driver.connect(
                             "context-compacted", self._on_context_compacted
                         ),
                     ]
