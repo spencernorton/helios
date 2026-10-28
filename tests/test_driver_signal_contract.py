@@ -14,6 +14,9 @@ production.
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
 import pytest
 
 gi = pytest.importorskip("gi")
@@ -57,3 +60,28 @@ def test_every_driver_defines_the_common_signal_contract(driver_cls) -> None:
         "is provider-specific — wire it in an isinstance branch of "
         "connect_handlers() — or every driver must emit it."
     )
+
+
+@pytest.mark.parametrize("provider", ["muse", "kimi"])
+def test_real_window_wiring_uses_only_supported_provider_signals(tmp_path, provider):
+    # Exercise the actual closure without constructing a desktop window or
+    # spawning a provider. A provider-specific signal in a shared branch used
+    # to abort Kimi session creation after the Muse changes were rebased.
+    from helios.backend.process.kimi_driver import KimiAcpDriver
+
+    path = Path(__file__).parents[1] / "src/helios/main_window.py"
+    tree = ast.parse(path.read_text())
+    wiring = next(node for node in ast.walk(tree)
+                  if isinstance(node, ast.FunctionDef) and node.name == "connect_handlers")
+    class WindowCallbacks:
+        def __getattr__(self, name):
+            return lambda *args: None
+    namespace = {cls.__name__: cls for cls in (*DRIVERS, KimiAcpDriver)}
+    namespace.update(self=WindowCallbacks(), COMMON_DRIVER_SIGNALS=COMMON_DRIVER_SIGNALS)
+    exec(compile(ast.Module(body=[wiring], type_ignores=[]), str(path), "exec"), namespace)
+    cls = MuseServeDriver if provider == "muse" else KimiAcpDriver
+    driver = cls(cwd=str(tmp_path))
+    handlers = namespace["connect_handlers"](driver)
+    assert len(handlers) > len(COMMON_DRIVER_SIGNALS)
+    for handler in handlers:
+        driver.disconnect(handler)

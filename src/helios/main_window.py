@@ -5220,6 +5220,11 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                         ),
                     ]
                 )
+            if isinstance(driver, MuseServeDriver):
+                handlers.extend([
+                    driver.connect("background-tasks-changed", self._on_background_tasks),
+                    driver.connect("native-goal-updated", self._on_native_goal_updated),
+                ])
             if isinstance(driver, KimiAcpDriver):
                 handlers.append(driver.connect("thread-forked", self._on_codex_thread_forked))
             if isinstance(
@@ -7695,6 +7700,12 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             self._plan.show_execution_plan(plan)
             self._plan_progress.set_plan(plan)
         if status == "inProgress":
+            composer = getattr(self, "_composer", None)
+            if composer is not None:
+                composer.set_busy(True)
+            toolbar = getattr(self, "_chat_toolbar", None)
+            if toolbar is not None:
+                toolbar.set_busy(True)
             self._plan.begin_native_turn()
             MainWindow._begin_observed_agent_scope(
                 self,

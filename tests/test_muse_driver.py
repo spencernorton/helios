@@ -153,8 +153,9 @@ def test_approval_uses_question_dialog_and_decides(tmp_path):
 
 def test_translate_answers_shapes():
     prompt = {"questions": [
-        {"id": "q1", "selection": {"mode": "single"}},
-        {"id": "q2", "selection": {"mode": "multiple"}},
+        {"id": "q1", "selection": {"mode": "single"}, "options": [{"label": "A"}]},
+        {"id": "q2", "selection": {"mode": "multiple"},
+         "options": [{"label": "X"}, {"label": "Y"}]},
     ]}
     rows = _translate_answers(prompt, {"0": {"answers": ["A"]}, "1": {"answers": ["X", "Y"]}})
     assert rows == [
@@ -163,7 +164,105 @@ def test_translate_answers_shapes():
     ]
     assert _translate_answers(prompt, None) is None
     assert _translate_answers({"questions": [{"id": "q", "selection": {"mode": "single"}}]}, "B") == [
-        {"questionId": "q", "selectedLabel": "B"}]
+        {"questionId": "q", "freeText": "B"}]
+
+
+def test_user_input_dialog_roundtrip_retains_question_until_native_ack(tmp_path):
+    from helios.widgets.question_dialog import _format_answers, _normalize_questions
+
+    driver = _driver(tmp_path)
+    asked = []
+    driver.connect("question-asked", lambda _d, payload, token: asked.append((payload, token)))
+    driver._on_user_input_requested({"userInputId": "prompt", "questions": [
+        {"id": "which_url", "question": "Which URL?", "options": [{"label": "example.com/ops"}]},
+        {"id": "details", "question": "Details?", "options": []},
+    ]})
+    payload, token = asked[0]
+    answer = _format_answers(_normalize_questions(payload), [["example.com"], ["After login"]])
+    driver.answer_question(token, answer)
+    frame = driver._proc.stdin.frames()[-1]
+    assert frame["method"] == "userInput/answer"
+    assert frame["params"]["answers"] == [
+        {"questionId": "which_url", "freeText": "example.com"},
+        {"questionId": "details", "freeText": "After login"},
+    ]
+    assert token in driver._pending_inputs
+    # A second click while delivery is pending must not mint another command.
+    driver.answer_question(token, answer)
+    assert len(driver._proc.stdin.frames()) == 1
+    driver._dispatch_message({"id": frame["id"], "result": {"status": "accepted"}})
+    assert token not in driver._pending_inputs
+    assert driver.is_busy  # answering never releases the running Work
+
+
+def test_rejected_answer_reopens_question_without_replaying(tmp_path):
+    driver = _driver(tmp_path)
+    asked = []
+    driver.connect("question-asked", lambda _d, payload, token: asked.append((payload, token)))
+    driver._on_user_input_requested({"userInputId": "prompt", "questions": [{"id": "q"}]})
+    driver.answer_question("prompt", "an answer")
+    frame = driver._proc.stdin.frames()[-1]
+    driver._dispatch_message({"id": frame["id"], "error": {
+        "code": -32057, "message": "answer is invalid for user input prompt"}})
+    assert len(asked) == 2 and asked[-1][1] != "prompt"
+    assert driver._input_presentations[asked[-1][1]] == "prompt"
+    assert "did not accept" in asked[-1][0]["caption"]
+    assert "prompt" in driver._pending_inputs
+    assert driver._input_commands == {}
+    assert len(driver._proc.stdin.frames()) == 1
+    driver.answer_question("prompt", "stale answer")
+    assert len(driver._proc.stdin.frames()) == 1
+    driver.answer_question(asked[-1][1], "corrected answer")
+    assert len(driver._proc.stdin.frames()) == 2
+    assert driver._proc.stdin.frames()[-1]["params"]["userInputId"] == "prompt"
+
+
+def test_long_answer_reopens_locally_without_cancelling_or_truncating(tmp_path):
+    driver = _driver(tmp_path)
+    asked = []
+    driver.connect("question-asked", lambda _d, payload, token: asked.append((payload, token)))
+    driver._on_user_input_requested({"userInputId": "prompt", "questions": [{"id": "q"}]})
+    driver.answer_question("prompt", "x" * 501)
+    assert len(asked) == 2 and "500" in asked[-1][0]["caption"]
+    assert not driver._proc.stdin.frames()
+    assert "prompt" in driver._pending_inputs
+
+
+def test_cancel_waits_for_native_ack(tmp_path):
+    driver = _driver(tmp_path)
+    driver._on_user_input_requested({"userInputId": "prompt", "questions": [{"id": "q"}]})
+    driver.answer_question("prompt", None)
+    frame = driver._proc.stdin.frames()[-1]
+    assert frame["method"] == "userInput/cancel"
+    assert "prompt" in driver._pending_inputs
+    driver._dispatch_message({"id": frame["id"], "result": {"status": "accepted"}})
+    assert driver._pending_inputs == {}
+
+
+def test_settled_question_cannot_reopen_on_late_rejection(tmp_path):
+    driver = _driver(tmp_path)
+    asked = []
+    driver.connect("question-asked", lambda _d, payload, token: asked.append((payload, token)))
+    driver._on_user_input_requested({"userInputId": "prompt", "questions": [{"id": "q"}]})
+    driver.answer_question("prompt", "answer")
+    frame = driver._proc.stdin.frames()[-1]
+    driver._dispatch_message({"method": "userInput/settled", "params": {
+        "sessionId": "session-1", "userInputId": "prompt"}})
+    driver._dispatch_message({"id": frame["id"], "error": {"code": -32057}})
+    assert len(asked) == 1
+    assert driver._pending_inputs == {}
+
+
+def test_failed_answer_write_retains_prompt_without_automatic_replay(tmp_path, monkeypatch):
+    driver = _driver(tmp_path)
+    driver._on_user_input_requested({"userInputId": "prompt", "questions": [{"id": "q"}]})
+    monkeypatch.setattr(driver, "_write", lambda _message: False)
+    errors = []
+    driver.connect("error", lambda _d, message: errors.append(message))
+    driver.answer_question("prompt", "answer")
+    assert "uncertain" in errors[-1]
+    assert "prompt" in driver._pending_inputs
+    assert driver.is_busy
 
 
 def test_serve_args_follow_permission_mode():
@@ -289,3 +388,222 @@ def test_session_mcp_browser_is_offered_only_when_granted(tmp_path):
         assert browser_tools.session_for(server["args"][-1])[1] == "Muse"
     finally:
         browser_tools.publish("")
+
+
+def test_background_workflow_and_host_initiated_continuation_turn(tmp_path):
+    driver = _driver(tmp_path)
+    driver._transcript.bind_thread("session-1")
+    appended = []
+    results = []
+    bg_events = []
+    statuses = []
+    driver.connect("turn-appended", lambda _d, turn: appended.append(turn))
+    driver.connect("result", lambda _d, res: results.append(res))
+    driver.connect("background-tasks-changed", lambda _d, rows: bg_events.append(rows))
+    driver.connect("turn-status-updated", lambda _d, st: statuses.append(st))
+
+    # Turn 1 spawns a background workflow and finishes its foreground turn.
+    driver._dispatch_message({
+        "method": "item/started",
+        "params": {
+            "item": {
+                "itemId": "w1",
+                "kind": "workflow",
+                "turnId": "turn-1",
+                "status": "inProgress",
+                "role": "review-council",
+                "objective": "10-agent review",
+                "workflowRunId": "wf-1",
+            }
+        },
+    })
+    assert driver.has_background_work is True
+    assert driver.background_task_rows == [{
+        "task_id": "wf-1",
+        "task_type": "workflow",
+        "description": "review-council — 10-agent review",
+    }]
+
+    # Simulate end of Turn 1 (no active attempt id in this unit fixture).
+    driver._dispatch_message({
+        "method": "turn/completed",
+        "params": {"turnId": "turn-1", "terminal": "completed", "usage": {}},
+    })
+    assert driver.is_busy is False
+    # Background workflow is still running between turns -> prevents idle reap / eviction.
+    assert driver.has_background_work is True
+
+    # Workflow finishes and wakes `muse serve` for a host-initiated continuation turn.
+    driver._dispatch_message({
+        "method": "item/completed",
+        "params": {
+            "item": {
+                "itemId": "w1",
+                "kind": "workflow",
+                "turnId": "turn-1",
+                "status": "completed",
+                "role": "review-council",
+                "workflowRunId": "wf-1",
+            }
+        },
+    })
+    assert driver._agents["w1"]["status"] == "complete"
+    assert driver.has_background_work is False
+    assert bg_events[-1] == []
+
+    # Host-initiated continuation turn starts with no user execution_attempt_id.
+    assert driver.execution_attempt_id == ""
+    driver._dispatch_message({
+        "method": "turn/started",
+        "params": {"turnId": "turn-2"},
+    })
+    assert driver.is_busy is True
+    assert driver._streaming is not None
+    assert statuses[-1] == {"turnId": "turn-2", "status": "inProgress"}
+
+    driver._dispatch_message({
+        "method": "item/started",
+        "params": {
+            "item": {
+                "itemId": "m2",
+                "kind": "agentMessage",
+                "turnId": "turn-2",
+                "status": "inProgress",
+                "text": "",
+            }
+        },
+    })
+    driver._dispatch_message({
+        "method": "item/delta",
+        "params": {
+            "itemId": "m2",
+            "field": "text",
+            "delta": "All 10 review findings fixed and verified.",
+        },
+    })
+    driver._dispatch_message({
+        "method": "turn/completed",
+        "params": {
+            "turnId": "turn-2",
+            "terminal": "completed",
+            "usage": {"inputTokens": 1200, "outputTokens": 300},
+        },
+    })
+
+    assert driver.is_busy is False
+    assert len(appended) == 1
+    assert "All 10 review findings fixed and verified." in appended[0].content[0].text
+    assert results[-1]["subtype"] == "success"
+    assert results[-1]["usage"] == {"input_tokens": 1200, "output_tokens": 300}
+
+
+def test_open_tool_call_survives_turn_completion_as_background_work_and_settles_across_turns(tmp_path):
+    driver = _driver(tmp_path)
+    bg_events = []
+    driver.connect("background-tasks-changed", lambda _d, rows: bg_events.append(rows))
+
+    driver._dispatch_message({
+        "method": "item/started",
+        "params": {
+            "item": {
+                "itemId": "tc-1",
+                "kind": "toolCall",
+                "turnId": "turn-1",
+                "status": "inProgress",
+                "tool": "bash",
+                "args": {"command": "pytest -q", "description": "Run test suite"},
+            }
+        },
+    })
+    # Foreground turn completes while tc-1 is still inProgress -> promoted to background work.
+    driver._dispatch_message({
+        "method": "turn/completed",
+        "params": {"turnId": "turn-1", "terminal": "completed", "usage": {}},
+    })
+    assert driver.has_background_work is True
+    assert driver.background_task_rows == [{
+        "task_id": "tc-1",
+        "task_type": "local_bash",
+        "description": "Run test suite",
+    }]
+
+    # Even after a later turn starts, item/completed with the earlier turnId settles tc-1.
+    driver._dispatch_message({
+        "method": "turn/started",
+        "params": {"turnId": "turn-2"},
+    })
+    driver._dispatch_message({
+        "method": "item/completed",
+        "params": {
+            "item": {
+                "itemId": "tc-1",
+                "kind": "toolCall",
+                "turnId": "turn-1",
+                "status": "completed",
+                "tool": "bash",
+            }
+        },
+    })
+    assert driver.has_background_work is False
+    assert driver.background_task_rows == []
+    assert bg_events[-1] == []
+
+
+def test_session_goal_changed_emits_native_goal_updated(tmp_path):
+    driver = _driver(tmp_path)
+    goals = []
+    driver.connect("native-goal-updated", lambda _d, payload: goals.append(payload))
+
+    driver._dispatch_message({
+        "method": "session/goalChanged",
+        "params": {
+            "sessionId": "session-1",
+            "goal": {"goalId": "g-1", "objective": "Ship feature", "status": "active"},
+        },
+    })
+    driver._dispatch_message({
+        "method": "session/goalChanged",
+        "params": {"sessionId": "session-1", "goal": None},
+    })
+    assert goals == [
+        {"goal": {"goalId": "g-1", "objective": "Ship feature", "status": "active"}, "cleared": False},
+        {"goal": None, "cleared": True},
+    ]
+
+
+def test_stale_terminal_does_not_finish_newer_continuation(tmp_path):
+    driver = _driver(tmp_path)
+    driver._root_turn_id = "continuation-2"
+    results = []
+    driver.connect("result", lambda _d, result: results.append(result))
+    driver._dispatch_message({"method": "turn/completed", "params": {
+        "turnId": "turn-1", "terminal": "completed"}})
+    assert driver.is_busy
+    assert driver._streaming is not None
+    assert not results
+
+
+def test_continuation_transcript_failure_blocks_instead_of_claiming_saved(tmp_path):
+    driver = _driver(tmp_path)
+    driver._on_item({"itemId": "reply", "kind": "agentMessage", "text": "Done"}, terminal=True)
+    class BrokenTranscript:
+        def append_assistant(self, *args, **kwargs):
+            raise OSError("disk full")
+    driver._transcript = BrokenTranscript()
+    appended, results = [], []
+    driver.connect("turn-appended", lambda _d, turn: appended.append(turn))
+    driver.connect("result", lambda _d, result: results.append(result))
+    driver._finish_turn("completed")
+    assert driver._accounting_failed
+    assert not appended
+    assert not results
+
+
+def test_agent_updates_preserve_native_task_identity(tmp_path):
+    driver = _driver(tmp_path)
+    driver._on_item({"itemId": "w1", "kind": "workflow", "status": "inProgress",
+                     "workflowRunId": "native-workflow"}, terminal=False)
+    driver._on_item({"itemId": "w1", "kind": "workflow", "status": "inProgress"}, terminal=False)
+    assert driver.background_task_rows[0]["task_id"] == "native-workflow"
+    assert driver.stop_background_task("native-workflow")
+    assert driver._proc.stdin.frames()[-1]["params"]["workflowRunId"] == "native-workflow"

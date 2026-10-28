@@ -12,7 +12,14 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib, Gtk, Pango  # noqa: E402
 
-_KIND = {"local_bash": "Shell", "monitor": "Monitor", "local_agent": "Agent", "agent": "Agent"}
+_KIND = {
+    "local_bash": "Shell",
+    "monitor": "Monitor",
+    "local_agent": "Agent",
+    "agent": "Agent",
+    "subagent": "Agent",
+    "workflow": "Workflow",
+}
 
 
 class BackgroundPane(Gtk.Box):
@@ -24,7 +31,7 @@ class BackgroundPane(Gtk.Box):
         title.add_css_class("heading")
         self.append(title)
         hint = Gtk.Label(
-            label="Shells, monitors and agents a Claude chat left running between "
+            label="Shells, monitors, workflows and agents a chat left running between "
                   "turns. Helios keeps such a session alive until they finish.",
             xalign=0, wrap=True,
         )
