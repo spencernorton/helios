@@ -187,3 +187,8 @@ def test_empty_or_malformed_reasoning_metadata_never_forces_off(efforts):
                                 'default_enabled': True})])[0]
     assert entry.reasoning_efforts == ()
     assert entry.default_effort == ''
+
+
+def test_missing_native_default_is_not_invented():
+    entry = build_entries([_row({'supported_efforts': ['low', 'high'], 'mandatory': True})])[0]
+    assert entry.default_effort == ''

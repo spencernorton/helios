@@ -163,8 +163,7 @@ def reasoning_options(row: dict) -> tuple[tuple[tuple[str, str], ...], str]:
     if metadata.get("default_enabled") is False and not mandatory and "off" in keys:
         default = "off"
     if default not in keys:
-        default = next((key for key in ("medium", "high", "low") if key in keys),
-                       keys[0] if keys else "")
+        default = ""  # missing native default is not a claimed model default
     return tuple((key, "No reasoning" if key == "off" else f"{key.title()} reasoning effort")
                  for key in keys), default
 
