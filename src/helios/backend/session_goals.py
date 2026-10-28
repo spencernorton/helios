@@ -221,6 +221,7 @@ def wrap_user_prompt(text: str, goal: GoalState | None) -> str:
         f"{plan_text}\n"
         "Instructions:\n"
         "- Work toward the objective across turns until it is complete or blocked.\n"
+        "- Execute all unblocked phases/items in this turn; do not stop after one slice to ask for confirmation unless genuinely blocked or a destructive decision requires user input.\n"
         "- Keep a separate execution plan using TodoWrite/todo_list when useful.\n"
         "- Do not rewrite the user-owned acceptance checklist from that plan.\n"
         f"{closing}"
@@ -259,6 +260,7 @@ def wrap_goal_supplement(text: str, goal: GoalState | None) -> str:
             "Instructions:",
             "- Treat this as user-owned acceptance state, not as your execution plan.",
             "- Keep a separate native execution plan current while you work.",
+            "- Execute all unblocked phases/items in this turn; do not stop after one slice to ask for confirmation unless genuinely blocked or a destructive decision requires user input.",
         )
     )
     if goal.definition_of_done:

@@ -388,3 +388,184 @@ def test_session_mcp_browser_is_offered_only_when_granted(tmp_path):
         assert browser_tools.session_for(server["args"][-1])[1] == "Muse"
     finally:
         browser_tools.publish("")
+
+
+def test_background_workflow_and_host_initiated_continuation_turn(tmp_path):
+    driver = _driver(tmp_path)
+    driver._transcript.bind_thread("session-1")
+    appended = []
+    results = []
+    bg_events = []
+    statuses = []
+    driver.connect("turn-appended", lambda _d, turn: appended.append(turn))
+    driver.connect("result", lambda _d, res: results.append(res))
+    driver.connect("background-tasks-changed", lambda _d, rows: bg_events.append(rows))
+    driver.connect("turn-status-updated", lambda _d, st: statuses.append(st))
+
+    # Turn 1 spawns a background workflow and finishes its foreground turn.
+    driver._dispatch_message({
+        "method": "item/started",
+        "params": {
+            "item": {
+                "itemId": "w1",
+                "kind": "workflow",
+                "turnId": "turn-1",
+                "status": "inProgress",
+                "role": "review-council",
+                "objective": "10-agent review",
+                "workflowRunId": "wf-1",
+            }
+        },
+    })
+    assert driver.has_background_work is True
+    assert driver.background_task_rows == [{
+        "task_id": "wf-1",
+        "task_type": "workflow",
+        "description": "review-council — 10-agent review",
+    }]
+
+    # Simulate end of Turn 1 (no active attempt id in this unit fixture).
+    driver._dispatch_message({
+        "method": "turn/completed",
+        "params": {"turnId": "turn-1", "terminal": "completed", "usage": {}},
+    })
+    assert driver.is_busy is False
+    # Background workflow is still running between turns -> prevents idle reap / eviction.
+    assert driver.has_background_work is True
+
+    # Workflow finishes and wakes `muse serve` for a host-initiated continuation turn.
+    driver._dispatch_message({
+        "method": "item/completed",
+        "params": {
+            "item": {
+                "itemId": "w1",
+                "kind": "workflow",
+                "turnId": "turn-1",
+                "status": "completed",
+                "role": "review-council",
+                "workflowRunId": "wf-1",
+            }
+        },
+    })
+    assert driver._agents["w1"]["status"] == "complete"
+    assert driver.has_background_work is False
+    assert bg_events[-1] == []
+
+    # Host-initiated continuation turn starts with no user execution_attempt_id.
+    assert driver.execution_attempt_id == ""
+    driver._dispatch_message({
+        "method": "turn/started",
+        "params": {"turnId": "turn-2"},
+    })
+    assert driver.is_busy is True
+    assert driver._streaming is not None
+    assert statuses[-1] == {"turnId": "turn-2", "status": "inProgress"}
+
+    driver._dispatch_message({
+        "method": "item/started",
+        "params": {
+            "item": {
+                "itemId": "m2",
+                "kind": "agentMessage",
+                "turnId": "turn-2",
+                "status": "inProgress",
+                "text": "",
+            }
+        },
+    })
+    driver._dispatch_message({
+        "method": "item/delta",
+        "params": {
+            "itemId": "m2",
+            "field": "text",
+            "delta": "All 10 review findings fixed and verified.",
+        },
+    })
+    driver._dispatch_message({
+        "method": "turn/completed",
+        "params": {
+            "turnId": "turn-2",
+            "terminal": "completed",
+            "usage": {"inputTokens": 1200, "outputTokens": 300},
+        },
+    })
+
+    assert driver.is_busy is False
+    assert len(appended) == 1
+    assert "All 10 review findings fixed and verified." in appended[0].content[0].text
+    assert results[-1]["subtype"] == "success"
+    assert results[-1]["usage"] == {"input_tokens": 1200, "output_tokens": 300}
+
+
+def test_open_tool_call_survives_turn_completion_as_background_work_and_settles_across_turns(tmp_path):
+    driver = _driver(tmp_path)
+    bg_events = []
+    driver.connect("background-tasks-changed", lambda _d, rows: bg_events.append(rows))
+
+    driver._dispatch_message({
+        "method": "item/started",
+        "params": {
+            "item": {
+                "itemId": "tc-1",
+                "kind": "toolCall",
+                "turnId": "turn-1",
+                "status": "inProgress",
+                "tool": "bash",
+                "args": {"command": "pytest -q", "description": "Run test suite"},
+            }
+        },
+    })
+    # Foreground turn completes while tc-1 is still inProgress -> promoted to background work.
+    driver._dispatch_message({
+        "method": "turn/completed",
+        "params": {"turnId": "turn-1", "terminal": "completed", "usage": {}},
+    })
+    assert driver.has_background_work is True
+    assert driver.background_task_rows == [{
+        "task_id": "tc-1",
+        "task_type": "local_bash",
+        "description": "Run test suite",
+    }]
+
+    # Even after a later turn starts, item/completed with the earlier turnId settles tc-1.
+    driver._dispatch_message({
+        "method": "turn/started",
+        "params": {"turnId": "turn-2"},
+    })
+    driver._dispatch_message({
+        "method": "item/completed",
+        "params": {
+            "item": {
+                "itemId": "tc-1",
+                "kind": "toolCall",
+                "turnId": "turn-1",
+                "status": "completed",
+                "tool": "bash",
+            }
+        },
+    })
+    assert driver.has_background_work is False
+    assert driver.background_task_rows == []
+    assert bg_events[-1] == []
+
+
+def test_session_goal_changed_emits_native_goal_updated(tmp_path):
+    driver = _driver(tmp_path)
+    goals = []
+    driver.connect("native-goal-updated", lambda _d, payload: goals.append(payload))
+
+    driver._dispatch_message({
+        "method": "session/goalChanged",
+        "params": {
+            "sessionId": "session-1",
+            "goal": {"goalId": "g-1", "objective": "Ship feature", "status": "active"},
+        },
+    })
+    driver._dispatch_message({
+        "method": "session/goalChanged",
+        "params": {"sessionId": "session-1", "goal": None},
+    })
+    assert goals == [
+        {"goal": {"goalId": "g-1", "objective": "Ship feature", "status": "active"}, "cleared": False},
+        {"goal": None, "cleared": True},
+    ]

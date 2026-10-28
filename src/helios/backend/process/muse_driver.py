@@ -146,6 +146,8 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
         "activity-updated": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
         "plan-updated": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
         "turn-status-updated": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
+        "background-tasks-changed": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
+        "native-goal-updated": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
     }
 
     def __init__(self, cwd: str, model: str = "", permission_mode: str = "default",
@@ -184,6 +186,8 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
         self._tool_outputs: dict[str, str] = {}
         self._tool_images: dict[str, list] = {}
         self._agents: dict[str, dict[str, str]] = {}
+        self._open_tool_calls: dict[str, dict[str, Any]] = {}
+        self.background_task_rows: list[dict[str, str]] = []
         self._pending_approvals: dict[str, dict] = {}
         self._pending_inputs: dict[str, dict] = {}
         self._input_commands: dict[int, str] = {}
@@ -248,6 +252,81 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
 
     def observed_agent_snapshot(self) -> dict:
         return copy.deepcopy(self._agents)
+
+    @property
+    def has_background_work(self) -> bool:
+        """True while background workflows, subagents, or tool calls remain
+        in progress and will wake `muse serve` for a continuation turn."""
+        return bool(self.background_task_rows) and self.is_running and not self._stopped
+
+    def _sync_background_tasks(self) -> None:
+        rows: list[dict[str, str]] = []
+        if not self._stopped:
+            for item_id, agent in self._agents.items():
+                if ":" in item_id or agent.get("status") not in ("starting", "working"):
+                    continue
+                name = str(agent.get("name") or agent.get("role") or agent.get("tool") or item_id)
+                msg = str(agent.get("message") or "").strip()
+                desc = f"{name} — {msg}" if msg and msg != name else name
+                rows.append({
+                    "task_id": str(agent.get("task_id") or item_id),
+                    "task_type": str(agent.get("tool") or "agent"),
+                    "description": desc[:200],
+                })
+            for item_id, tool in self._open_tool_calls.items():
+                if not tool.get("background"):
+                    continue
+                rows.append({
+                    "task_id": item_id,
+                    "task_type": str(tool.get("task_type") or "local_bash"),
+                    "description": str(tool.get("description") or item_id)[:200],
+                })
+        if rows != self.background_task_rows:
+            self.background_task_rows = rows
+            self.emit("background-tasks-changed", list(rows))
+
+    def _track_tool_call_lifecycle(self, item: dict, *, status: str, terminal: bool) -> None:
+        item_id = str(item.get("itemId") or "")
+        if not item_id:
+            return
+        if terminal or status not in ("", "inProgress"):
+            if self._open_tool_calls.pop(item_id, None) is not None:
+                self._sync_background_tasks()
+            return
+        raw_name = str(item.get("tool") or "")
+        parsed = _parse_args(item.get("args"))
+        args_dict = parsed if isinstance(parsed, dict) else {}
+        existing = self._open_tool_calls.get(item_id, {})
+        is_bg = bool(
+            existing.get("background")
+            or item.get("background")
+            or item.get("backgroundStatus")
+            or raw_name.lower() == "monitor"
+            or args_dict.get("run_in_background")
+            or args_dict.get("background")
+        )
+        desc = (
+            item.get("title")
+            or item.get("statusLine")
+            or args_dict.get("description")
+            or args_dict.get("command")
+            or existing.get("description")
+            or raw_name
+            or item_id
+        )
+        task_type = "monitor" if raw_name.lower() == "monitor" else "local_bash"
+        self._open_tool_calls[item_id] = {
+            "background": is_bg,
+            "task_type": task_type,
+            "description": str(desc)[:200],
+        }
+        self._sync_background_tasks()
+
+    def stop_background_task(self, task_id: str) -> bool:
+        return self.stop_task(task_id)
+
+    def task_output_path(self, task_id: str) -> str:
+        return ""
 
     # ── wire ────────────────────────────────────────────────────────────────
 
@@ -504,7 +583,11 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
         self._summary_part = {}
         self._tool_outputs = {}
         self._tool_images = {}
-        self._agents = {}
+        self._agents = {
+            k: v for k, v in self._agents.items()
+            if v.get("status") in ("starting", "working")
+        }
+        self._sync_background_tasks()
         self._turn_usage = {}
         params: dict[str, Any] = {
             "commandId": command_id,
@@ -657,9 +740,39 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
             turn_id = params.get("turnId")
             if isinstance(turn_id, str) and turn_id:
                 self._root_turn_id = turn_id
-                self._accept_prompt(turn_id)
+                if self.execution_attempt_id:
+                    self._accept_prompt(turn_id)
+                elif self._streaming is None:
+                    # Host-initiated continuation turn: a background workflow,
+                    # subagent, or monitor finished and woke the session.
+                    self._is_busy = True
+                    self._accepted = False
+                    self._accepted_turn_id = ""
+                    self._turn_usage = {}
+                    self._streaming = StreamingAssistant(model=self._model)
+                    self._blocks = {}
+                    self._summary_part = {}
+                    self._tool_outputs = {}
+                    self._tool_images = {}
+                    self._agents = {
+                        k: v for k, v in self._agents.items()
+                        if v.get("status") in ("starting", "working")
+                    }
+                    self._sync_background_tasks()
                 self.emit("turn-status-updated",
                           {"turnId": turn_id, "status": "inProgress"})
+                if self._agents:
+                    self.emit("agents-updated", copy.deepcopy(self._agents))
+        elif method == "turn/foregroundCompleted":
+            for entry in self._open_tool_calls.values():
+                entry["background"] = True
+            self._sync_background_tasks()
+        elif method == "session/goalChanged":
+            goal = params.get("goal")
+            self.emit("native-goal-updated", {
+                "goal": goal if isinstance(goal, dict) else None,
+                "cleared": goal is None,
+            })
         elif method in ("item/started", "item/updated", "item/completed"):
             item = params.get("item")
             if isinstance(item, dict):
@@ -717,10 +830,18 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
         item_id = str(item.get("itemId") or "")
         if not item_id or kind in ("userMessage", "reminderChild"):
             return  # own echo; housekeeping children are not delegated work
+        status = str(item.get("status") or "")
+        if kind in ("subagent", "workflow"):
+            # Background workflows and subagents retain the turnId of the turn
+            # that launched them; update their lifecycle across turns.
+            self._on_agent_item(item, kind=kind, status=status, terminal=terminal)
+            self._sync_background_tasks()
+            return
+        if kind == "toolCall":
+            self._track_tool_call_lifecycle(item, status=status, terminal=terminal)
         if self._session_id and item.get("turnId") and self._root_turn_id \
                 and item.get("turnId") != self._root_turn_id:
             return  # stale-turn item; never paint it into the live turn
-        status = str(item.get("status") or "")
         if kind == "agentMessage":
             block = self._block_for(item_id, "text")
             if block is not None:
@@ -758,8 +879,6 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
                     self.emit("activity-updated", {
                         "category": "tool-progress", "tool": display,
                         "message": str(item.get("statusLine"))})
-        elif kind in ("subagent", "workflow"):
-            self._on_agent_item(item, kind=kind, status=status, terminal=terminal)
         elif kind == "compaction":
             if terminal:
                 self.emit("context-compacted", {
@@ -956,11 +1075,14 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
     # ── turn terminal ───────────────────────────────────────────────────────
 
     def _finish_turn(self, terminal: str, *, error_text: str = "") -> None:
-        if not self.execution_attempt_id:
+        has_user_attempt = bool(self.execution_attempt_id)
+        if not has_user_attempt and self._streaming is None and not self._is_busy:
             return
-        if not self._accept_prompt(self._accepted_turn_id or self._root_turn_id):
+        if has_user_attempt and not self._accept_prompt(
+                self._accepted_turn_id or self._root_turn_id):
             return
         subtype = {"completed": "success", "cancelled": "aborted"}.get(terminal, "error")
+        appended_turn = False
         if self._streaming is not None:
             turn = self._streaming.to_turn()
             for tool_use in turn.tool_uses:
@@ -971,17 +1093,20 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
                         tool_use_id=tool_use.id, content=output or "",
                         is_error=subtype == "error", images=images))
             if turn.content or turn.tool_uses:
-                if not self._record_execution_contribution(turn):
+                if has_user_attempt and not self._record_execution_contribution(turn):
                     self._hold_accounting_failure(
                         "Helios could not save the Muse response. This Work remains blocked.")
                     return
                 try:
                     self._transcript.append_assistant(turn, model=self._model)
                 except Exception:
-                    self._hold_accounting_failure(
-                        "Helios could not save the Muse transcript. This Work remains blocked.")
-                    return
+                    if has_user_attempt:
+                        self._hold_accounting_failure(
+                            "Helios could not save the Muse transcript. This Work remains blocked.")
+                        return
+                    _log.warning("could not save continuation Muse transcript", exc_info=True)
                 self.emit("turn-appended", turn)
+                appended_turn = True
         usage = self._turn_usage
         receipt_usage = {}
         for source, target in (("inputTokens", "input_tokens"),
@@ -994,7 +1119,7 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
                 receipt_usage[target] = value
         receipt_status = {"success": "completed", "aborted": "aborted",
                           "error": "failed"}[subtype]
-        if not self._finish_execution_with_evidence(ExecutionTerminalEvidence(
+        if has_user_attempt and not self._finish_execution_with_evidence(ExecutionTerminalEvidence(
                 evidence_type="provider_terminal", status=receipt_status,
                 reason_code=f"provider_result.{subtype}",
                 provider_status=terminal or subtype,
@@ -1004,7 +1129,17 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
             self._hold_accounting_failure(
                 "Helios could not finish the Muse execution receipt. This Work remains blocked.")
             return
+        if subtype == "success":
+            for entry in self._open_tool_calls.values():
+                entry["background"] = True
+        else:
+            for item_id in [k for k, v in self._open_tool_calls.items() if not v.get("background")]:
+                del self._open_tool_calls[item_id]
+        self._sync_background_tasks()
         self._is_busy = False
+        self._accepted = False
+        self._accepted_turn_id = ""
+        self._turn_usage = {}
         self._pending_inputs.clear()
         self._input_commands.clear()
         self._input_presentations.clear()
@@ -1014,11 +1149,13 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
         self._tool_outputs = {}
         self._tool_images = {}
         self._last_activity = time.monotonic()
-        result = {
+        result: dict[str, Any] = {
             "subtype": subtype,
             "usage": receipt_usage,
             "turn_usage": receipt_usage,
         }
+        if not has_user_attempt and not appended_turn:
+            result["origin"] = {"kind": "task-notification"}
         if error_text:
             result["error"] = error_text
             self.emit("error", error_text[:2000])
@@ -1075,6 +1212,8 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
     def stop(self, *, interrupt: bool = True) -> None:
         self._stopped = True
         self._accepting_input = False
+        self._open_tool_calls.clear()
+        self._sync_background_tasks()
         self._finish_predispatch_attempt()
         if interrupt and self._session_id and self._root_turn_id and self._is_busy:
             self._send("turn/interrupt", {
@@ -1100,6 +1239,11 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
     def stop_task(self, actor_id: str) -> bool:
         """Stop one observed subagent/workflow actor, when Muse exposes it."""
         agent = self._agents.get(actor_id)
+        if agent is None:
+            agent = next(
+                (a for a in self._agents.values() if a.get("task_id") == actor_id),
+                None,
+            )
         if agent is None or not self._session_id:
             return False
         if agent.get("tool") == "workflow":
@@ -1121,6 +1265,10 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
 
     def _on_exit(self, code: int) -> bool:
         self._accepting_input = False
+        self._open_tool_calls.clear()
+        if self.background_task_rows:
+            self.background_task_rows = []
+            self.emit("background-tasks-changed", [])
         self._finish_predispatch_attempt()
         if self.execution_attempt_id:
             self.emit("error", "Muse exited without a confirmed terminal receipt. This Work remains blocked; its input will not be replayed.")
