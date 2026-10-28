@@ -1,5 +1,11 @@
 # Helios — Session Journal
 
+## 2026-10-28 — claude — Session board (unreleased)
+
+- **Roadmap Phase 4 (first slice).** `widgets/board_dialog.py`: `Adw.Dialog` with a `Gtk.FlowBox` of cards from `SessionList.board_snapshot()` (same rows/statuses as the sidebar, attention-first via `_STATE_SORT_RANK`), reusing `helios-status-*` dot classes; new `.helios-board-card` styles on the 220 ms token. Choosing a card emits `session-chosen` and the window routes through the existing `app.focus-session` action. Header menu: *Session board…* (`win.board`).
+- **Not done:** split view (two live transcripts), per-card cost, pending-approval badges on cards — the snapshot carries state only for now.
+- **Validation:** dialog probe on Xvfb (2 cards), full GTK-free suite + GTK contract tests green, `ruff check .` clean.
+
 ## 2026-10-28 — claude — Provider audit: catalog self-refresh, registry-derived accounts, streaming caret (unreleased)
 
 - **Audit (Claude/GPT/Gemini/Muse/OpenRouter + Kimi):** limits already show for Claude, Codex, Muse and OpenRouter (credit row) in the toolbar; Gemini honestly reports tokens with no published window/limit. All five catalogs refresh at startup, on credential change, and on the 6 h tick — except OpenRouter's network fetch, which only ran on force.

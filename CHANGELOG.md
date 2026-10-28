@@ -12,6 +12,7 @@ source (`source.tar.gz`) and `SHA256SUMS.txt`.
 - OpenRouter's model list now refreshes itself once the cached catalog is a day old (background pass only), so new models such as Kimi releases appear without changing a credential.
 - Streaming replies show a blinking caret at the writing edge.
 - `docs/ADDING-A-PROVIDER.md` documents the provider checklist; the Accounts page now derives its providers from the registry.
+- Session board… (header menu): every chat as a card — status, provider, folder — with working and waiting-on-you sessions first; clicking a card opens that chat.
 
 ## 0.113.0 — 2026-10-22
 

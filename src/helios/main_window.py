@@ -893,6 +893,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         menu.append("Clear budget block", "win.clear-budget-block")
         menu.append("Rewind files…", "win.rewind")
         menu.append("Export chat to Markdown…", "win.export-chat")
+        menu.append("Session board…", "win.board")
         menu.append("Settings", "win.preferences")
         menu.append("About Helios", "app.about")
         menu.append("Quit", "app.quit")
@@ -947,6 +948,10 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         export_act.connect("activate", lambda *_a: self._export_current_chat())
         self.add_action(export_act)
         self._export_dialog: Gtk.FileDialog | None = None
+
+        board_act = Gio.SimpleAction.new("board", None)
+        board_act.connect("activate", lambda *_a: self._show_board())
+        self.add_action(board_act)
         self.connect("close-request", self._on_close_request)
 
         # App-level action so a "session finished" notification can deep-link
@@ -9205,6 +9210,21 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 drv._helios_pending_checkpoints = pending
             pending.append(point)
         return False
+
+    def _show_board(self) -> None:
+        """All sessions as cards, attention first; a card opens its chat."""
+        from helios.widgets.board_dialog import BoardDialog
+
+        dialog = BoardDialog(self._sessions.board_snapshot())
+
+        def on_chosen(_dlg, session_id: str) -> None:
+            dialog.close()
+            self.activate_action(
+                "app.focus-session", GLib.Variant("s", session_id)
+            )
+
+        dialog.connect("session-chosen", on_chosen)
+        dialog.present(self)
 
     def _export_current_chat(self) -> None:
         """Save the visible chat as Markdown (parse off the main thread)."""

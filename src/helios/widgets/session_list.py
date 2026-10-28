@@ -349,6 +349,25 @@ class SessionList(Gtk.Box):
         between selecting a session and showing the fresh-chat UI.)"""
         return bool(self._rows_by_id)
 
+    def board_snapshot(self) -> list[tuple[Session, str, str]]:
+        """(session, state, provider) per row, attention first.
+
+        The board renders exactly what the sidebar already knows — same
+        rows, same statuses — ordered the way `_render_inner` sorts:
+        working and waiting-on-you sessions before finished ones.
+        """
+        rows = sorted(
+            self._rows_by_id.values(),
+            key=lambda r: (
+                _STATE_SORT_RANK.get(r.status.state, 99),
+                -(r.status.last_response_at or r.session.mtime),
+            ),
+        )
+        return [
+            (r.session, r.status.state, r.provider_resolution.provider)
+            for r in rows
+        ]
+
     def set_live_session_ids(self, ids: set[str]) -> None:
         """Tell the list which session ids belong to drivers Helios itself is
         currently running, so dots flip to "active" without waiting for /proc

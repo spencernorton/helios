@@ -429,6 +429,28 @@ window.helios-glass .helios-session-list list {
 }
 
 
+/* ── Session board cards ─────────────────────────────────────── */
+
+.helios-board-card {
+    border-radius: 12px;
+    padding: 12px 14px;
+    background-color: @card_bg_color;
+    border: 1px solid @borders;
+    transition:
+        background-color 220ms cubic-bezier(0.4, 0, 0.2, 1),
+        border-color 220ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.helios-board-card:hover {
+    background-color: alpha(@accent_color, 0.08);
+    border-color: alpha(@accent_color, 0.35);
+}
+
+.helios-board-title {
+    font-weight: bold;
+}
+
+
 /* ── Sidebar rows: rich hover + selection transitions ────────── */
 
 .helios-session-row {
