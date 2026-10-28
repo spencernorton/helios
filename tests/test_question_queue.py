@@ -122,6 +122,68 @@ def test_duplicate_tool_use_id_ignored(win):
     assert len(win._question_queue) == 0
 
 
+@pytest.mark.parametrize("retry", [False, True])
+@pytest.mark.parametrize("terminal", [False, True])
+def test_muse_native_settlement_closes_dialog_and_advances_queue(win, tmp_path, retry, terminal):
+    from helios.backend.process.muse_driver import MuseServeDriver
+    from helios.backend.process.streaming import StreamingAssistant
+
+    driver = MuseServeDriver(cwd=str(tmp_path), model="muse-wonder-1.0")
+    driver._session_id = "session"
+    driver._proc = types.SimpleNamespace(stdin=io.BytesIO(), poll=lambda: None)
+    driver.connect("question-asked", win._on_question_asked)
+    # The same signal is wired by MainWindow for native Muse drivers.
+    driver.connect("interaction-resolved", win._on_interaction_resolved)
+    driver._on_user_input_requested({"userInputId": "prompt", "questions": [{"id": "url"}]})
+    if retry:
+        win.captured[0][1]("x" * 501)
+    stale_answer = win.captured[-1][1]
+    dialog = win.captured[-1][3]
+    other = FakeDrv("other")
+    win._on_question_asked(other, {"q": 2}, "next")
+    driver._dispatch_message({"method": "userInput/settled", "params": {
+        "sessionId": "another-session", "userInputId": "prompt"}})
+    assert not dialog.closed
+    if terminal:
+        driver._streaming = StreamingAssistant()
+        driver._finish_turn("cancelled")
+    else:
+        driver._dispatch_message({"method": "userInput/settled", "params": {
+            "sessionId": "session", "userInputId": "prompt", "outcome": "timedOut"}})
+    assert dialog.closed
+    assert win._question_active_key == (other, "next")
+    stale_answer("too late")
+    assert not driver._proc.stdin.getvalue()
+    assert win._question_active_key == (other, "next")
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_muse_resolved_approval_cannot_be_answered_late(win, tmp_path, terminal):
+    from helios.backend.process.muse_driver import MuseServeDriver
+    from helios.backend.process.streaming import StreamingAssistant
+
+    driver = MuseServeDriver(cwd=str(tmp_path), model="muse-wonder-1.0")
+    driver._session_id = "session"
+    driver._proc = types.SimpleNamespace(stdin=io.BytesIO(), poll=lambda: None)
+    driver.connect("question-asked", win._on_question_asked)
+    driver.connect("interaction-resolved", win._on_interaction_resolved)
+    driver._on_approval_requested({"approvalId": "approval", "availableChoices": [
+        {"label": "Allow once", "choiceId": "yes", "decision": "approved"}]})
+    stale_answer = win.captured[-1][1]
+    dialog = win.captured[-1][3]
+    if terminal:
+        driver._streaming = StreamingAssistant()
+        driver._finish_turn("cancelled")
+    else:
+        driver._dispatch_message({"method": "approval/resolved", "params": {
+            "sessionId": "session", "approvalId": "approval"}})
+    assert dialog.closed
+    assert not win._question_active
+    stale_answer("Allow once")
+    assert not driver._proc.stdin.getvalue()
+    assert driver._pending_approvals == {}
+
+
 def test_muse_retries_survive_window_dedup_and_fence_old_dialog_callbacks(win, tmp_path):
     from helios.backend.process.muse_driver import MuseServeDriver
 

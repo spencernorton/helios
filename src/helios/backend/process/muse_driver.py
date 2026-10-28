@@ -135,6 +135,7 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
         "rate-limit-updated": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
         "budget-exhausted": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
         "question-asked": (GObject.SignalFlags.RUN_FIRST, None, (object, str)),
+        "interaction-resolved": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
         "queued-user-sent": (GObject.SignalFlags.RUN_FIRST, None, (int, str)),
         "delivery-confirmed": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "error": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
@@ -794,6 +795,10 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
                 self.emit("plan-updated", {"source": "turn", "plan": todos})
         elif method == "approval/requested":
             self._on_approval_requested(params)
+        elif method == "approval/resolved" and params.get("sessionId") == self._session_id:
+            token = str(params.get("approvalId") or "")
+            if self._pending_approvals.pop(token, None) is not None:
+                self.emit("interaction-resolved", token)
         elif method == "userInput/requested":
             self._on_user_input_requested(params)
         elif method == "userInput/settled" and params.get("sessionId") == self._session_id:
@@ -994,9 +999,16 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
         self._present_user_input(user_input_id)
 
     def _clear_input_presentations(self, token: str) -> None:
+        resolved = []
         for presentation, native in list(self._input_presentations.items()):
             if native == token:
                 del self._input_presentations[presentation]
+                resolved.append(presentation)
+        # Invalidate callbacks before closing a dialog: close can synchronously
+        # invoke its dismiss handler. Retries use presentation IDs, not the
+        # native prompt ID, so resolve the exact surface the window knows.
+        for presentation in resolved:
+            self.emit("interaction-resolved", presentation)
 
     def _present_user_input(self, token: str, *, caption: str = "", retry: bool = False) -> None:
         prompt = self._pending_inputs.get(token)
@@ -1149,7 +1161,12 @@ class MuseServeDriver(UserMessageQueueMixin, GObject.Object):
         self._turn_usage = {}
         self._pending_inputs.clear()
         self._input_commands.clear()
-        self._input_presentations.clear()
+        approvals = list(self._pending_approvals)
+        self._pending_approvals.clear()
+        for token in approvals:
+            self.emit("interaction-resolved", token)
+        for token in list(set(self._input_presentations.values())):
+            self._clear_input_presentations(token)
         self._streaming = None
         self._blocks = {}
         self._summary_part = {}

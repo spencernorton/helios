@@ -210,7 +210,15 @@ def test_authoritative_catalog_reenables_valid_persisted_gpt():
     assert toggle.tooltip == "Chat with GPT (OpenAI)"
 
 
-def test_chatgpt_fallback_rows_are_not_published_by_catalog_worker(monkeypatch):
+@pytest.fixture
+def isolated_worker_catalogs(monkeypatch):
+    # These worker tests exercise Claude/OpenAI races, never the host's
+    # installed providers, credentials, network, or CLI model catalogs.
+    for name in ("google_entries", "muse_entries", "openrouter_entries"):
+        monkeypatch.setattr(model_catalog, name, lambda **_kwargs: ([], "test-empty"))
+
+
+def test_chatgpt_fallback_rows_are_not_published_by_catalog_worker(monkeypatch, isolated_worker_catalogs):
     workers: list[object] = []
     idles: list[tuple[object, tuple]] = []
     delivered: list[tuple[list[str], bool, tuple[str, ...]]] = []
@@ -447,7 +455,7 @@ def test_exact_catalogued_gpt_model_passes_driver_guard():
     assert allowed is True
 
 
-def test_force_during_inflight_discards_old_result_and_reruns(monkeypatch):
+def test_force_during_inflight_discards_old_result_and_reruns(monkeypatch, isolated_worker_catalogs):
     workers: list[object] = []
     idles: list[tuple[object, tuple]] = []
     applied: list[list[str]] = []

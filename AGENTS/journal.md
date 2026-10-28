@@ -1,5 +1,14 @@
 # Helios — Session Journal
 
+
+## 2026-10-28 — codex — Close settled Muse questions and approvals
+
+- **Branch:** `codex/muse-question-cleanup`, based on the separate Muse reliability release PR46; tracker OP#1274.
+- **Reproduced:** `userInput/settled` cleared driver state while leaving the active/retried dialog open, blocking queued questions. `approval/resolved` was ignored, and terminal turns retained pending approvals.
+- **Fix:** emit the existing `interaction-resolved` window signal for exact presentation IDs, invalidate callbacks before closing dialogs, and clear approvals when a turn ends. Keep native session matching and stale-answer fencing. Add the real window queue and catalog-worker tests to native CI; isolate worker tests from installed provider CLIs.
+- **Validation:** the Apollo development tree passed all **3,546** isolated GTK tests after correcting intentional caret/motion expectations. The follow-up release tree is separately validated, retaining upstream Kimi and the release PR's additional lifecycle fixes. New queue tests cover original/retried prompts, timeout/turn cancellation, foreign-session settlement, late clicks, and external/terminal approval resolution.
+- **Deployment:** review branch only; no installed package or running app modified. Version remains the parent release's 0.114.1 until landing.
+
 ## 2026-10-28 — codex — Release Muse session reliability (v0.114.1)
 
 - Reconciled the two local Muse hotfix commits onto GitHub main in an independent worktree. Original Apollo main and its unrelated UI commits remain preserved on `preserve/lifecycle-import-20261028`; its obsolete GitLab tracking branch explains the misleading ahead/behind count.
