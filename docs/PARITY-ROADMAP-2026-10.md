@@ -162,11 +162,11 @@ Xvfb rig before release.
     existing estate notification path.
 20. **Start from a tracker item.** Open a Work from an OpenProject work
     package or a GitLab issue, and post the result back. This ties into the
-    Helios Loops packages OP#1046–1049.
+    Helios Loops integration work.
 
 ### Deferred
 
-- Cloud VMs: Apollo is the execution host.
+- Cloud VMs: execution currently stays on the desktop host.
 - Computer use: Wayland limits it, and Claude's Linux beta lacks it too.
 - iOS simulator.
 - Public share links: they conflict with the estate privacy posture.

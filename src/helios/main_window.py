@@ -1162,10 +1162,10 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 # Keep the Anthropic baseline non-empty so applying this result
                 # also removes stale GPT rows from a previous credential.
                 _log.warning("OpenAI model catalog refresh failed: %s", e)
-            # OpenRouter catalog (cached; no network on the refresh thread
-            # unless the user just added a key, which triggers a force).
+            # Background-only capability refresh, including legacy caches
+            # without per-model reasoning metadata. UI/send paths stay cached.
             try:
-                or_entries, or_status = model_catalog.openrouter_entries(force=force)
+                or_entries, or_status = model_catalog.openrouter_entries(force=force, refresh_if_stale=True)
                 if or_entries:
                     entries = entries + or_entries
                 _log.info(
@@ -2247,6 +2247,9 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
 
         # A live conversation may carry a different effort from the provider
         # default (for example after switching between two background chats).
+        configure_efforts = getattr(driver, "set_effort_catalog", None) if live else None
+        if callable(configure_efforts):
+            configure_efforts(self._catalog_entries_by_id.values())
         live_effort = str(getattr(driver, "effort_key", "") or "") if live else ""
         if live_effort:
             selected_effort = live_effort
@@ -2996,6 +2999,9 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             and self._driver_matches_selected_provider(driver)
             and self._driver_matches_target_binding(driver)
         )
+        configure_efforts = getattr(driver, "set_effort_catalog", None) if live else None
+        if callable(configure_efforts):
+            configure_efforts(self._catalog_entries_by_id.values())
         live_effort = str(getattr(driver, "effort_key", "") or "") if live else ""
         conversation_effort = (
             live_effort or self._staged_effort_key or stored_effort
@@ -3053,7 +3059,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             # six-stop list. Only a live driver can have been told, and only
             # the driver we would actually update — which is the same process
             # `execution_model` was derived from above.
-            supported: list[str] = []
+            supported: list[str] | None = None
             if live and hasattr(driver, "supported_effort_levels"):
                 try:
                     supported = driver.supported_effort_levels()
@@ -4966,8 +4972,11 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 resume_session_id=target.resume_id,
                 **effort_kw,
             )
+            configure_efforts = getattr(driver, "set_effort_catalog", None)
+            if callable(configure_efforts):
+                configure_efforts(self._catalog_entries_by_id.values())
             driver._helios_staged_permission_mode = spawn_permission_mode
-            driver._helios_staged_effort_key = spawn_effort_key
+            driver._helios_staged_effort_key = str(getattr(driver, "effort_key", spawn_effort_key) or "")
             driver._helios_staged_workflow_mode = spawn_workflow_mode
             driver._helios_requested_model = self._model
             driver._helios_identity_confirmed = False

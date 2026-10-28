@@ -283,7 +283,7 @@ def test_start_uses_persistent_agy_flags_and_sandbox(driver_factory):
     assert command[command.index("--input-format") + 1] == "stream-json"
     assert command[command.index("--output-format") + 1] == "stream-json"
     assert command[command.index("--model") + 1] == MODEL
-    assert command[command.index("--effort") + 1] == "high"
+    assert "--effort" not in command
     assert "--sandbox" in command
     assert "--print" not in command
     assert "--resume" not in command
@@ -612,7 +612,7 @@ def test_google_receipts_finish_real_work_and_allow_the_next_turn(driver_factory
 
             attempt = coordinator.store.get_execution_attempt(aid)
             assert attempt.status == "completed"
-            assert driver.permission_mode == "dontAsk"
+            assert driver.permission_mode == "default"
             assert attempt.metadata["model"] == MODEL
             suffix = f"user_input/{index}" if acceptance_step else f"result/{count}"
             assert attempt.accepted_turn_id == f"{NATIVE_ID}/{suffix}"

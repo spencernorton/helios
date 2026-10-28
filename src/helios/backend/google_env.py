@@ -362,7 +362,7 @@ def signed_in_email() -> str:
         logs = sorted((root / "log").glob("cli-*.log"), key=lambda f: f.stat().st_mtime)
     except OSError:
         return ""
-    # ponytail: newest 10 runs; Helios itself runs agy every catalog refresh.
+    # newest 10 runs; Helios itself runs agy every catalog refresh.
     for log in reversed(logs[-10:]):
         try:
             match = _AUTH_EMAIL_RE.search(log.read_text(encoding="utf-8", errors="replace"))

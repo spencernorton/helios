@@ -102,7 +102,7 @@ def test_context_qualified_live_switch_uses_native_resolved_identity_without_a_t
     assert driver.set_model("fable[1m]")
     _control_response(driver, writes[0])
     assert writes[1]["request"] == {"subtype": "get_context_usage"}
-    assert driver.supported_effort_levels() == []
+    assert driver.supported_effort_levels() is None
     driver._dispatch_record({"type": "control_response", "response": {
         "subtype": "success", "request_id": writes[1]["request_id"], "response": {
             "model": "claude-fable-5-1", "maxTokens": 1000000,

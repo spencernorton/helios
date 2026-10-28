@@ -43,5 +43,7 @@ jobs:
             tests/test_question_queue.py tests/test_model_catalog_refresh.py \
             tests/test_claude_questions_and_plan.py tests/test_codex_app_driver.py \
             tests/test_openrouter_driver_loop.py tests/test_openrouter_egress_and_budget.py \
+            tests/test_capability_alignment.py tests/test_cli_capabilities.py \
+            tests/test_effort_levels.py tests/test_claude_set_model.py \
             tests/test_execution_settings_window.py tests/test_driver_signal_contract.py \
             tests/test_checkpoint_dispatch_window.py

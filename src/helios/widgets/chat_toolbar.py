@@ -19,6 +19,7 @@ from helios.backend.project_perms import (
     PERMISSION_MODE_DESCRIPTORS,
     SAFE_FALLBACK_MODE,
     permission_description,
+    permission_label,
     provider_allows_mode,
 )
 from helios.backend.workflow_modes import (
@@ -585,10 +586,11 @@ class ChatToolbar(Gtk.Box):
         `supported_levels` is the CLI's own `supportedEffortLevels` for the
         selected model, from the `initialize` control_response. When present it
         narrows the stops to what the model actually offers instead of showing
-        a fixed six every time. Empty or missing means the CLI did not say —
-        fall back to the full list rather than rendering an empty slider.
+        a fixed six every time. None means unknown and keeps the compatibility
+        list. An empty list is explicit unsupported capability and disables
+        the control.
 
-        `off` is always kept: it is a HELIOS concept implemented by forcing
+        For a supported model, `off` is kept: it is a Helios concept implemented by forcing
         max_thinking_tokens to 0, not an effortLevel the CLI accepts, so it
         will never appear in `supportedEffortLevels` and must not be filtered
         out by its absence.
@@ -596,14 +598,16 @@ class ChatToolbar(Gtk.Box):
 
         if self._destroyed:
             return ""
+        if supported_levels is not None:
+            if not supported_levels:
+                return self.set_effort_options(())
+            descriptions = {key: desc for key, _label, desc in EFFORT_STOPS}
+            levels = list(dict.fromkeys(["off", *supported_levels]))
+            return self.set_effort_options(
+                tuple((key, descriptions.get(key, key)) for key in levels if key),
+                default_effort=DEFAULT_EFFORT, selected_effort=selected_effort,
+            )
         stops = list(EFFORT_STOPS)
-        if supported_levels:
-            allowed = {str(level) for level in supported_levels} | {"off"}
-            narrowed = [stop for stop in stops if stop[0] in allowed]
-            # Never leave the slider with nothing but "off" — that reads as a
-            # broken control rather than a capability statement.
-            if len([s for s in narrowed if s[0] != "off"]) >= 1:
-                stops = narrowed
         self._effort_stops = stops
         effective = selected_effort if any(
             key == selected_effort for key, _label, _desc in self._effort_stops
@@ -1109,10 +1113,10 @@ class ChatToolbar(Gtk.Box):
         button.set_halign(Gtk.Align.FILL)
         button.set_hexpand(True)
         description_text = permission_description(descriptor.key, provider=self._provider_filter)
-        button.set_tooltip_text(f"{descriptor.label}. {description_text}")
+        button.set_tooltip_text(f"{permission_label(descriptor.key, provider=self._provider_filter)}. {description_text}")
         button.update_property(
             [Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION],
-            [descriptor.label, description_text],
+            [permission_label(descriptor.key, provider=self._provider_filter), description_text],
         )
         if descriptor.key == AUTONOMY_MODE:
             button.add_css_class("helios-permission-option-bypass")
@@ -1128,7 +1132,8 @@ class ChatToolbar(Gtk.Box):
 
         copy = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
         copy.set_hexpand(True)
-        title = Gtk.Label(label=descriptor.label, xalign=0)
+        title = Gtk.Label(label=permission_label(descriptor.key, provider=self._provider_filter), xalign=0)
+        button._permission_title = title
         title.add_css_class("caption-heading")
         copy.append(title)
         description = Gtk.Label(label=description_text, xalign=0)
@@ -1181,7 +1186,8 @@ class ChatToolbar(Gtk.Box):
         row.append(indicator)
         copy = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
         copy.set_hexpand(True)
-        title = Gtk.Label(label=descriptor.label, xalign=0)
+        title = Gtk.Label(label=permission_label(descriptor.key, provider=self._provider_filter), xalign=0)
+        button._permission_title = title
         title.add_css_class("caption-heading")
         copy.append(title)
         description = Gtk.Label(label=descriptor.description, xalign=0)
@@ -1231,12 +1237,13 @@ class ChatToolbar(Gtk.Box):
             # offered and then rejected by the driver. Same reason the model
             # picker lists one provider at a time.
             button.set_visible(provider_allows_mode(self._provider_filter, mode))
-            descriptor = _PERMISSION_BY_KEY[mode]
             description = permission_description(mode, provider=self._provider_filter)
+            label = permission_label(mode, provider=self._provider_filter)
+            button._permission_title.set_label(label)
             button._permission_description.set_label(description)
-            button.set_tooltip_text(f"{descriptor.label}. {description}")
+            button.set_tooltip_text(f"{label}. {description}")
             button.update_property(
-                [Gtk.AccessibleProperty.DESCRIPTION], [description],
+                [Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION], [label, description],
             )
             selected = mode == self._permission_mode
             indicator.set_opacity(1.0 if selected else 0.0)
@@ -1261,10 +1268,10 @@ class ChatToolbar(Gtk.Box):
             "plan" if self._workflow_mode == PLAN_WORKFLOW_MODE else self._permission_mode,
             _PERMISSION_BY_KEY[SAFE_FALLBACK_MODE],
         )
-        self._permission_label.set_label(descriptor.label)
+        self._permission_label.set_label(permission_label(descriptor.key, provider=self._provider_filter))
         value_label = getattr(self, "_permission_value_label", None)
         if value_label is not None:
-            value_label.set_label(descriptor.label)
+            value_label.set_label(permission_label(descriptor.key, provider=self._provider_filter))
         permission_help = getattr(self, "_permission_help", None)
         if permission_help is not None:
             if self._workflow_mode == PLAN_WORKFLOW_MODE:
@@ -1323,7 +1330,7 @@ class ChatToolbar(Gtk.Box):
             accessible = (
                 f"Execution settings. Workflow {workflow.label}. "
                 f"Reasoning {effort_label}. "
-                f"Permissions {descriptor.label}. {self._execution_scope}."
+                f"Permissions {permission_label(descriptor.key, provider=self._provider_filter)}. {self._execution_scope}."
                 f"{detail}{state}"
         )
         self._execution_accessible_name = accessible
@@ -1348,7 +1355,7 @@ class ChatToolbar(Gtk.Box):
             if identity_unverified
             else (
                 f"Execution — {workflow.label} · {effort_label} reasoning · "
-                f"{descriptor.label} permissions\n{self._execution_scope}"
+                f"{permission_label(descriptor.key, provider=self._provider_filter)} permissions\n{self._execution_scope}"
             )
         )
         if self._execution_scope_detail:

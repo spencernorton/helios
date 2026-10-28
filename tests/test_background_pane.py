@@ -11,7 +11,7 @@ from helios.backend.process.cli_driver import ClaudeCliDriver  # noqa: E402
 
 
 def test_driver_publishes_rows_and_stops_only_known_tasks():
-    driver = ClaudeCliDriver(cwd="/home/u/proj", permission_mode="default")
+    driver = ClaudeCliDriver(cwd="/home/user/proj", permission_mode="default")
     driver._proc = object()
     driver._session_id = "sess-1"
     seen, sent = [], []
@@ -23,7 +23,7 @@ def test_driver_publishes_rows_and_stops_only_known_tasks():
     assert driver.stop_background_task("b1") and sent == [{"subtype": "stop_task", "task_id": "b1"}]
     assert not driver.stop_background_task("unknown")
     path = driver.task_output_path("b1")
-    assert path.endswith(os.path.join("-home-u-proj", "sess-1", "tasks", "b1.output"))
+    assert path.endswith(os.path.join("-home-user-proj", "sess-1", "tasks", "b1.output"))
 
 
 def test_pane_lists_tasks_and_shows_empty_state():

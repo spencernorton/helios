@@ -31,6 +31,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gio, GLib, GObject  # noqa: E402
 
+from helios.backend.effort_policy import EffortPolicyMixin
 from helios.backend import codex_env, model_catalog
 from helios.backend.process import codex_events
 from helios.backend.process.env_scrub import CODEX_EXEC_ENV, scrub_helios_env
@@ -62,7 +63,7 @@ NONINTERACTIVE_PERMISSION_MODES = frozenset({"dontAsk", "plan"})
 _ExecutionCallback = Callable[[bool, str], None]
 
 
-class CodexCliDriver(UserMessageQueueMixin, GObject.Object):
+class CodexCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
     """One live OpenAI-backed chat session (process-per-turn)."""
 
     __gsignals__ = {
@@ -249,7 +250,7 @@ class CodexCliDriver(UserMessageQueueMixin, GObject.Object):
     ) -> bool:
         # Reasoning efforts are model-catalog data, so accept future non-empty
         # keys rather than freezing today's low/medium/high set in the driver.
-        if not isinstance(key, str) or not key.strip():
+        if not isinstance(key, str) or not key.strip() or not self._effort_is_supported(key):
             self._notify_execution_callback(callback, False, "unknown effort level")
             return False
         if not self._execution_change_ready(callback):

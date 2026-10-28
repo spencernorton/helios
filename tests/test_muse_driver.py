@@ -327,6 +327,8 @@ def test_set_model_uses_native_session_set_model_without_respawn(tmp_path):
     driver._dispatch_message({"jsonrpc": "2.0", "id": sent["id"],
                             "result": {"commandId": "c", "status": "accepted"}})
     assert outcomes == [(True, "")] and driver.model == "muse-wonder-full-1.0"
+    from helios.backend.model_catalog import ModelEntry
+    driver.set_effort_catalog([ModelEntry(driver.model, "Muse", "Muse", reasoning_efforts=(("high", "High"),))])
     # Reasoning is a per-turn field: no RPC at all.
     assert driver.set_effort("high", lambda ok, _d: outcomes.append(ok))
     assert driver._effort == "high" and outcomes[-1] is True

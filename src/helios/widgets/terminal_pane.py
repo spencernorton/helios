@@ -137,7 +137,7 @@ class TerminalPane(Gtk.Box):
             if run_configs.port_open(config.port):
                 self.emit("preview", f"localhost:{config.port}")
                 return False
-            return tries[0] < 240  # ponytail: 2 minutes, then stop waiting
+            return tries[0] < 240  # 2 minutes, then stop waiting
 
         GLib.timeout_add(500, poll)
 

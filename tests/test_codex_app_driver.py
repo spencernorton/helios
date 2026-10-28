@@ -238,6 +238,12 @@ def driver_factory(monkeypatch, tmp_path):
             hub=hub,
             token_budget=token_budget,
         )
+        from helios.backend.model_catalog import ModelEntry
+        driver.set_effort_catalog([ModelEntry(
+            "gpt-5.6", "GPT", "OpenAI",
+            reasoning_efforts=tuple((key, key) for key in ("low", "medium", "high", "xhigh", "max", "ultra")),
+            default_effort="high",
+        )])
         driver._mirror = FakeMirror()
         driver._test_execution_events = []
         attempt_seq = iter(range(1, 10_000))
