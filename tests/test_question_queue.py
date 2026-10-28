@@ -9,6 +9,8 @@ GTK-free CI image.
 from __future__ import annotations
 
 import types
+import io
+import json
 
 import pytest
 
@@ -118,6 +120,38 @@ def test_duplicate_tool_use_id_ignored(win):
     win._on_question_asked(d, {"q": 1}, "dup")
     assert len(win.captured) == 1
     assert len(win._question_queue) == 0
+
+
+def test_muse_retries_survive_window_dedup_and_fence_old_dialog_callbacks(win, tmp_path):
+    from helios.backend.process.muse_driver import MuseServeDriver
+
+    driver = MuseServeDriver(cwd=str(tmp_path), model="muse-wonder-1.0")
+    driver._session_id = "session"
+    driver._proc = types.SimpleNamespace(stdin=io.BytesIO(), poll=lambda: None)
+    driver.connect("question-asked", lambda _d, payload, token:
+                   win._on_question_asked(driver, payload, token))
+    driver._on_user_input_requested({"userInputId": "prompt", "questions": [{"id": "url"}]})
+    first_answer = win.captured[0][1]
+    first_answer("x" * 501)
+    # Local validation reopens only after the first dialog finishes; the new
+    # presentation identity passes the window's duplicate-question guard.
+    assert len(win.captured) == 2
+    retry_key = win._question_active_key
+    assert retry_key != (driver, "prompt")
+    first_answer("late callback from the old dialog")
+    assert win._question_active_key == retry_key
+    assert not driver._proc.stdin.getvalue()
+    win.captured[1][1]("example.com")
+    frame = json.loads(driver._proc.stdin.getvalue().splitlines()[-1])
+    assert frame["params"]["userInputId"] == "prompt"
+    assert frame["params"]["answers"] == [{"questionId": "url", "freeText": "example.com"}]
+    # A definite native rejection also gets a fresh presentation, without
+    # releasing or inventing a different native prompt.
+    driver._dispatch_message({"id": frame["id"], "error": {"code": -32057}})
+    assert len(win.captured) == 3
+    assert win._question_active_key not in ((driver, "prompt"), retry_key)
+    assert "prompt" in driver._pending_inputs
+    assert len(driver._proc.stdin.getvalue().splitlines()) == 1
 
 
 def test_no_dialog_after_destroyed(win):
