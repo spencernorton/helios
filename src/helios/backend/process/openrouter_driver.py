@@ -351,7 +351,6 @@ class OpenRouterDriverSpawnError(DriverSpawnError):
 
 
 class OpenRouterDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
-    _effort_attribute = "_effort_key"
     """Drives an OpenRouter chat session with in-process tool execution.
 
     Signals (identical to ClaudeCliDriver — the window connects the same set):
@@ -367,6 +366,8 @@ class OpenRouterDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object)
       error (message)
       exited (exit_code)
     """
+
+    _effort_attribute = "_effort_key"
 
     display_name = "openrouter"
     provider = model_catalog.PROVIDER_OPENROUTER
