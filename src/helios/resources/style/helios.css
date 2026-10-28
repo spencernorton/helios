@@ -450,6 +450,11 @@ window.helios-glass .helios-session-list list {
     font-weight: bold;
 }
 
+.helios-board-card.helios-board-selected {
+    border-color: @accent_color;
+    background-color: alpha(@accent_color, 0.12);
+}
+
 
 /* ── Sidebar rows: rich hover + selection transitions ────────── */
 

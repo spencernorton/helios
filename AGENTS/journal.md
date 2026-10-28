@@ -1,5 +1,10 @@
 # Helios — Session Journal
 
+## 2026-10-28 — claude — Session board preview + asked-you badge (unreleased)
+
+- Board dialog is now a split view: cards left (1–2 per line), a second `TranscriptView` previewing the selected chat right, *Open chat* routing through `app.focus-session` as before. `BoardDialog` shuts its preview down on close. Snapshot now also carries each row's pending-question flag; those cards show the question dot and an *Asked you* label.
+- **Validation:** Xvfb probe with real transcript files (selection + preview constructed); suites green.
+
 ## 2026-10-28 — claude — Session board (unreleased)
 
 - **Roadmap Phase 4 (first slice).** `widgets/board_dialog.py`: `Adw.Dialog` with a `Gtk.FlowBox` of cards from `SessionList.board_snapshot()` (same rows/statuses as the sidebar, attention-first via `_STATE_SORT_RANK`), reusing `helios-status-*` dot classes; new `.helios-board-card` styles on the 220 ms token. Choosing a card emits `session-chosen` and the window routes through the existing `app.focus-session` action. Header menu: *Session board…* (`win.board`).

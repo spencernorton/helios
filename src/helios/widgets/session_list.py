@@ -349,8 +349,8 @@ class SessionList(Gtk.Box):
         between selecting a session and showing the fresh-chat UI.)"""
         return bool(self._rows_by_id)
 
-    def board_snapshot(self) -> list[tuple[Session, str, str]]:
-        """(session, state, provider) per row, attention first.
+    def board_snapshot(self) -> list[tuple[Session, str, str, bool]]:
+        """(session, state, provider, asked-you) per row, attention first.
 
         The board renders exactly what the sidebar already knows — same
         rows, same statuses — ordered the way `_render_inner` sorts:
@@ -364,7 +364,12 @@ class SessionList(Gtk.Box):
             ),
         )
         return [
-            (r.session, r.status.state, r.provider_resolution.provider)
+            (
+                r.session,
+                r.status.state,
+                r.provider_resolution.provider,
+                r._pending_question,
+            )
             for r in rows
         ]
 
