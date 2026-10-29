@@ -33,7 +33,7 @@ it with the tagged source, and [CHANGELOG.md](CHANGELOG.md) says what changed.
 
 ## Working on the code
 
-Requirements: Python 3.11 or newer (CI uses 3.13), GTK 4.10+, libadwaita
+Requirements: Python 3.11 or newer (CI checks 3.11/3.13 plus the packaged native runtime), GTK 4.10+, libadwaita
 1.5+, GtkSourceView 5. `./scripts/helios` runs whatever `python3` is on
 PATH and does not check the interpreter version; an older interpreter fails
 on import rather than with a startup message.
@@ -59,8 +59,8 @@ run it with a throwaway home: `HOME=$(mktemp -d) ./scripts/helios`.
 
 ### Backend tests
 
-This is what CI (`.github/workflows/ci.yml`) runs: ubuntu-24.04, Python
-3.13, and a `gi` stub on `PYTHONPATH` that raises `ModuleNotFoundError`, so
+The backend lane of CI (`.github/workflows/ci.yml`) runs on ubuntu-24.04,
+Python3.11/3.13, with a `gi` stub on `PYTHONPATH` that raises `ModuleNotFoundError`, so
 every GTK test skips. Reproduce it (CI also passes `-q`, which this block
 drops so the summary line prints — see below):
 
@@ -90,8 +90,15 @@ PyGObject.
 
 ### GTK tests
 
-Public CI never executes a GTK test, so run them yourself before a widget or
-driver pull request. `gi`/GTK state is process-global: run them under Xvfb
+The required `tests` check includes the complete suite with real GTK, WebKit
+and Xvfb on Ubuntu 26.04, alongside the backend compatibility lane. It then
+builds and installs the Debian candidate and launches it outside the checkout.
+The installed check requires resources, a mapped main window, composer input,
+a real WebKit document, the About dialog and a clean quit. Tagged releases
+publish this tested candidate instead of rebuilding it. Native failures and
+skipped lanes fail the required aggregate.
+
+Run the native suite yourself before a widget or driver pull request. `gi`/GTK state is process-global: run them under Xvfb
 with isolated state, never against your live desktop session or your real
 `~/.helios`.
 
@@ -124,7 +131,7 @@ and no display-unavailable skips.
   must call `gi = pytest.importorskip("gi")` at module scope before those
   imports, and skip when `Gtk.init_check()` is false if it builds widgets.
   CI hides `gi`, so an unguarded import is a collection error. Such tests
-  skip in public CI; run them under Xvfb as above.
+  skip in the backend lane; the native CI lane runs them under Xvfb as above.
 - PyGObject async callbacks must be pinned as instance attributes or they are
   garbage-collected before they fire. Read
   [docs/gtk4-gotchas.md](docs/gtk4-gotchas.md) before touching a widget or a

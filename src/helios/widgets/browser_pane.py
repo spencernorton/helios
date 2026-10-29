@@ -48,7 +48,6 @@ _MAX_PNG_BYTES = 600_000
 # Long enough to decide, short enough to answer before the MCP call times out.
 _CONSENT_DEADLINE_MS = 170_000
 _MAX_FILE_BYTES = 64 * 1024 * 1024
-_scheme_registered = False
 _DEFAULT_READ_CHARS = 20_000
 # An isolated script world: the page's own JS cannot shadow what we call.
 _READ_SCRIPT = (
@@ -278,11 +277,11 @@ class BrowserPane(Gtk.Box):
             self.append(page)
             return
 
-        global _scheme_registered
-        if not _scheme_registered:
-            self._webkit.WebContext.get_default().register_uri_scheme(
-                browser_target.SCHEME, _serve_project_file)
-            _scheme_registered = True
+        # A Python URI handler on WebKit's process-wide default context is
+        # destroyed by a C++ exit handler after Python has finalized. Keep the
+        # handler on a pane-owned context so its lifetime follows the widgets.
+        self._context = self._webkit.WebContext.new()
+        self._context.register_uri_scheme(browser_target.SCHEME, _serve_project_file)
         state = paths.state_dir() / "browser"
         # Persistent, and separate from the person's own browser profile.
         self._session = self._webkit.NetworkSession.new(str(state / "data"), str(state / "cache"))
@@ -646,7 +645,8 @@ class BrowserPane(Gtk.Box):
 
     def _new_view(self, related=None):
         WebKit = self._webkit
-        view = WebKit.WebView(related_view=related) if related else WebKit.WebView(network_session=self._session)
+        view = WebKit.WebView(related_view=related) if related else WebKit.WebView(
+            web_context=self._context, network_session=self._session)
         view.set_hexpand(True)
         view.set_vexpand(True)
         settings = view.get_settings()
