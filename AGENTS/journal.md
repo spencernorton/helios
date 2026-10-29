@@ -1,5 +1,11 @@
 # Helios — Session Journal
 
+## 2026-11-04 — claude — Reasoning overview carried onto main
+
+- **Branch:** `claude/reasoning-overview`. Cherry-picked the 2026-10-29 compact reasoning overview (`a86797f`) onto current main; the rest of its original branch (pending sidebar sessions, reliability) had already landed through PR #52 and the 0.114 train, so the old PR was closed as superseded.
+- **Change:** Multiple public reasoning summaries share one surface with a three-line latest-summary preview and one counted, expandable full history (live and reloaded transcripts).
+- **Validation:** message-bubble tests on merged main; ruff clean.
+
 ## 2026-11-03 — Bound CI status checks and superseded PR work
 
 Bound the final CI status job to five minutes while retaining every required upstream result. Cancel superseded pull-request runs by PR number; give non-PR and reusable workflow runs separate groups so they can finish independently. Validation: actionlint, workflow structure checks and the required native pull-request checks.
