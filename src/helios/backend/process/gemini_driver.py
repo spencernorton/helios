@@ -460,19 +460,11 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
             self._seen_result_turns = count
             if not self._accept_prompt(f"{self._session_id}/result/{count}"):
                 return False
-            text = result.get("response")
-            if isinstance(text, str) and text:
-                turn = Turn(role="assistant")
-                turn.add("text", text)
-                if not self._record_execution_contribution(turn):
-                    self._hold_accounting_failure("Helios could not save the Google response. This Work remains blocked.")
-                    return False
-                try:
-                    self._transcript.append_assistant(turn, model=self._model)
-                except Exception:
-                    self._hold_accounting_failure("Helios could not save the Google transcript. This Work remains blocked.")
-                    return False
-                self.emit("turn-appended", turn)
+            # Compute this turn's usage BEFORE writing the mirror: the
+            # mirror's assistant record is where a restored session's
+            # context fill is read from after a restart, and Codex/
+            # OpenRouter already store theirs there. Without it the meter
+            # sat at 0 until the next turn.
             turn_usage = {}
             usage = result.get("usage")
             if isinstance(usage, dict):
@@ -484,6 +476,21 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
             if "cache_read_tokens" in turn_usage:
                 # terminal_tokens' spelling, so footers and totals count cached input.
                 turn_usage["cache_read_input_tokens"] = turn_usage["cache_read_tokens"]
+            text = result.get("response")
+            if isinstance(text, str) and text:
+                turn = Turn(role="assistant")
+                turn.add("text", text)
+                if not self._record_execution_contribution(turn):
+                    self._hold_accounting_failure("Helios could not save the Google response. This Work remains blocked.")
+                    return False
+                try:
+                    self._transcript.append_assistant(
+                        turn, model=self._model, result={"usage": turn_usage}
+                    )
+                except Exception:
+                    self._hold_accounting_failure("Helios could not save the Google transcript. This Work remains blocked.")
+                    return False
+                self.emit("turn-appended", turn)
             normalized = {**result, "turn_usage": turn_usage, "subtype": "success" if status == "SUCCESS" else "aborted" if status in {"CANCELED", "INTERRUPTED"} else "error"}
             # The durable store uses provider-neutral names. Keep the native
             # fields in the display result, and translate only known counters
