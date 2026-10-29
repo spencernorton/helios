@@ -1,30 +1,25 @@
 # Helios user guide
 
-Everything the README's pictures do not say. Helios is a desktop for coding
-agents you already have: it drives the official `claude` CLI, binds GPT
-sessions to a Codex App Server, and runs its own agent loop for OpenRouter
-models. Google sessions use Antigravity CLI; see
-[Google account setup and safe trials](google-subscription.md).
-Nothing here replaces those tools' own sign-in, settings or context
-files — Helios reads them and shows you what they are doing. Under
-`~/.claude/projects/` it writes only the folder for a chat's working
-directory, mirrors of GPT and OpenRouter transcripts in Claude's format, the
-memory files you edit in the Claude memory pane, and the copy made when you
-fork a GPT conversation. Its housekeeping moves transcripts — idle sessions
-to `~/.helios/session-archive/`, dead temporary projects to
-`~/.claude/projects-archive/` — and never deletes them; the only thing that
-deletes a session is the sidebar's *Delete session* (the row's trash button
-or the right-click item) or the multi-select *Delete*, after a confirmation
-that says it cannot be undone. The short list of things Helios does remove
-on its own — empty project folders, its own title-generation stubs, old
-editor backups, old OpenRouter histories — is in
+Helios is a Linux desktop for coding agents you already use: Claude Code,
+OpenAI Codex, Google Antigravity, Muse Code, Kimi Code and OpenRouter. Native
+providers keep their own sign-in and session context; Helios supplies its own
+runtime for OpenRouter. See the [quickstart](quickstart.md) for a first chat,
+[Google setup](google-subscription.md) for Antigravity, and
+[Kimi setup](kimi-subscription.md) for membership authentication.
+
+Helios reads Claude transcripts and writes Claude-compatible display mirrors
+for its other providers under `~/.claude/projects/`. These mirrors do not
+replace a native provider's authoritative context. Housekeeping moves idle
+sessions to `~/.helios/session-archive/` and dead temporary projects to
+`~/.claude/projects-archive/`. Deleting a session from the sidebar asks for
+confirmation; the maintenance cleanup rules are described in
 [SECURITY.md](../SECURITY.md#what-helios-does-with-credentials-and-data).
 
-**Install and launch.** Follow [Install](../README.md#install) in the README:
-the `helios` package from the APT repository on Ubuntu 26.04, or
-`./scripts/helios` from a checkout on any other distribution. The `helios`
-command (or `./scripts/helios`) takes no options of its own; a second launch
-activates the running window instead of opening another.
+**Install and launch.** Follow [Install](../README.md#install) for a current
+release package or a source checkout. The default stable APT channel can lag
+behind the latest release and may not include every feature in this guide.
+The `helios` command (or `./scripts/helios` from source) takes no options of
+its own; a second launch activates the running window.
 
 ## First run
 
@@ -128,11 +123,12 @@ open button that shows the file in the side pane.
 
 ## Permissions
 
-Google currently offers **Never ask** only, requires a project folder, and
-can still write workspace files. Its headless approval behavior differs
-from the providers in the table below; read
-[Google permission limits](google-subscription.md#permission-limits)
-before starting a trial.
+Google requires a project folder and offers distinct **Sandboxed**,
+**Accept edits**, **Bypass** and **Read only** modes. Its headless integration
+cannot show or answer interactive approval prompts; sandboxed modes may
+still permit workspace writes. Read
+[Google permission modes](google-subscription.md#permission-modes-and-effort-levels)
+for the native policy behind each choice.
 
 Permissions are the third value of the **Execution** capsule beside the model
 picker in the chat toolbar (`Default · High · Ask` = workflow · reasoning ·
@@ -195,10 +191,12 @@ the subagent that asked.
 
 ## Budgets
 
-Every provider has a breaker, and a trip is a hard stop: the Work becomes
-terminal, the live agent is asked to cancel, and anything you had queued stays
-in the composer. Reopen a Work the breaker closed from the app menu → *Clear
-budget block*; it is a menu choice on purpose, with no shortcut.
+The metered Claude and GPT paths and the OpenRouter runtime have the
+breakers below. A trip marks the Work budget-limited, asks the live agent to
+cancel, and keeps queued text in the composer. These are provider-specific
+execution controls, not a cap on your account across other applications or
+a guarantee that a provider has stopped spending before cancellation settles.
+Reopen a budget-limited Work from the app menu → *Clear budget block*; it is a menu choice on purpose, with no shortcut.
 
 | Provider | Breaker | Default |
 |---|---|---|
@@ -206,8 +204,10 @@ budget block*; it is a menu choice on purpose, with no shortcut.
 | GPT | Aggregate token budget across the root thread and its subagents, measured by the App Server | 200,000 tokens on API-key billing; none on a ChatGPT subscription |
 | OpenRouter | A per-Work dollar allowance reserved before every request, and a tool-round ceiling | $5 per Work · 25 tool rounds per turn, extended up to 100 while the turn stays productive; an endpoint that publishes no price is priced from the model's catalog row (a warning is logged once at session start); a model with no usable price anywhere is refused before any request is sent — "OpenRouter could not verify this model's prices"; repeated identical tool rounds pause with a resumable handoff |
 
-None of these limits is configurable — there is no setting, file key or
-environment variable for them. The only lever is which billing mode the CLI
+These limits do not establish an equivalent dollar or token cap for Google,
+Muse or Kimi. Subscription quota and usage reporting remain the provider
+CLI's responsibility. None of the limits above is configurable: there is no
+setting, file key or environment variable for them. The only lever is which billing mode the CLI
 is signed in with: an exported `ANTHROPIC_API_KEY` or `CODEX_API_KEY` in
 Helios's environment counts as per-token billing even when a subscription
 login exists. On per-token Claude billing the cap requires Claude Code
@@ -307,15 +307,15 @@ chat), `/effort` sets this conversation's reasoning level.
 
 ## Settings
 
-**Accounts.** One row per provider — Claude, GPT, Gemini, Muse and
-OpenRouter — showing the signed-in email and plan as each provider's own CLI
-reports it (`claude auth status`, Codex App Server `account/read`, the email
-claim of agy's sign-in token, `muse` `account/read`). *Sign in…*, *Sign out*
+**Accounts.** One row per provider — Claude, GPT, Gemini, Muse, Kimi and
+OpenRouter — showing the account identity and plan where its runtime reports
+them. Native providers use their own authentication checks. *Sign in…*, *Sign out*
 and *Switch account…* open that CLI's own flow in a terminal (Gemini opens
 `agy`, whose `/logout` and `/login` do the switch); the page re-reads every
 account when you return, and a changed account refreshes the model pickers.
-OpenRouter is an API key, so its row opens *Providers*. Helios stores no
-credential.
+Kimi uses `kimi login` and owns its membership credentials. OpenRouter is
+an API key, so its row opens *Providers*; that key is stored in
+`~/.helios/openrouter.key`. Native CLI credentials are not copied by Helios.
 
 **Settings.** *Defaults* — permission mode and
 model for new chats (persisted only by the **Save chat defaults** button at
@@ -326,24 +326,18 @@ session finishes or a tandem mission is gated, Ollama titles (server URL and
 model, persisted by *Save and check*), other machines' sessions.
 *Diagnostics* — the log file.
 
-**Providers.** *Anthropic · Claude* — the resolved `claude` binary with a
-badge naming where it was found. *OpenRouter · Chat* — the API key (stored at
-`~/.helios/openrouter.key`, mode 0600), the live model catalog, and which
-models appear in the picker. The key must be at least 16 characters with no
-whitespace; saving it enables the OpenRouter toggle and fetches the catalog
-from `https://openrouter.ai/api/v1/models` (cached in
-`~/.helios/openrouter-models.json`). Pre-seeding the file while Helios is
-closed enables the toggle at the next launch, but a launch reads only the
-cache: the picker shows a three-model fallback until Settings has been
-opened once, which fetches and caches the catalog, and the picker reloads
-it at the next launch or six-hourly refresh. `anthropic/*` and `openai/*` models are
-excluded — use the Claude and GPT providers for those — and models that do
-not advertise tool calling are marked *no tools*. *Models in the picker*
-writes `openrouter_picker_models`; empty means the whole catalog.
-*OpenAI · Codex* — sign-in status from `codex login status`, or an API key
-handed to `codex login --with-api-key` (Helios keeps no copy).
-*OpenRouter · Smart Routing* — an optional broker, inert unless its service
-is installed; the switch stays disabled with "Helios Router unavailable".
+**Providers.** Each native provider has discovery and account information
+under Settings → Providers. Claude shows the resolved `claude` binary;
+Codex uses its App Server; Google uses Antigravity; Muse uses MSP; and Kimi
+uses ACP. Refresh the provider to check the models and capabilities the
+connected runtime reports. A catalogue row is not proof that an account is
+signed in or entitled to use it.
+
+OpenRouter's API key is stored at `~/.helios/openrouter.key` (mode 0600).
+The provider page fetches its model catalogue and lets you choose which
+models appear in the picker; an empty selection means the whole catalogue.
+Models without tool support are marked accordingly. The optional Smart
+Routing broker remains unavailable unless its service is installed.
 
 **Tools.** *Helios Router* (the optional broker above), *Claude MCP servers*
 (live, from `claude mcp list`, with health), *Codex MCP servers* (the
@@ -374,7 +368,7 @@ rewritten whole on every change, so edit it only while Helios is closed.
 
 Per-conversation overrides live in `$HELIOS_STATE_DIR/conversation-perms.json`
 as `{provider: {session_id: {permission_mode, effort_key?, workflow_mode?}}}`
-with provider `anthropic`, `openai` or `openrouter`. The full table, with the
+with provider `anthropic`, `openai`, `google`, `muse`, `kimi` or `openrouter`. The full table, with the
 files each key lives in, is in [agent-setup.md](agent-setup.md).
 
 ## Environment variables

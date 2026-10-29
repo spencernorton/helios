@@ -5,328 +5,207 @@
 <h1 align="center">Helios</h1>
 
 <p align="center">
-  <strong>The desktop that sees everything your coding agents do.</strong><br>
-  A native GTK4/libadwaita workbench for Claude Code, OpenAI Codex, Google Antigravity, Muse Code, Kimi Code and OpenRouter models on Linux.
+  <strong>Your coding agents, in one Linux desktop.</strong><br>
+  A native Linux GUI for Claude Code, OpenAI Codex, Google Antigravity, Muse Code, Kimi Code and OpenRouter, built with GTK4/libadwaita.
 </p>
 
 <p align="center">
   <a href="https://norvitech.com"><img alt="NorviTech Suite" src="https://img.shields.io/badge/NorviTech-Suite-FD8024.svg"></a>
   <a href="https://github.com/spencernorton/helios/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/spencernorton/helios/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/spencernorton/helios/releases"><img alt="Latest release" src="https://img.shields.io/github/v/tag/spencercnorton/helios?label=release&sort=semver"></a>
-  <a href="https://apt.globalentry.systems"><img alt="APT repository" src="https://img.shields.io/badge/apt-Ubuntu%2026.04-e95420.svg?logo=ubuntu&logoColor=white"></a>
+  <a href="https://github.com/spencernorton/helios/releases"><img alt="Latest release" src="https://img.shields.io/github/v/tag/spencernorton/helios?label=release&sort=semver"></a>
+  <a href="https://norvitech.com/#install"><img alt="APT repository" src="https://img.shields.io/badge/apt-Ubuntu%2026.04-e95420.svg?logo=ubuntu&logoColor=white"></a>
   <a href="LICENSE"><img alt="MIT licence" src="https://img.shields.io/badge/licence-MIT-blue.svg"></a>
   <a href="https://buy.stripe.com/8x26oH2U44f65TRe574wM04"><img alt="Donate" src="https://img.shields.io/badge/donate-Stripe-635bff.svg?logo=stripe&logoColor=white"></a>
 </p>
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/live-session-dark.png">
-    <img alt="A live Helios session: the request is sent, Claude thinks, reads a file, writes a test, runs the suite and streams its answer while the activity strip shows each step" src="docs/screenshots/live-session-light.png" width="900">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/overview-dark.png">
+    <img alt="Helios on Linux with project sessions, a staged coding conversation, readable tool results and model and permission controls" src="docs/screenshots/overview-light.png" width="900">
   </picture>
 </p>
 
-<p align="center"><sub>Every picture here is Helios on an Ubuntu desktop with its translucent sidebar on, driving an invented demonstration project; nothing personal appears in them, and the wallpapers are free Unsplash and Pexels photographs.</sub></p>
+<p align="center"><sub>The current Helios interface, captured in light and dark mode with a fictional project and staged agent replies. Watch the narrated demos for the controls and workspace.</sub></p>
 
-Helios is named for the sun that, in the old stories, saw everything that
-happened on earth. That is the whole idea. Terminal agents are powerful and
-easy to lose track of: which session is waiting on you, what a command is
-about to touch, how much a long task has cost. Helios keeps every session in
-one window and puts the controls that matter — permissions, budgets, the plan
-you agreed to — where you can see them, not in flags.
+Helios is a free, open-source Linux desktop app for developers who use coding
+agents. Run Claude Code, OpenAI Codex, Google Antigravity, Muse Code, Kimi
+Code and OpenRouter from one native GTK4/libadwaita window, with your
+projects, conversations and review tools together. Each provider keeps its
+own runtime and account; the controls reflect what that provider supports.
 
 ## What it does
 
-**Every session in one place.** The sidebar lists every project and session
-on the machine with a live status dot; the transcript streams markdown,
-syntax-highlighted code, thinking, and one card per tool call with its result
-and elapsed time. Sessions keep working in the background, and a session that
-needs you says so.
+**Keep the work in view.** Browse project conversations, follow streaming
+answers and tool results, and see which sessions are working or waiting for
+you. Pick a model, reasoning effort and permission mode beside the composer;
+available choices come from the connected provider.
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/chat-dark.png">
-    <img alt="Helios: a finished session with Claude — batched tool calls, a shell run, and the summary with a code block" src="docs/screenshots/chat-light.png" width="900">
-  </picture>
-</p>
+**Preview and run beside the conversation.** Open local reports and dev
+servers in the browser pane, or use the tabbed terminal in the chat's folder.
+Supported agents can read, screenshot and interact with browser pages under
+per-site consent; Google sessions use their CLI's browser tools.
 
-**The model, the effort and the permissions, one click each.** The toolbar
-above the composer holds the model picker — the models the connected CLI
-actually ships, latest per family first — and the *Execution* capsule: the
-workflow, the reasoning effort and the permission mode for this conversation,
-in one panel. The effort and the permission mode are saved for that
-conversation only; the model you pick is applied to the running Claude chat
-when the CLI allows it and becomes the default for your next chat.
+**Review the changes before they land.** Inspect diffs, stage individual
+hunks, send review comments back to the agent, commit, push and open a pull
+request. Start a chat in an optional Git worktree to keep its file changes
+separate from your main checkout.
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/controls-dark.png">
-    <img alt="The chat toolbar: the model picker switches from Opus to Sonnet, then the Execution panel opens and the reasoning slider moves to X-High and the permission mode changes from Ask to Accept edits; the toolbar reads Sonnet (latest) · Default · X-High · Accept edits" src="docs/screenshots/controls-light.png" width="900">
-  </picture>
-</p>
+**Go back or try another direction.** Rewind restores files from a
+checkpoint taken before a message in a Git repository; ignored files and
+external effects are outside its coverage. Fork a Claude conversation from a
+message, or use native conversation forks where GPT and Kimi advertise them.
 
-**Wears your desktop's colours.** Helios is a libadwaita application, so it
-takes the accent colour from your system settings and follows it live — the
-selected session, the send button, the checks in the Execution panel all
-change with it — and the sidebar can be translucent over your wallpaper.
+**Give a session a goal.** Keep your objective and acceptance checklist
+beside the agent's execution plan. Read context and usage where the provider
+reports them; metered Claude and GPT sessions and OpenRouter have distinct
+spend controls, described in the [user guide](docs/user-guide.md#budgets).
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/accent-dark.png">
-    <img alt="The system accent colour is changed from orange to purple, blue, teal, green, yellow, red and pink while Helios is open; the selected session, the send button and the Execution panel's checked rows follow each change" src="docs/screenshots/accent-light.png" width="900">
-  </picture>
-</p>
-
-**Permissions you can see.** The mode is a chip in the toolbar above the
-composer, per conversation: *Ask*, *Accept edits*, *Auto*, *Bypass*, *Plan*
-or *Never ask*. When an agent asks, the dialog shows exactly what the CLI knows — the full
-command or diff, why it wants it, and the rule it would remember — and a
-session started in your home folder is read-only whatever you pick.
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/approval-dark.png">
-    <img alt="An approval dialog over a running session: Allow Bash? Run the test suite. Command: python3 -m pytest -q tests/ — Allow once, Allow for this session, Deny, Other" src="docs/screenshots/approval-light.png" width="900">
-  </picture>
-</p>
-
-**A browser beside the chat.** Agents open HTML reports, local files and dev
-servers in a tabbed browser pane next to the transcript (Ctrl+Shift+B), and
-can read or screenshot what rendered to check their own work. You browse it
-like any browser — back, forward, reload, an address bar that also takes a file
-path or `localhost:5173` — and it keeps its own sign-ins, separate from your
-browser. The project's own files and loopback servers are the agent's to use;
-opening or reading any other site or file asks you first (once per tab, or
-always for a site), and pages you reached yourself are not shared until it does. Claude, GPT, Muse, Kimi and OpenRouter sessions get the tools;
-Gemini's CLI has no per-session MCP option and uses its own browser.
-
-**Usage you can read at a glance.** Beside the context ring sits the fill and
-the tightest account limit (`84.2k / 200k · 5-hour 55%`); hover for the
-per-category split, every limit window with its reset, and this session's
-token totals.
-
-**A plan you own.** A Work carries an objective, a definition of done and an
-acceptance checklist that belong to you; the model's own plan is tracked
-beside it and can never rewrite what you accepted. In Plan mode Claude
-investigates read-only and hands you the plan to approve, approve with edits
-auto-accepted, or send back with feedback.
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/plan-pane-dark.png">
-    <img alt="The Plan pane beside a transcript: orient, plan, build, verify and handoff steps with quality signals" src="docs/screenshots/plan-pane-light.png" width="900">
-  </picture>
-</p>
-
-**Spend that cannot run away.** Every provider has a breaker. On per-token
-billing a Claude process runs under its own `--max-budget-usd 10` cap (Helios
-needs Claude Code 2.1.217 or newer for it, and refuses to run uncapped on an
-older CLI) and a GPT session and its subagents share a 200,000-token budget;
-on a claude.ai or ChatGPT subscription those two are off, because the CLI's
-cost figure there is an estimate, not money. OpenRouter always gets a $5
-allowance per Work and 25 tool rounds per turn (up to 100 while they stay
-productive). A trip stops the work and keeps your draft.
-
-**Six providers, one workbench.** Claude sessions drive the official
-`claude` CLI; GPT sessions bind to a persistent Codex App Server; OpenRouter
-sessions run Helios's own agent loop against any model in the live catalog.
-Google sessions use Antigravity CLI (`agy`) with your Google account and models
-discovered from its live catalog. Muse sessions drive Muse Code over
-`muse serve` (MSP) with your Meta account or API key. Kimi sessions use your
-Kimi Code membership through `kimi acp`, with live models and thinking levels,
-native resume/fork, images, tools, approvals and MCP forwarding. The CLIs keep their own sign-in, context
-files and history; OpenRouter's
-key and history are Helios's own files under `~/.helios` — Helios copies no
-credentials and sends no telemetry. Each CLI's own data-use settings still
-apply. See [Google setup and safe trials](docs/google-subscription.md) and
-[Kimi membership setup](docs/kimi-subscription.md) for account-only routing.
+**Use the shortcuts you already know.** Type `/` for agent commands and,
+in Claude chats, discovered commands and skills; open the command palette
+with `Ctrl+Shift+P`. Helios follows your desktop's light/dark theme and accent
+colour, with an optional translucent sidebar.
 
 ## Install
 
-### Ubuntu 26.04 — from the APT repository
+### Ubuntu 26.04 — latest release package
 
-Add the repository once and Helios updates with everything else:
+For the features described here, install the current GitHub release:
 
 ```bash
-curl -fsSL https://apt.globalentry.systems/setup.sh | sudo sh
-sudo apt install helios
+curl -fLO https://github.com/spencernorton/helios/releases/download/v0.114.4/helios_0.114.4_all.deb &&
+curl -fLO https://github.com/spencernorton/helios/releases/download/v0.114.4/SHA256SUMS.txt &&
+grep '  helios_0.114.4_all.deb$' SHA256SUMS.txt | sha256sum --check - &&
+sudo apt install ./helios_0.114.4_all.deb &&
+helios
 ```
 
-`setup.sh` installs the signing key and the suite for your release; read it
-first if you prefer to do those two steps by hand — it is short. Only Ubuntu
-26.04 (`resolute`) on amd64 is published today — `setup.sh` refuses other
-releases and architectures. The package itself is architecture-independent,
-so on arm64 run from source (below) or build the `.deb` yourself with
-`scripts/build.sh`.
+The [Releases page](https://github.com/spencernorton/helios/releases/latest)
+has the package, matching source and checksums. The
+[quickstart](docs/quickstart.md) includes checksum verification and the first
+chat. Packages are built and tested on Ubuntu 26.04; the APT service currently
+supports amd64. Other distributions and architectures use the source route.
 
 ### Other distributions — run from source
 
-Any distribution with GTK 4.10+, libadwaita 1.5+, GtkSourceView 5 and
-Python 3.11+ works (Ubuntu 24.04 included). The GTK, libadwaita and
-GtkSourceView minimums are checked at startup with a clear message; the
-Python floor is not — an older interpreter fails at import, so check
-`python3 --version` first.
+Requirements: Python 3.11+, GTK 4.10+, libadwaita 1.5+, GtkSourceView 5 and
+PyGObject with cairo integration. WebKitGTK 6.0 provides the browser pane;
+VTE 3.91 provides the terminal. On Debian/Ubuntu:
 
 ```bash
-# Debian/Ubuntu
-sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-gtksource-5 libgtksourceview-5-0 git python3-pil
+sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-gtksource-5 libgtksourceview-5-0 gir1.2-webkit-6.0 gir1.2-vte-3.91 gir1.2-xdp-1.0 gir1.2-xdpgtk4-1.0 git python3-pil
 git clone https://github.com/spencernorton/helios.git
 cd helios
-./scripts/helios                 # run from the checkout
+./scripts/helios
 ./scripts/install-desktop.sh     # optional: app-grid entry and icon
 ```
 
-On other distributions install the same things under their own names:
-PyGObject with its cairo integration, GTK 4, libadwaita, GtkSourceView 5,
-`git` and Pillow. `git` is for the clone and for Rewind checkpoints (the
-package recommends it); `python3-pil` is only needed by `install-desktop.sh`,
-which renders the icon sizes. `scripts/build.sh` builds the same `.deb`
-the repository publishes — see [Development](#development) for its
-prerequisites.
+Install equivalent system packages on other distributions. Pillow is needed
+by the desktop-entry installer; desktop portal support enables screenshots.
+Check `python3 --version` before launching: the source launcher does not
+check the Python version. Helios has no macOS or Windows build.
 
-### Sign in to the agents
+### Ubuntu 26.04 — stable APT updates
 
-Helios drives the CLIs you already use; install and sign in to them
-separately:
+```bash
+curl -fsSL https://apt.norvitech.com/setup.sh | sudo sh
+sudo apt install helios
+```
 
-- **Claude** — the `claude` CLI, signed in. Found via `$HELIOS_CLAUDE_BINARY`,
-  then `PATH`, then `~/.local/bin/claude`, `~/.local/share/claude/versions/*`
-  and the VS Code and JetBrains bundles; the resolved binary is shown in
-  Settings. The app-grid launcher does not read your shell profile, so if
-  `claude` lives only on your terminal `PATH`, symlink it into `~/.local/bin`
-  or set `HELIOS_CLAUDE_BINARY` on the launcher's `Exec` line.
-- **GPT (OpenAI Codex)** *(optional)* — the `codex` CLI
-  (`npm install -g --prefix ~/.local @openai/codex`), signed in with
-  `codex login`, or paste an API key in Settings → Providers, which runs
-  `codex login --with-api-key` for you. `OPENAI_API_KEY` in the environment is
-  not read.
-- **OpenRouter** *(optional)* — an API key, entered in Settings → Providers.
-- **Google Antigravity** *(optional)* — install the official `agy` CLI and
-  sign in by opening `agy` in a terminal. Helios lists the Gemini models
-  reported by `agy models`. Use a project folder and **Never ask** permissions;
-  the terminal sandbox still allows workspace edits. Start in a separate
-  worktree. [Setup and trial workflow](docs/google-subscription.md).
-- **Muse (Meta)** *(optional)* — the `muse` CLI (Muse Code), signed in
-  with `muse login`, or paste a Meta API key in Settings → Providers, which
-  runs `muse auth set` for you. Found via `$HELIOS_MUSE_BINARY`, then
-  `PATH`, then `~/.local/bin/muse`. `META_API_KEY` in the environment takes
-  precedence over the stored account login.
-- **Ollama** *(optional)* — if one answers at `http://localhost:11434`,
-  session titles are generated locally (`qwen2.5-coder:14b` by default;
-  Settings → Behavior). If Ollama does not answer, the first message is the
-  title; switching the Ollama option off routes titles through the `claude`
-  CLI instead (capped at $0.05 per title).
+The setup script installs the archive keyring and configures **stable** APT
+updates. Stable can lag behind GitHub releases: on 29 October 2026 stable
+provides 0.101.0 and the separate opt-in candidate channel provides 0.114.4.
+The six-provider and workspace features on this page describe the latest
+release. A downloaded newer package does not gain candidate-channel updates
+just because the stable repository is configured. See
+[installation and update choices](https://norvitech.com/helios/install/).
 
-**Your first chat.** New chats open in the folder set under Settings →
-Defaults → *Default working directory*, or in your most recent project; on a
-fresh install there is neither, so they open in your home folder, which Helios
-locks to read-only. Set the default, or press `Ctrl+Shift+N` and choose a
-project folder, before your first message.
+### Sign in and start a chat
+
+Install only the providers you want. Helios does not bundle their CLIs.
+Settings → **Accounts** opens their sign-in flows; Settings → **Providers**
+checks model discovery and accepts supported API keys.
+
+| Provider | Runtime and sign-in |
+|---|---|
+| Claude Code | Install `claude`; sign in with `claude auth login --claudeai` for a Claude account, or use the CLI's supported API setup. |
+| OpenAI Codex / GPT | Install `codex`; run `codex login` for ChatGPT. An API key can be entered in Settings → Providers and is stored by Codex. |
+| Google / Gemini | Install Antigravity CLI (`agy`), open `agy` and complete Google-account sign-in. [Google setup](docs/google-subscription.md). |
+| Muse Code | Install `muse`; run `muse login` for a Meta account, or enter a Meta API key in Settings → Providers. |
+| Kimi Code | Install Kimi Code 2.3.2+; run `kimi login` for membership sign-in. [Kimi setup](docs/kimi-subscription.md). |
+| OpenRouter | Enter an OpenRouter API key in Settings → Providers; Helios supplies its own agent loop. |
+
+For your first chat, press `Ctrl+Shift+N`, choose a project folder, select a
+model and send with `Ctrl+Enter`. New chats otherwise fall back to the most
+recent project or your home folder; home-folder chats are read-only. Google
+sessions require a project folder. Permission labels and capabilities vary
+by provider.
 
 ## Documentation
 
-The [user guide](docs/user-guide.md) covers the things the screenshots do not:
-
-- [First run](docs/user-guide.md#first-run) — sessions, projects and where the
-  transcripts come from
-- [Permissions](docs/user-guide.md#permissions) — what each mode allows, per
-  provider, and the home-folder rule
-- [Google subscription route](docs/google-subscription.md) — Antigravity
-  sign-in, model discovery and a trial workflow that keeps changes reviewable
-- [Budgets](docs/user-guide.md#budgets) — the three breakers and what a trip
-  looks like
-- [Works, goals and plans](docs/user-guide.md#works-goals-and-plans)
-- [Keyboard shortcuts](docs/user-guide.md#keyboard-shortcuts)
-- [Settings](docs/user-guide.md#settings) and
-  [environment variables](docs/user-guide.md#environment-variables)
-- [Troubleshooting](docs/user-guide.md#troubleshooting)
-
-**For AI agents.** Setting Helios up with an agent? Hand it
-[docs/agent-setup.md](docs/agent-setup.md) — every step is a command with its
-expected result. [llms.txt](llms.txt) is the short index for the same
-audience.
+- [Quickstart](docs/quickstart.md) — install, sign in and finish your first task.
+- [User guide](docs/user-guide.md) — sessions, permissions, goals, usage, browser, terminal, changes and shortcuts.
+- [Google account setup](docs/google-subscription.md) — Antigravity sign-in and provider limits.
+- [Kimi membership setup](docs/kimi-subscription.md) — native ACP sign-in, models and supported features.
+- [Agent setup](docs/agent-setup.md) — install, configure and verify from a shell; [llms.txt](llms.txt) indexes the docs.
+- [Feature walkthrough](https://norvitech.com/helios/features/) and [provider guide](https://norvitech.com/helios/providers/) — the current workbench and its integrations.
+- [Two narrated demos](https://norvitech.com/helios/demos/) — watch the app with captions and readable transcripts.
+- [Changelog](CHANGELOG.md) — changes by release.
 
 ## Where your data lives
 
 | Path | Purpose |
 |---|---|
-| `~/.claude/projects/<encoded-cwd>/*.jsonl` | Claude Code transcripts, plus Helios's own mirrors of GPT and OpenRouter sessions — read for the sidebar, deleted only when you ask |
-| `~/.claude/projects/<encoded-cwd>/memory/` | Memory files — read and written by the editor (atomic, backed up) |
-| `~/.claude/projects-archive/` | Throwaway projects (under `/tmp`, or with a path component starting with `_tmp_`) that hold at most one transcript, have been idle for 14 days and whose folder is gone — moved here at startup, never deleted |
-| `~/.helios/` | Helios's own state: Works, goals, UI state, editor backups (0700) |
-| `~/.helios/ui-state.json` | Settings and defaults (model, permission mode, effort, working directory). Read once at launch and rewritten whole on every change, so edit it only while Helios is closed |
-| `~/.helios/conversation-perms.json` | The permission mode, effort and workflow saved per conversation |
-| `~/.helios/logs/helios.log` | The log (rotates at 1 MB, three backups); `HELIOS_DEBUG=1` makes it verbose |
-| `~/.helios/openrouter.key` | Your OpenRouter key (0600) — see [SECURITY.md](SECURITY.md) for what leaves the machine |
-| `~/.helios/browser/` | The browser pane's own profile — cookies, sign-ins and cache, kept apart from your browser. Delete it to sign out of everything there |
-| `~/.helios/session-archive/` | Sessions idle for four days are moved here (at startup and once a day, at most eight at a time) and leave the sidebar |
+| `~/.claude/projects/<encoded-cwd>/*.jsonl` | Claude transcripts and Helios display mirrors for other providers; native provider stores remain authoritative for their own context |
+| `~/.claude/projects/<encoded-cwd>/memory/` | Notes edited in the Claude memory pane, with atomic saves and backups |
+| `~/.helios/` | UI settings, Work ledger, goals, logs, permissions, checkpoints and other application state |
+| `~/.helios/openrouter.key` | Optional OpenRouter key, mode 0600 |
+| `~/.helios/browser/` | The embedded browser's separate profile, including its cookies and sign-ins |
+| `~/.helios/media/` | Saved pasted images, browser snapshots and displayed media |
+| `~/.helios/backups/` | Rotating memory-editor backups |
+| `~/.helios/session-archive/` | Conversations moved out of the sidebar after inactivity |
 
-`HELIOS_STATE_DIR` relocates the log, Works, per-conversation permissions,
-checkpoints and OpenRouter history; `ui-state.json`, `openrouter.key`, the
-catalog, title and project-name caches, `backups/` and `session-archive/`
-stay under `~/.helios` regardless. To isolate a run completely, set `HOME`
-as well.
+`HELIOS_STATE_DIR` relocates only part of the state; use a separate `HOME`
+for a fully isolated trial. Helios sends no telemetry; prompts, selected
+context and tool results go to your chosen providers, whose data-use
+settings apply. See [SECURITY.md](SECURITY.md) for the trust model.
 
 ## Contributing and support
 
-- Bugs and feature requests: [open an issue](https://github.com/spencernorton/helios/issues/new/choose).
-- Security reports: [private vulnerability reporting](https://github.com/spencernorton/helios/security/advisories/new) — see [SECURITY.md](SECURITY.md).
-- Pull requests are welcome; read [CONTRIBUTING.md](CONTRIBUTING.md) first —
-  accepted changes ship in the next tagged release, whose notes and `.deb` are on the
-  [Releases](https://github.com/spencernorton/helios/releases) page.
-- If Helios saves you time, you can [support its development](https://buy.stripe.com/8x26oH2U44f65TRe574wM04).
+- Questions, bugs and ideas: [Issues](https://github.com/spencernorton/helios/issues/new/choose) and [Discussions](https://github.com/spencernorton/helios/discussions).
+- Security reports: [private vulnerability reporting](https://github.com/spencernorton/helios/security/advisories/new). There is no e-mail address; that is deliberate. Read [SECURITY.md](SECURITY.md).
+- Read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing a change. Pull requests are reviewed and squash-merged here; accepted changes ship in a tagged release.
+- If Helios helps you, [support its development](https://buy.stripe.com/8x26oH2U44f65TRe574wM04).
 
 ## Development
 
-```bash
-python3 -m pytest        # pyproject already passes -q; a second -q drops the summary line
-```
-
-Expected: a final `N passed, M skipped in …s` line. With PyGObject installed
-this also runs the GTK widget tests, which need a display — run them under
-Xvfb with an isolated `HOME` as described in
-[CONTRIBUTING.md](CONTRIBUTING.md). CI runs the backend suite alone, with
-GTK hidden by a stub module (CI adds `-q` itself, which on top of the `-q`
-in `pyproject.toml` drops the summary line; leave it out here):
+CI checks the backend on Python 3.11 and 3.13, then the complete native suite
+and an installed Debian package on Ubuntu 26.04. For the backend lane:
 
 ```bash
-mkdir -p ~/nogtk && printf 'raise ModuleNotFoundError("gtk hidden")\n' > ~/nogtk/gi.py
-PYTHONPATH=~/nogtk python3 -m pytest -p no:cacheprovider
+mkdir -p /tmp/helios-nogtk
+printf 'raise ModuleNotFoundError("gtk hidden")\n' > /tmp/helios-nogtk/gi.py
+PYTHONPATH=/tmp/helios-nogtk python3 -m pytest -p no:cacheprovider
 ```
 
-Lint with the ruff version CI pins; a newer default rule set reports hundreds
-of findings the project has not adopted:
+For native tests, install the source dependencies plus `python3-pytest xvfb
+xauth dbus` and run:
 
 ```bash
-pip install ruff==0.15.20 && ruff check .
+GSK_RENDERER=cairo dbus-run-session -- xvfb-run -a python3 -m pytest -p no:cacheprovider
 ```
 
-Expected: `All checks passed!`
-
-The Debian package (Linux only — the script needs GNU `date -d`; `lintian`,
-if installed, must pass with no errors or warnings):
+The test fixtures isolate their state. For a manual application trial use
+`HOME="$(mktemp -d)" ./scripts/helios`. Follow
+[CONTRIBUTING.md](CONTRIBUTING.md) for full setup and the installed-package
+acceptance check. Lint with the version CI pins:
 
 ```bash
-sudo apt install build-essential debhelper dh-python pybuild-plugin-pyproject python3-all python3-pil python3-setuptools
-scripts/build.sh [outdir]
+ruff check .                    # ruff 0.15.20
 ```
 
-Expected: `helios_<version>_all.deb` in `dist/` (or `outdir`).
-
-Repository layout:
-
-```
-src/helios/
-├── app.py, main_window.py   # Adw application + window
-├── backend/                 # data, filesystem and driver logic (no GTK; the drivers under process/ use GLib, Gio and GObject only)
-│   └── process/             # subprocess drivers: claude CLI, Codex App Server, OpenRouter
-├── widgets/                 # GTK4/libadwaita widgets
-└── resources/               # CSS and symbolic icons
-tests/                       # pytest; GTK tests skip when gi is missing — most still need a display (see Development)
-scripts/                     # helios launcher, install-desktop.sh, build.sh, plus optional router/estate/eval helpers
-data/                        # desktop entry template and app icon
-debian/                      # the package apt installs
-docs/                        # user guide, agent setup, GTK4 gotchas, screenshots, pinned Codex App Server protocol manifest
-```
+Build the Debian package on Linux with `scripts/build.sh [outdir]`; it needs
+`build-essential debhelper dh-python pybuild-plugin-pyproject python3-all
+python3-pil python3-setuptools`, and runs `lintian` when available.
 
 ## Licence
 

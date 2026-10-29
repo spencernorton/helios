@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "helios"
 version = "0.114.4"
-description = "Native Ubuntu AI workbench for Claude Code and OpenAI Codex"
+description = "Native Linux desktop for Claude Code, Codex, Antigravity, Muse, Kimi and OpenRouter"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Spencer Norton" }]
@@ -31,9 +31,9 @@ test = ["pytest"]
 helios = "helios.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/spencercnorton/helios"
-Repository = "https://github.com/spencercnorton/helios"
-Issues = "https://github.com/spencercnorton/helios/issues"
+Homepage = "https://norvitech.com/helios/"
+Repository = "https://github.com/spencernorton/helios"
+Issues = "https://github.com/spencernorton/helios/issues"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

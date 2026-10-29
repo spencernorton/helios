@@ -1,19 +1,32 @@
 # Helios
 
-> A native GTK4/libadwaita desktop for Linux that runs Claude Code, OpenAI Codex and OpenRouter coding-agent sessions in one window, with visible per-conversation permissions and a spend breaker for every provider on metered billing (none on a claude.ai or ChatGPT subscription).
+> A free, open-source GTK4/libadwaita Linux desktop app for Claude Code, OpenAI Codex, Google Antigravity, Muse Code, Kimi Code and OpenRouter coding agents.
 
-Helios is a Python application (`helios` on APT for Ubuntu 26.04, or `scripts/helios` from a source checkout) that drives the official `claude` CLI, binds GPT sessions to a persistent Codex App Server, and runs its own agent loop against the OpenRouter catalog. It stores no credentials of its own beyond an optional OpenRouter key file (`~/.helios/openrouter.key`, mode 0600) and sends no telemetry. Read these first: docs/agent-setup.md to install and configure it unattended, docs/user-guide.md for what the person sees, and SECURITY.md for the trust model.
+Helios keeps provider-backed conversations, model and permission controls, goals, a browser, a terminal and Git review together. Native CLIs retain their own sign-in and authoritative session context; OpenRouter uses Helios's own agent loop and optional key file. Capabilities, approval behaviour and usage reporting vary by provider. Helios sends no telemetry; the chosen providers receive prompts, context and tool results.
 
-## Docs
+Packaged releases target Ubuntu 26.04. Source builds require Python 3.11+, GTK 4.10+, libadwaita 1.5+, GtkSourceView 5 and PyGObject/cairo, plus WebKitGTK 6.0 for the browser and VTE 3.91 for the terminal. Stable APT may lag behind GitHub releases; consult the installation guide before promising latest features from the default APT commands.
 
-- [Agent setup guide](docs/agent-setup.md): install, configure and verify Helios from a shell, unattended except the Claude and Codex sign-ins (interactive, handed back to the person), with every command, expected result, path, key and message exact for this release (0.114.4).
-- [User guide](docs/user-guide.md): the application as the person uses it: sessions, providers, permissions, budgets, Rewind, settings and environment variables.
-- [README](README.md): what Helios is, screenshots, install paths, where data lives, and how to contribute or donate.
-- [Security policy](SECURITY.md): supported versions, how to report a vulnerability privately, and the trust model (key storage, permission modes are not a sandbox, no telemetry).
-- [Contributing](CONTRIBUTING.md): the contribution model, development setup, test and lint commands, and PR expectations.
-- [GTK4 gotchas](docs/gtk4-gotchas.md): PyGObject, GTK4 and libadwaita traps met while building Helios, with the fixes that held.
+This index describes source release 0.114.4. Check the installation guide for the version available from each update channel.
 
-## Optional
+## Start here
 
-- [Debian packaging](debian/): control, rules, man page and icon renderer that build the `helios` .deb.
-- [build.sh](scripts/build.sh): builds the .deb from a checkout on Linux (`scripts/build.sh [outdir]`).
+- [Quickstart](docs/quickstart.md): latest package, checksums, provider sign-in, a project folder and a first task.
+- [README](README.md): screenshots, current features, installation, data paths, contribution and development.
+- [Website](https://norvitech.com/helios/): project overview, installation, providers, feature walkthrough and narrated demos.
+- [Latest release](https://github.com/spencernorton/helios/releases/latest): tested Debian package, matching source and SHA256SUMS.txt.
+
+## Reference
+
+- [User guide](docs/user-guide.md): sessions, permissions, goals, usage, Rewind, browser, terminal, changes and shortcuts.
+- [Agent setup guide](docs/agent-setup.md): shell-based installation and runtime verification; native sign-ins require the account holder.
+- [Google account setup](docs/google-subscription.md): Antigravity CLI account routing, native protocol and limits.
+- [Kimi membership setup](docs/kimi-subscription.md): Kimi ACP authentication, live models, supported actions and recovery.
+- [Security policy](SECURITY.md): credentials, data flow, trust boundaries and private vulnerability reporting.
+- [Contributing](CONTRIBUTING.md): development environment, required CI lanes and pull request expectations.
+- [Changelog](CHANGELOG.md): released changes.
+- [GTK4 gotchas](docs/gtk4-gotchas.md): PyGObject and GTK implementation notes.
+
+## Source and packaging
+
+- [Debian packaging](debian/): package dependencies, launcher, resources and man page.
+- [Build script](scripts/build.sh): builds the Debian package on Linux.

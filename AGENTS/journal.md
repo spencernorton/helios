@@ -1,5 +1,12 @@
 # Helios — Session Journal
 
+## 2026-10-29 — Refresh public documentation and first-run guidance
+
+- Rework the README around the six provider integrations, the project workspace and a clear first chat. Add a quickstart and links to the feature, provider and demonstration guides.
+- Distinguish the current release package from the stable APT channel, verify downloaded package checksums before installation, and complete the source dependencies for browser, terminal and screenshots.
+- Align account setup, Google permission labels, provider capability descriptions and project URLs. Preserve the application version and runtime behaviour.
+- Validation: local documentation links and headings, shell-example syntax, metadata parsing and diff checks; no application code changed.
+
 ## 2026-10-29 — muse — Instant sidebar rows and faithful session restore
 
 - **Branch:** `claude/session-sidebar-restore` (from GitHub `main` f1a358f).
