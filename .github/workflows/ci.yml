@@ -1,7 +1,6 @@
-# Backend test suite on every pull request, on main, and before every release
-# (release.yml calls it). The backend pass hides GTK; native Google integration
-# tests then run with GTK and Xvfb in the same required check. No secrets,
-# read-only token, GitHub-owned actions pinned by commit.
+# Backend compatibility plus complete native GTK/WebKit tests and an installed
+# candidate-package launch on every pull request, main push and tagged release.
+# The required tests aggregate fails closed if either lane fails or skips.
 name: CI
 on:
   workflow_call:
@@ -11,14 +10,20 @@ on:
 permissions:
   contents: read
 jobs:
-  tests:
+  backend:
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.13']
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python }}
       # Pinned: a newer default rule set failed the first public run with 911
       # findings the project never adopted.
       - run: pip install -q pytest ruff==0.15.20
@@ -30,20 +35,62 @@ jobs:
           # ImportError is a collection error.
           printf 'raise ModuleNotFoundError("gtk hidden in CI")\n' > "$HOME/nogtk/gi.py"
           PYTHONPATH="$HOME/nogtk" python3 -m pytest -q -p no:cacheprovider
-      - name: Install native Google test dependencies
+  native:
+    container: ubuntu:26.04@sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      GSK_RENDERER: cairo
+      # Only this disposable test container: its kernel denies WebKit user namespaces.
+      WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: '1'
+    steps:
+      - name: Native runtime and packaging dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends python3-pytest python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-gtksource-5 xvfb xauth
-      - name: Provider drivers and window accounting (native GTK)
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends git ca-certificates python3-pytest \
+            python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-gtksource-5 \
+            gir1.2-webkit-6.0 gir1.2-vte-3.91 xvfb xauth dbus \
+            build-essential debhelper dh-python pybuild-plugin-pyproject python3-all \
+            python3-pil python3-setuptools lintian
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require a functioning native display and WebKit
+        run: |
+          dbus-run-session -- xvfb-run -a python3 -c 'import gi; gi.require_version("Gtk","4.0"); gi.require_version("WebKit","6.0"); from gi.repository import Gtk,WebKit; assert Gtk.init_check(); assert WebKit.WebContext.new()'
+      - name: Run the complete suite with real GTK and WebKit
+        run: dbus-run-session -- xvfb-run -a python3 -m pytest -p no:cacheprovider --junitxml=out/native-tests.xml
+      - name: Build and install the Debian candidate
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          scripts/build.sh dist
+          apt-get install -y -qq --no-install-recommends ./dist/*.deb
+          (cd dist && sha256sum -- *.deb > SHA256SUMS.txt)
+      - name: Launch the installed package outside the checkout
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          dbus-run-session -- xvfb-run -a python3 -I "$GITHUB_WORKSPACE/tests/smoke_installed.py" 2>&1 | tee "$GITHUB_WORKSPACE/out/installed-runtime.log"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: helios-debian-candidate
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: native-runtime-evidence
+          path: out/
+          retention-days: 14
+  tests:
+    name: tests
+    if: always()
+    needs: [backend, native]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require backend and installed native runtime acceptance
         env:
-          GSK_RENDERER: cairo
-        run: |
-          xvfb-run -a /usr/bin/python3 -m pytest -q -p no:cacheprovider \
-            tests/test_google_env.py tests/test_gemini_driver.py tests/test_muse_driver.py \
-            tests/test_question_queue.py tests/test_model_catalog_refresh.py \
-            tests/test_claude_questions_and_plan.py tests/test_codex_app_driver.py \
-            tests/test_openrouter_driver_loop.py tests/test_openrouter_egress_and_budget.py \
-            tests/test_capability_alignment.py tests/test_cli_capabilities.py \
-            tests/test_effort_levels.py tests/test_claude_set_model.py \
-            tests/test_execution_settings_window.py tests/test_driver_signal_contract.py \
-            tests/test_checkpoint_dispatch_window.py
+          RESULTS: ${{ toJSON(needs) }}
+        run: python3 -c 'import json,os; r=json.loads(os.environ["RESULTS"]); assert all(j["result"]=="success" for j in r.values()), r'

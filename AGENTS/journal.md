@@ -1,6 +1,15 @@
 # Helios — Session Journal
 
 
+## 2026-10-28 — Require native and installed-package runtime acceptance
+
+- **Branch:** `test/installed-runtime-acceptance`.
+- **Checks:** Require backend compatibility on Python3.11/3.13, the complete native GTK/WebKit/VTE suite on Ubuntu26.04, and a built/installed Debian candidate launched outside the checkout. Verify the executable, resources, real main window, composer, WebKit page, About dialog and normal exit. Failed or skipped lanes fail the existing `tests` aggregate; tagged releases consume the tested package.
+- **Defect found:** The installed application exited139 during C++ teardown of WebKit's process-wide context, after Python had finalized its URI handler. Register the handler on a pane-owned context and bind new views to it instead. The unchanged installed package reproduces139; the corrected package loads a real document and exits0.
+- **Validation:** Complete native suite3593passed; installed candidate startup/browser/quit check passes; Ruff, workflow lint and diff checks pass. No provider session or paid request was started.
+
+
+
 ## 2026-10-28 — codex — Release capability and interaction fixes (0.114.3)
 
 - Prepare the merged model-capability and interaction-lifetime fixes for the normal signed package release. Update version metadata, changelog and installation documentation together; preserve earlier immutable tags.
