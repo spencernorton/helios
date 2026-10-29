@@ -1,5 +1,13 @@
 # Helios — Session Journal
 
+## 2026-10-29 — codex — Compact reasoning overview
+
+- **Branch:** `codex/muse-reasoning-presentation`.
+- **Change:** Multiple public reasoning summaries now share one surface with a visible three-line latest-summary preview and one counted, expandable full history. Applies to live and reloaded transcripts, preserves tool activity and final answers, and retains disclosure state across updates. Single-summary presentation is unchanged.
+- **Validation:** 68 focused widget/Muse/activity tests pass with two previously documented streaming-caret assertions excluded; those same two fail in the unfiltered run. New 40-summary regression covers incremental updates, history retention and final rendering. Ruff and diff checks pass.
+- **Deployment:** Applied only this widget patch to the packaged installation, preserving its other differences from source; installed widget probe passed. No app restart or active-session changes. Restart when safe to load it; a package upgrade can overwrite this local patch.
+- **Status file updated:** yes. No tracker package was named in the request.
+
 ## 2026-10-28 — agy — Muse background continuation turns, background task tracking, and end-to-end execution
 
 - **Report:** Sessions stopped or appeared finished before work was complete compared to macOS agent apps. Investigation identified four compounding causes: (1) `MuseServeDriver` dropped host-initiated continuation turns when a background `workflow`, `subagent`, `monitor`, or background `toolCall` completed because `_finish_turn` exited early whenever `_execution_attempt_id` was `None` and `turn/started` only allocated `StreamingAssistant` inside `send_user_text`; (2) `MuseServeDriver` lacked `has_background_work`, so `DriverManager._is_working` treated Muse sessions with running background workflows/subagents/tools as idle (exposing them to the 4-driver LRU cache and 30-minute idle reaper) and never populated `BackgroundPane`; (3) `MainWindow._on_native_turn_status` only cleared busy state on terminal statuses and never set busy on `inProgress` for host-initiated turns, nor did `MainWindow` wire `background-tasks-changed` or `native-goal-updated` for `MuseServeDriver`; (4) Goal envelopes and global `AGENTS.md` / `CLAUDE.md` lacked explicit instructions against stopping after one slice of a multi-step request.

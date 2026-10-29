@@ -404,6 +404,42 @@ def _span_widget(kind: str, text: str) -> Gtk.Widget | None:
     return _text_view(text, selectable=True)  # text / unknown -> final answer
 
 
+class _ReasoningOverview(Gtk.Box):
+    """Keep the latest public summary readable without a row per item."""
+
+    def __init__(self) -> None:
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.add_css_class("helios-reasoning")
+        caption = Gtk.Label(label="Latest reasoning summary", xalign=0)
+        caption.add_css_class("caption-heading")
+        caption.add_css_class("dim-label")
+        self.append(caption)
+        self.preview = Gtk.Label(xalign=0)
+        self.preview.set_wrap(True)
+        self.preview.set_wrap_mode(2)
+        self.preview.set_lines(3)
+        self.preview.set_ellipsize(3)  # Pango.EllipsizeMode.END
+        self.preview.set_selectable(True)
+        self.append(self.preview)
+        self.history = _collapsible("", "")
+        self.history.connect("notify::expanded", self._sync_history)
+        self.append(self.history)
+        self._summaries: tuple[str, ...] = ()
+
+    def sync(self, summaries: list[str]) -> None:
+        snapshot = tuple(summaries)
+        if snapshot == self._summaries:
+            return
+        self._summaries = snapshot
+        self.preview.set_text(summaries[-1])
+        self.history.set_label(f"Reasoning history · {len(summaries)} summaries")
+        self._sync_history()
+
+    def _sync_history(self, *_args) -> None:
+        if self.history.get_expanded():
+            self.history.get_child().get_buffer().set_text("\n\n———\n\n".join(self._summaries))
+
+
 def _content_widgets(
     spans,
     *,
@@ -424,6 +460,8 @@ def _content_widgets(
     ]
     widgets: list[Gtk.Widget] = []
     updates_inserted = False
+    summaries = [s.text for s in spans if s.kind == "reasoning_summary" and s.text.strip()]
+    reasoning_inserted = False
     activity_at = len(spans)
     if activity is not None and activity_content_index is not None:
         activity_at = min(max(activity_content_index, 0), len(spans))
@@ -436,6 +474,13 @@ def _content_widgets(
             if updates and not updates_inserted:
                 widgets.append(_work_updates_group(updates))
                 updates_inserted = True
+            continue
+        if span.kind == "reasoning_summary" and len(summaries) > 1:
+            if not reasoning_inserted:
+                overview = _ReasoningOverview()
+                overview.sync(summaries)
+                widgets.append(overview)
+                reasoning_inserted = True
             continue
         widget = _span_widget(span.kind, span.text)
         if widget is not None:
@@ -536,11 +581,14 @@ class StreamingBubble(Gtk.Box):
                 self._activity_fingerprint = ()
             self._source = streaming
         blocks = streaming.blocks
+        summaries = [b.text for b in blocks if b.type == "reasoning_summary" and b.text.strip()]
         last = len(blocks) - 1
         for i, b in enumerate(blocks):
             if i >= len(self._segments):
                 self._segments.append(_Segment(b.type))
             seg = self._segments[i]
+            if b.type == "reasoning_summary" and len(summaries) > 1:
+                continue  # All public summaries share the first item's surface.
             content = b.tool_use_input_json if b.type == "tool_use" else b.text
             if seg.final and seg.kind == b.type and len(content) == seg.clen:
                 continue  # finalized + unchanged: the common case
@@ -554,6 +602,16 @@ class StreamingBubble(Gtk.Box):
                 self._finalize_segment(seg, i, b, content)
             else:
                 self._stream_segment(seg, i, b, content)
+        if len(summaries) > 1:
+            indices = [i for i, b in enumerate(blocks) if b.type == "reasoning_summary"]
+            owner = self._segments[indices[0]]
+            for i in indices[1:]:
+                self._drop_widget(self._segments[i])
+            if not isinstance(owner.widget, _ReasoningOverview):
+                self._drop_widget(owner)
+                owner.widget = _ReasoningOverview()
+                self._insert_at(indices[0], owner.widget)
+            owner.widget.sync(summaries)
 
     def shutdown(self) -> None:
         """Cancel lazy detail builders before this live bubble is detached."""
