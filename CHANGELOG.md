@@ -4,6 +4,11 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.114.4 — 2026-10-29
+
+- New sessions appear in the sidebar immediately (staged fresh chat, then the started session under its real provider id) instead of waiting for the transcript file, so several sessions can be launched in quick succession.
+- Restored sessions show their own model, execution settings and context window on fresh boot without waiting for the catalog worker or sending a message; Muse and Gemini mirrors now record turn usage so their context survives restart.
+
 ## 0.114.3 — 2026-10-28
 
 - Close settled questions and approvals across Muse, Claude, GPT and OpenRouter, including cancellation, terminal events and late delivery, while preserving background-agent prompt ownership.

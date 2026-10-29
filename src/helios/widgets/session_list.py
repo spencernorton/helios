@@ -34,6 +34,7 @@ from helios.backend.projects import (
     discover_local_sessions,
     discover_pool_sessions,
     drop_empty_sessions,
+    ensure_local_project,
     is_throwaway_cwd,
 )
 from helios.backend.session_state import (
@@ -72,6 +73,21 @@ FILTER_ALL = "all"
 FILTER_LOCAL = "local"
 FILTER_TEMP = "temp"
 # plus dynamic "host:<origin>" and "cwd:<path>" values.
+
+# Reserved id for the one staged fresh chat (New Chat clicked, nothing sent
+# yet). It is not a provider session id: the row is a pure sidebar
+# placeholder, never emitted as a selection and never touched on disk. A
+# just-started session replaces it under its real provider id — see
+# show_pending_session.
+PENDING_STAGED_ID = "__helios_pending_new_chat__"
+
+
+def _pending_title(text: str) -> str:
+    """One-line sidebar title for a pending row, from its first message."""
+    title = " ".join((text or "").split())
+    if len(title) > 80:
+        title = title[:77] + "..."
+    return title
 
 
 class SessionList(Gtk.Box):
@@ -235,6 +251,17 @@ class SessionList(Gtk.Box):
         # fresh chats). MainWindow pushes updates via set_live_session_ids.
         self._live_session_ids: set[str] = set()
 
+        # Optimistic sidebar rows whose transcript file has not landed yet:
+        # the staged fresh chat (PENDING_STAGED_ID) and just-started live
+        # sessions under their real provider id. Kept apart from the
+        # disk-discovered caches so a reload can neither drop them (the file
+        # is not there to discover) nor duplicate them (discovery supersedes
+        # a pending entry the moment its file exists). Without this, a new
+        # session was invisible until its provider wrote the transcript —
+        # seconds to minutes — so several sessions could not be launched in
+        # quick succession and told apart.
+        self._pending_sessions: dict[str, Session] = {}
+
         # LLM-backed title cache + async generator.
         self._title_store = title_store()
         self._title_gen = TitleGenerator()
@@ -349,6 +376,137 @@ class SessionList(Gtk.Box):
         between selecting a session and showing the fresh-chat UI.)"""
         return bool(self._rows_by_id)
 
+    # ── Optimistic (pending) rows ────────────────────────────────────
+    #
+    # A new session used to reach the sidebar only when reload() discovered
+    # its transcript file, and MainWindow polled for that file for up to
+    # ~30s after session-started because some providers write it only once
+    # the first turn is accepted. The rows below close both gaps: the
+    # staged fresh chat appears the moment New Chat is clicked, and the
+    # just-started session appears the moment its provider id is known —
+    # in the same main-loop turn, with no file wait at all.
+
+    def pending_session_ids(self) -> set[str]:
+        """Ids of the optimistic rows currently held (test/debug aid)."""
+        return set(self._pending_sessions)
+
+    def _pending_project(self, project, cwd: str):
+        if project is not None and getattr(project, "path", None) is not None:
+            return project
+        if cwd:
+            try:
+                return ensure_local_project(cwd)
+            except OSError:
+                return None
+        return None
+
+    def show_staged_session(self, project=None, *, cwd: str = "", title: str = "") -> bool:
+        """Show the staged fresh chat (New Chat, nothing sent yet) at once.
+
+        One staged row exists at a time: staging another fresh chat replaces
+        it, and selecting a real session clears it (MainWindow) — including
+        the just-started session's own row, which show_pending_session adds
+        alongside it under the real provider id. Returns True when the
+        rendered list changed."""
+        if self._destroyed:
+            return False
+        project = self._pending_project(project, cwd)
+        if project is None:
+            return False
+        label = _pending_title(title) or "New chat"
+        existing = self._pending_sessions.get(PENDING_STAGED_ID)
+        if (
+            existing is not None
+            and existing.project.cwd == project.cwd
+            and existing.title == label
+        ):
+            return False
+        self._pending_sessions[PENDING_STAGED_ID] = Session(
+            project=project,
+            session_id=PENDING_STAGED_ID,
+            path=project.path / f"{PENDING_STAGED_ID}.jsonl",
+            mtime=time.time(),
+            size=0,
+            title=label,
+            first_message_loaded=True,
+            pending=True,
+        )
+        self._render(preserve_selection=True)
+        return True
+
+    def show_pending_session(
+        self,
+        session_id: str,
+        *,
+        cwd: str = "",
+        project=None,
+        title: str = "",
+    ) -> bool:
+        """Show a just-started session now, before its transcript lands.
+
+        Called from MainWindow's session-started handling, in the same turn
+        the provider id becomes known — no 400ms delay and no polling for
+        ``<session_id>.jsonl``. Discovery supersedes the placeholder on the
+        first reload that finds the real file; if the driver leaves the live
+        set first, set_live_session_ids prunes it. Returns True when a
+        placeholder is (now) held."""
+        if self._destroyed:
+            return False
+        session_id = str(session_id or "").strip()
+        if not session_id or session_id == PENDING_STAGED_ID:
+            return False
+        discovered = {s.session_id for s in self._local_sessions + self._pool_sessions}
+        if session_id in discovered:
+            self._pending_sessions.pop(session_id, None)
+            return False
+        project = self._pending_project(project, cwd)
+        if project is None:
+            return False
+        label = _pending_title(title)
+        if not label:
+            staged = self._pending_sessions.get(PENDING_STAGED_ID)
+            if staged is not None and staged.title != "New chat":
+                label = staged.title
+        existing = self._pending_sessions.get(session_id)
+        if existing is not None:
+            if label and label != existing.title:
+                existing.title = label
+                existing.mtime = time.time()
+                self._render(preserve_selection=True)
+            return True
+        # The staged row is NOT dropped here: it may belong to a newer fresh
+        # chat the user staged while this (background) session was starting.
+        # When this session is the visible one, MainWindow selects its row
+        # right after this call and that selection clears the staged row.
+        self._pending_sessions[session_id] = Session(
+            project=project,
+            session_id=session_id,
+            path=project.path / f"{session_id}.jsonl",
+            mtime=time.time(),
+            size=0,
+            title=label or "New chat",
+            first_message_loaded=True,
+            pending=True,
+        )
+        self._render(preserve_selection=True)
+        return True
+
+    def clear_staged_session(self) -> bool:
+        """Drop the staged fresh-chat row (a real session took the view)."""
+        if self._pending_sessions.pop(PENDING_STAGED_ID, None) is None:
+            return False
+        if not self._destroyed:
+            self._render(preserve_selection=True)
+        return True
+
+    def clear_pending_session(self, session_id: str) -> bool:
+        """Drop one optimistic row (its session ended before landing)."""
+        if self._pending_sessions.pop(str(session_id or ""), None) is None:
+            return False
+        if not self._destroyed:
+            self._render(preserve_selection=True)
+        return True
+
     def set_live_session_ids(self, ids: set[str]) -> None:
         """Tell the list which session ids belong to drivers Helios itself is
         currently running, so dots flip to "active" without waiting for /proc
@@ -360,10 +518,27 @@ class SessionList(Gtk.Box):
         # re-render the finalizing list. Refuse the projection after shutdown.
         if self._destroyed:
             return
-        if ids == self._live_session_ids:
+        # A pending live row whose driver has left the live set without its
+        # transcript ever landing is a session that failed to start — prune
+        # it here, the one place live-set shrinkage is observed. The staged
+        # row is exempt: no driver owns it yet.
+        discovered = {s.session_id for s in self._local_sessions + self._pool_sessions}
+        pruned = False
+        for pending_id in list(self._pending_sessions):
+            if pending_id == PENDING_STAGED_ID:
+                continue
+            if pending_id not in ids and pending_id not in discovered:
+                del self._pending_sessions[pending_id]
+                pruned = True
+        if ids == self._live_session_ids and not pruned:
             return
         self._live_session_ids = set(ids)
-        if self._local_sessions or self._pool_sessions:
+        if (
+            self._local_sessions
+            or self._pool_sessions
+            or self._pending_sessions
+            or pruned
+        ):
             self._render(preserve_selection=True)
 
     def set_working_ids_provider(self, provider) -> None:
@@ -635,11 +810,31 @@ class SessionList(Gtk.Box):
         while (row := self._listbox.get_first_child()) is not None:
             self._listbox.remove(row)
 
+        # Discovery supersedes a pending row the moment its transcript
+        # exists; hand the pending title (the first message, captured at
+        # send time) to the real row so it never flashes "Session …".
+        discovered_by_id = {
+            s.session_id: s for s in self._local_sessions + self._pool_sessions
+        }
+        for pending_id, pending in list(self._pending_sessions.items()):
+            real = discovered_by_id.get(pending_id)
+            if real is None:
+                continue
+            if pending.title and pending.title != "New chat" and not real.title:
+                real.title = pending.title
+                real.first_message_loaded = True
+            del self._pending_sessions[pending_id]
+
         sessions = [
             s
             for s in self._local_sessions + self._pool_sessions
             if self._matches_filter(s)
         ]
+        sessions.extend(
+            pending
+            for pending_id, pending in self._pending_sessions.items()
+            if pending_id not in discovered_by_id and self._matches_filter(pending)
+        )
 
         if not sessions:
             self._rows_by_id.clear()
@@ -656,7 +851,13 @@ class SessionList(Gtk.Box):
         active_ids = discover_active_session_ids(extra=self._live_session_ids)
         statuses: dict[str, SessionStatus] = {}
         for s in sessions:
-            if s.project.read_only:
+            if getattr(s, "pending", False):
+                # No file to tail yet. Working sorts the row to the top,
+                # where the session the user just launched belongs.
+                statuses[s.session_id] = SessionStatus(
+                    state=STATE_WORKING, last_response_at=s.mtime
+                )
+            elif s.project.read_only:
                 statuses[s.session_id] = SessionStatus(
                     state=STATE_IDLE, last_response_at=0.0
                 )
@@ -727,8 +928,17 @@ class SessionList(Gtk.Box):
         # for read-only pooled (remote) sessions: the fallback already titles
         # them, and titling-via-claude would (a) re-read the jsonl over the
         # slow CIFS mount and (b) spend tokens on another machine's history.
-        self._resolve_titles_async(sessions)
-        local_recent = [s for s in sessions if not s.project.read_only]
+        # Pending rows have no file to read and must never queue an LLM
+        # title call (that spawns a process against a nonexistent
+        # transcript and can leave a sidecar ghost behind).
+        self._resolve_titles_async(
+            [s for s in sessions if not getattr(s, "pending", False)]
+        )
+        local_recent = [
+            s
+            for s in sessions
+            if not s.project.read_only and not getattr(s, "pending", False)
+        ]
         for s in local_recent[: self._TITLE_GEN_TOP_N]:
             if not self._title_store.get(s.session_id):
                 self._title_gen.request(s)
@@ -861,7 +1071,8 @@ class SessionList(Gtk.Box):
         provider_rows = [
             (sid, row.session)
             for sid, row in self._rows_by_id.items()
-            if include_pool or not row.session.project.read_only
+            if sid != PENDING_STAGED_ID
+            and (include_pool or not row.session.project.read_only)
         ]
         rows = [
             (sid, sess)
@@ -949,12 +1160,18 @@ class SessionList(Gtk.Box):
         if row is None:
             self.emit("session-selected", None)
             return
+        s = getattr(row, "session", None)
+        # The staged row is a placeholder for the fresh chat already on
+        # screen, not a session: never emit it (MainWindow would try to
+        # resume a provider id that does not exist).
+        if s is not None and s.session_id == PENDING_STAGED_ID:
+            return
         # Lazy title generation: when the user actually focuses an older
         # row, queue its title if uncached.
-        s = getattr(row, "session", None)
         if (
             s is not None
             and not s.project.read_only
+            and not getattr(s, "pending", False)
             and not self._title_store.get(s.session_id)
         ):
             self._title_gen.request(s)
@@ -998,9 +1215,13 @@ class SessionList(Gtk.Box):
             if row is None:
                 break
             # Pool sessions are another machine's archive — never bulk-select
-            # them for deletion from here.
+            # them for deletion from here. Pending rows have no file yet.
             s = getattr(row, "session", None)
-            if s is not None and not s.project.read_only:
+            if (
+                s is not None
+                and not s.project.read_only
+                and not getattr(s, "pending", False)
+            ):
                 self._listbox.select_row(row)
             i += 1
 
@@ -1012,7 +1233,13 @@ class SessionList(Gtk.Box):
     def _deletable_selected_sessions(self) -> list[Session]:
         rows = self._listbox.get_selected_rows()
         sessions = [getattr(r, "session", None) for r in rows]
-        return [s for s in sessions if s is not None and not s.project.read_only]
+        return [
+            s
+            for s in sessions
+            if s is not None
+            and not s.project.read_only
+            and not getattr(s, "pending", False)
+        ]
 
     def _update_delete_label(self) -> None:
         n = len(self._deletable_selected_sessions()) if self._select_mode else 0
@@ -1026,7 +1253,7 @@ class SessionList(Gtk.Box):
 
     def _row_delete_one(self, session: Session) -> None:
         """Inline/right-click delete path — single session, no select mode."""
-        if session.project.read_only:
+        if session.project.read_only or getattr(session, "pending", False):
             return
         self._show_delete_dialog([session])
 
@@ -1252,8 +1479,9 @@ class _SessionRow(Gtk.ListBoxRow):
 
         # Inline delete button — dim by default, brightens on row hover (CSS).
         # Hidden for pool rows: deleting would silently unlink another
-        # machine's archive copy over CIFS.
-        if not ro:
+        # machine's archive copy over CIFS. Hidden for pending rows too:
+        # there is no transcript file to delete yet.
+        if not ro and not getattr(session, "pending", False):
             delete_btn = Gtk.Button.new_from_icon_name("user-trash-symbolic")
             delete_btn.add_css_class("flat")
             delete_btn.add_css_class("helios-row-delete")
@@ -1267,7 +1495,7 @@ class _SessionRow(Gtk.ListBoxRow):
 
         # Right-click also offers delete — via a plain popover button (direct
         # callback), NOT a Gio.Menu model, for routing reliability.
-        if not ro:
+        if not ro and not getattr(session, "pending", False):
             right_click = Gtk.GestureClick()
             right_click.set_button(3)  # BUTTON_SECONDARY
             right_click.connect("pressed", self._on_right_click)

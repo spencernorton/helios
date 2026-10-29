@@ -1102,6 +1102,20 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
                 self._accepted_turn_id or self._root_turn_id):
             return
         subtype = {"completed": "success", "cancelled": "aborted"}.get(terminal, "error")
+        # Compute the receipt usage BEFORE writing the mirror: the mirror's
+        # assistant record is where a restored session's context fill is
+        # read from after a restart, and Codex/OpenRouter already store
+        # theirs there. Without it the meter sat at 0 until the next turn.
+        usage = self._turn_usage
+        receipt_usage = {}
+        for source, target in (("inputTokens", "input_tokens"),
+                               ("outputTokens", "output_tokens"),
+                               ("reasoningTokens", "reasoning_output_tokens"),
+                               ("cacheReadTokens", "cache_read_input_tokens"),
+                               ("cachedTokens", "cache_read_input_tokens")):
+            value = usage.get(source)
+            if isinstance(value, int) and value >= 0 and target not in receipt_usage:
+                receipt_usage[target] = value
         appended_turn = False
         if self._streaming is not None:
             turn = self._streaming.to_turn()
@@ -1118,7 +1132,9 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
                         "Helios could not save the Muse response. This Work remains blocked.")
                     return
                 try:
-                    self._transcript.append_assistant(turn, model=self._model)
+                    self._transcript.append_assistant(
+                        turn, model=self._model, result={"usage": receipt_usage}
+                    )
                 except Exception:
                     if has_user_attempt:
                         self._hold_accounting_failure(
@@ -1129,16 +1145,6 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
                     return
                 self.emit("turn-appended", turn)
                 appended_turn = True
-        usage = self._turn_usage
-        receipt_usage = {}
-        for source, target in (("inputTokens", "input_tokens"),
-                               ("outputTokens", "output_tokens"),
-                               ("reasoningTokens", "reasoning_output_tokens"),
-                               ("cacheReadTokens", "cache_read_input_tokens"),
-                               ("cachedTokens", "cache_read_input_tokens")):
-            value = usage.get(source)
-            if isinstance(value, int) and value >= 0 and target not in receipt_usage:
-                receipt_usage[target] = value
         receipt_status = {"success": "completed", "aborted": "aborted",
                           "error": "failed"}[subtype]
         if has_user_attempt and not self._finish_execution_with_evidence(ExecutionTerminalEvidence(

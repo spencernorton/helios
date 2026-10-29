@@ -1,5 +1,13 @@
 # Helios — Session Journal
 
+## 2026-10-29 — muse — Instant sidebar rows and faithful session restore
+
+- **Branch:** `claude/session-sidebar-restore` (from GitHub `main` f1a358f).
+- **Change:** Sidebar gains optimistic pending rows: the staged fresh chat shows on New Chat, the first send titles it with the prompt, and `session-started` shows the real provider row in the same turn instead of after the 400ms + file-poll path (now reconciliation only; background starts included). Restored sessions adopt their remembered provider model immediately (catalog revalidates on arrival; sends stay fail-closed), context fill is sized/re-requested under the adopted model, and Muse/Gemini mirrors persist turn usage so context restores after restart.
+- **Review:** GPT cross-review (gpt-6.1-sol via tandem) found background `session-started` events returned before the pending row was created; fixed and regression-tested at window level.
+- **Validation:** focused sidebar/restore/Muse/Gemini/catalog suites pass in the shipping worktree; full suite same five pre-existing failures as clean HEAD noted during development; Ruff clean.
+- **Version:** 0.114.3 → 0.114.4 (patch: correctness fixes, no new capability surface).
+
 
 ## 2026-10-28 — Require native and installed-package runtime acceptance
 

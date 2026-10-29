@@ -499,6 +499,55 @@ def test_background_workflow_and_host_initiated_continuation_turn(tmp_path):
     assert results[-1]["usage"] == {"input_tokens": 1200, "output_tokens": 300}
 
 
+def test_turn_usage_is_written_to_the_mirror_for_context_restore(tmp_path):
+    """A restored Muse session's context fill is read from the mirror's
+    last assistant usage; without it the meter sat at 0 until a new turn."""
+    import json as _json
+
+    from helios.backend.projects import Project, Session
+    from helios.backend.session_state import context_fill_for
+
+    driver = _driver(tmp_path)
+    driver._transcript.bind_thread("session-1")
+    driver._dispatch_message({
+        "method": "item/started",
+        "params": {
+            "item": {
+                "itemId": "m1", "kind": "agentMessage", "turnId": "turn-1",
+                "status": "inProgress", "text": "",
+            }
+        },
+    })
+    driver._dispatch_message({
+        "method": "item/delta",
+        "params": {"itemId": "m1", "field": "text", "delta": "done"},
+    })
+    driver._dispatch_message({
+        "method": "turn/completed",
+        "params": {
+            "turnId": "turn-1", "terminal": "completed",
+            "usage": {
+                "inputTokens": 1200, "outputTokens": 300,
+                "cacheReadTokens": 200,
+            },
+        },
+    })
+
+    path = driver._transcript._path()
+    records = [_json.loads(line) for line in path.read_text().splitlines() if line]
+    assistant = [r for r in records if r.get("type") == "assistant"]
+    assert assistant[-1]["message"]["usage"] == {
+        "input_tokens": 1200,
+        "output_tokens": 300,
+        "cache_read_input_tokens": 200,
+    }
+    session = Session(
+        project=Project(dirname="-x", cwd=str(tmp_path), path=tmp_path),
+        session_id="session-1", path=path, mtime=0.0, size=path.stat().st_size,
+    )
+    assert context_fill_for(session) == 1700
+
+
 def test_open_tool_call_survives_turn_completion_as_background_work_and_settles_across_turns(tmp_path):
     driver = _driver(tmp_path)
     bg_events = []

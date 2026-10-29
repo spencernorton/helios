@@ -807,6 +807,31 @@ def test_step_updates_render_the_same_shape_as_other_drivers(driver_factory):
     assert evidence.native_id == NATIVE_ID
 
 
+def test_turn_usage_is_written_to_the_mirror_for_context_restore(driver_factory):
+    """A restored Google session's context fill is read from the mirror's
+    last assistant usage; without it the meter sat at 0 until a new turn."""
+    from helios.backend.projects import Project, Session
+    from helios.backend.session_state import context_fill_for
+
+    driver = driver_factory()
+    driver.send_user_text("hello")
+    driver._dispatch_message(_result(response="hello world\n"))
+    _drain_main_context()
+
+    path = driver._transcript._path()
+    records = [json.loads(line) for line in path.read_text().splitlines() if line]
+    assistant = [r for r in records if r.get("type") == "assistant"]
+    usage = assistant[-1]["message"]["usage"]
+    assert usage["input_tokens"] == 100
+    assert usage["output_tokens"] == 10
+    assert usage["cache_read_input_tokens"] == 20
+    session = Session(
+        project=Project(dirname="-x", cwd=driver._cwd, path=path.parent),
+        session_id=NATIVE_ID, path=path, mtime=0.0, size=path.stat().st_size,
+    )
+    assert context_fill_for(session) == 130
+
+
 @pytest.mark.parametrize("status", ["ERROR", "CANCELED", "INTERRUPTED", "INVALID"])
 def test_native_failure_is_not_reported_as_success(driver_factory, status):
     driver = driver_factory()

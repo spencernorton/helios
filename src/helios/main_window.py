@@ -1302,6 +1302,20 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                     adopt(pending_provider)
         self._sync_effort_sensitivity()
         self._sync_execution_control()
+        # The restored session's context fill was requested at selection
+        # time — on fresh boot, under the previous provider's model, before
+        # this catalog existed. Re-request it under the adopted model so
+        # the meter settles here instead of on the next sent message. Only
+        # for a viewed, driver-less session: a live driver owns its meter.
+        fill_session = getattr(self, "_ctx_fill_session", None)
+        reload_fill = getattr(self, "_load_context_fill_async", None)
+        if (
+            fill_session is not None
+            and getattr(self, "_ctx_fill_visible", False)
+            and getattr(self, "_driver", None) is None
+            and callable(reload_fill)
+        ):
+            reload_fill(fill_session)
         available = (
             self._openai_catalog_authoritative
             and bool(self._openai_entries)
@@ -3380,18 +3394,45 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         ):
             return
         if provider == self._selected_provider():
-            self._pending_session_provider_adoption = ""
-            return
+            if (
+                str(getattr(self, "_pending_session_provider_adoption", "") or "")
+                != provider
+            ):
+                self._pending_session_provider_adoption = ""
+                return
+            # Catalog just landed for the provider already on screen: fall
+            # through and revalidate the exact model against it instead of
+            # keeping a remembered id the account may no longer have.
         if provider == model_catalog.PROVIDER_OPENAI and not self._openai_entries:
-            # Historical GPT transcripts remain viewable, but without an
-            # authoritative catalog we cannot safely resume/spawn GPT. Keep the
-            # fail-closed Claude selection; a send stages that Work participant.
+            # Without an authoritative catalog we cannot safely resume/spawn
+            # GPT, and a send remains fail-closed. But the header should not
+            # sit on another provider's model/settings meanwhile: adopt the
+            # remembered GPT model for display and keep the adoption pending
+            # so catalog arrival revalidates it (see _normalize above).
+            # NOTE: _model_for_provider deliberately stays fail-closed for
+            # new chats here (no invented default); restoring an EXISTING
+            # session is the one place the persisted remembered model —
+            # catalog-proven when picked — is honest display data.
+            remembered = str(self._provider_models.get(provider, "") or "")
+            if remembered:
+                self._apply_model_choice(remembered, quiet=True)
             self._pending_session_provider_adoption = provider
             return
         alias = self._model_for_provider(provider)
         if alias:
             self._pending_session_provider_adoption = ""
             self._apply_model_choice(alias, quiet=True)
+        elif (
+            provider
+            in (model_catalog.PROVIDER_GOOGLE, model_catalog.PROVIDER_MUSE)
+            and not bool(getattr(self, "_catalog_entries_by_id", None))
+            and str(self._provider_models.get(provider, "") or "")
+        ):
+            # Same restore-only rule as GPT above, pre-catalog.
+            self._apply_model_choice(
+                str(self._provider_models[provider]), quiet=True
+            )
+            self._pending_session_provider_adoption = provider
         else:
             self._pending_session_provider_adoption = provider
 
@@ -3899,6 +3940,10 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         )
 
     def _on_session_selected(self, _list, session) -> None:
+        # A real session took the view: the staged fresh-chat placeholder
+        # (if any) no longer describes what's on screen.
+        if session is not None:
+            MainWindow._sidebar_clear_staged(self)
         changes = getattr(self, "_changes", None)
         if changes is not None:
             changes.set_project(session.project if session is not None else None)
@@ -4156,6 +4201,11 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 )
                 return
         self._drafts.stash(self._draft_key, self._composer.current_text())
+        # A fresh chat has no transcript fill to restore, and a late fill
+        # result for the previously viewed session must not land on it.
+        self._ctx_fill_sid = ""
+        self._ctx_fill_session = None
+        self._ctx_fill_visible = False
         # A fresh chat has no transcript on disk yet — nothing to hand off.
         self._staged_permission_mode = ""
         self._staged_effort_key = ""
@@ -4196,6 +4246,11 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         self._composer.set_read_only(False)
         self._clear_busy_ui()
         self._main_stack.set_visible_child_name("transcript")
+        # The fresh chat is on screen now, so its sidebar row is too —
+        # immediately, not when a transcript file eventually lands. This
+        # is what lets several sessions be launched in quick succession.
+        if project is not None:
+            MainWindow._sidebar_show_staged(self, project)
 
     # --- live chat ---
 
@@ -5282,6 +5337,32 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         if sessions is not None:
             sessions.set_live_session_ids(ids)
 
+    # ── Optimistic sidebar rows ──────────────────────────────────────
+    # The sidebar is otherwise transcript-file-driven, so a new session
+    # stayed invisible until its provider wrote the file (and the
+    # session-started path then polled for it). These wrappers put a row
+    # on screen in the same turn the user acts. Guarded lookups keep the
+    # many fake-window unit tests (whose _sessions stand-ins predate the
+    # methods) working unchanged.
+
+    def _sidebar_show_staged(self, project, *, title: str = "") -> None:
+        sessions = getattr(self, "_sessions", None)
+        show = getattr(sessions, "show_staged_session", None)
+        if callable(show) and project is not None:
+            show(project, title=title)
+
+    def _sidebar_show_pending(self, session_id: str, cwd: str) -> None:
+        sessions = getattr(self, "_sessions", None)
+        show = getattr(sessions, "show_pending_session", None)
+        if callable(show) and session_id:
+            show(session_id, cwd=cwd or "")
+
+    def _sidebar_clear_staged(self) -> None:
+        sessions = getattr(self, "_sessions", None)
+        clear = getattr(sessions, "clear_staged_session", None)
+        if callable(clear):
+            clear()
+
     # ── Background-driver lifecycle (policy constants on the class) ──
 
     def _reap_idle_drivers(self) -> bool:
@@ -5580,6 +5661,17 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         # provider acknowledgement completes.
         drv = self._driver
         target = getattr(self, "_next_chat", None)
+        # First send of a fresh chat: put its text on the staged sidebar row
+        # right now, so several just-launched sessions are told apart by
+        # their prompt while their providers are still starting up.
+        if (
+            target is not None
+            and not getattr(target, "resume_id", "")
+            and not str(getattr(drv, "session_id", "") or "")
+        ):
+            MainWindow._sidebar_show_staged(
+                self, getattr(target, "project", None), title=text
+            )
         if (
             isinstance(drv, (GeminiCliDriver, MuseServeDriver, KimiAcpDriver))
             and drv.is_initializing
@@ -6994,6 +7086,16 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                     # before releasing any buffered first prompt.
                     drv.clear_native_goal()
         if not self._drv_is_current(drv):
+            # Sidebar visibility is not visible-driver UI: a session that
+            # finished starting in the background (the user already staged
+            # the next chat — the quick-succession launch this feature
+            # exists for) must still appear NOW and get its reconciliation
+            # timer, not wait for a later turn-end reload to be discovered.
+            if not getattr(self, "_destroyed", False):
+                MainWindow._sidebar_show_pending(self, session_id, cwd)
+                refresh = getattr(self, "_refresh_sidebar_for_live", None)
+                if callable(refresh):
+                    GLib.timeout_add(400, refresh, drv, session_id, 0)
             return
         # Keep the staged resume target synced to this driver's live session id.
         # It's only consulted when the process is gone, so a later respawn
@@ -7045,12 +7147,21 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         self._sync_execution_control()
         self._chat_toolbar.set_context_model(model)
         MainWindow._refresh_capabilities(self)
-        # The .jsonl file for this session DOES NOT EXIST YET at the moment
-        # `system/init` lands on stdout — claude writes it ~100ms after init
-        # is emitted (measured). Refreshing the sidebar immediately would
-        # scan the directory before the file is there and the new row
-        # wouldn't appear. Delay just enough to let the file land, then
-        # invalidate the cache and refresh so the live row shows up.
+        # Show the session in the sidebar NOW, in this same turn. The row
+        # used to wait for the transcript file: claude writes it ~100ms
+        # after `system/init`, and other providers only once the first turn
+        # is accepted — seconds to minutes the user spent looking at a
+        # session that wasn't listed yet. The optimistic row needs no file;
+        # discovery replaces it when the file lands.
+        MainWindow._sidebar_show_pending(self, session_id, cwd)
+        if self._drv_is_current(drv):
+            sessions = getattr(self, "_sessions", None)
+            select = getattr(sessions, "select_session", None)
+            if callable(select):
+                select(session_id)
+        # Reconcile with the real file once it lands (real title/status, and
+        # the placeholder is superseded). Kept as the background path, no
+        # longer the first moment the row can appear.
         GLib.timeout_add(400, self._refresh_sidebar_for_live, drv, session_id, 0)
 
     # Providers other than Claude write their mirror only once the provider
@@ -7061,8 +7172,11 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
     def _refresh_sidebar_for_live(
         self, drv: ClaudeCliDriver, session_id: str, tries: int = 0,
     ) -> bool:
-        """Scheduled refresh after session-started, retried ~1s apart until
-        the session's transcript file exists and has a row."""
+        """Reconcile the sidebar with the transcript file, once it lands.
+
+        The row itself is already visible (session-started showed the
+        optimistic pending row); this retried refresh only swaps in the
+        real discovered row with its on-disk title/status."""
         if self._destroyed:
             return False
         if (
@@ -7571,6 +7685,8 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         session instead of sitting at 0% until the next turn."""
         sid = session.session_id
         self._ctx_fill_sid = sid
+        self._ctx_fill_session = session
+        self._ctx_fill_visible = True
         model = self._model
         self._ctx_fill_runner.submit(ContextFillRequest(session, sid, model))
 
@@ -7594,7 +7710,12 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             return False
         # The saved transcript drops the `[1m]` marker, so derive the window
         # from the selected model — but bump to 1M when the fill exceeds the
-        # 200K base (the session was clearly a 1M-context one).
+        # 200K base (the session was clearly a 1M-context one). Use the model
+        # selected NOW, not the one captured at submit: on fresh boot the
+        # fill was requested while the header still showed the previous
+        # provider's model, and sizing the restored meter to that window
+        # left it wrong until the next turn even after adoption landed.
+        model = str(getattr(self, "_model", "") or model)
         window = context_window_for_model(model)
         if 0 < window < used:
             window = 1_000_000
