@@ -10,7 +10,7 @@ Build-Depends: debhelper-compat (= 13),
                python3-setuptools
 Standards-Version: 4.7.0
 Rules-Requires-Root: no
-Homepage: https://github.com/spencercnorton/helios
+Homepage: https://norvitech.com/helios/
 
 Package: helios
 Architecture: all

@@ -95,12 +95,19 @@ selector and permission picker:
   supported effort levels (e.g. Low, Medium, High). Helios lists the base model in the
   model catalog and configures effort via the toolbar's reasoning slider rather than
   separate redundant catalog rows. The selected level is passed to `agy --effort <level>`.
-- **Permission modes**: All standard Helios permission modes are supported:
-  - **Bypass**: Full agentic access via `--dangerously-skip-permissions` (unsandboxed).
-  - **Plan**: Native planning mode via `--mode plan --sandbox`.
-  - **Accept edits**: Auto-approve trusted workspace edits via `--mode accept-edits --sandbox`.
-  - **Ask / Auto / Never ask**: Run within the terminal sandbox (`--sandbox`). In headless
-    mode, tools requiring interactive approvals that cannot be granted are denied by the CLI.
+- **Permission modes** reflect distinct native policies:
+  - **Sandboxed**: run with `--sandbox`. This headless integration cannot show
+    or answer approval prompts; the CLI denies requests it cannot approve.
+  - **Accept edits**: auto-approve trusted workspace edits with
+    `--mode accept-edits --sandbox`; requests needing further approval cannot
+    be approved through this integration.
+  - **Bypass**: full agentic access with `--dangerously-skip-permissions`,
+    without the sandbox.
+  - **Read only**: investigate with `--mode plan --sandbox`.
+
+The older **Auto** and **Never ask** aliases did not select distinct native
+headless policies and are not offered as separate Google modes. Existing
+saved aliases resolve to the sandboxed policy.
 
 The [terminal sandbox](https://antigravity.google/docs/sandbox/) restricts
 terminal execution; native file and MCP tools follow Antigravity's own

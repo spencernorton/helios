@@ -34,12 +34,13 @@ it with the tagged source, and [CHANGELOG.md](CHANGELOG.md) says what changed.
 ## Working on the code
 
 Requirements: Python 3.11 or newer (CI checks 3.11/3.13 plus the packaged native runtime), GTK 4.10+, libadwaita
-1.5+, GtkSourceView 5. `./scripts/helios` runs whatever `python3` is on
+1.5+, GtkSourceView 5, WebKitGTK 6.0 for the browser and VTE 3.91 for the
+terminal. `./scripts/helios` runs whatever `python3` is on
 PATH and does not check the interpreter version; an older interpreter fails
 on import rather than with a startup message.
 
 ```bash
-sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-gtksource-5 libgtksourceview-5-0 python3-pytest git python3-pil
+sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-gtksource-5 libgtksourceview-5-0 gir1.2-webkit-6.0 gir1.2-vte-3.91 gir1.2-xdp-1.0 gir1.2-xdpgtk4-1.0 python3-pytest git python3-pil
 pip install ruff==0.15.20      # the exact version CI runs (pipx or a venv on Debian/Ubuntu)
 ./scripts/helios               # run from the checkout
 ./scripts/install-desktop.sh   # optional: app-grid entry and icon (needs python3-pil)

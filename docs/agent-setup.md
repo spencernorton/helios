@@ -1,6 +1,11 @@
 # Helios for autonomous agents — install, configure, verify
 
-This document is for an agent with shell access on a Linux machine that has to install and configure Helios for a person, unattended, and prove that it worked. Every step is a command followed by its expected result, and every path, key, default and message is taken from the source of this release (0.114.4), so a mismatch is a finding, not a typo. It cannot sign the person in to Claude or Codex: those are interactive logins in the CLIs' own credential stores, and the agent hands them back to the person at the points marked below.
+This is a shell-based installation and verification guide for Helios on
+Linux. The procedures describe source version 0.114.4 and include expected
+results; native account sign-ins require the account holder and remain in
+each CLI's credential store. Start with [quickstart.md](quickstart.md) for
+the shorter route. Stable APT can contain an older release, so check the
+installed version before expecting the current feature set.
 
 ## Facts at a glance
 
@@ -25,14 +30,14 @@ This document is for an agent with shell access on a Linux machine that has to i
 | Command-line options | None. Helios registers no options of its own; `helios --version` prints `Unknown option --version` and exits 1, and so does every other flag. Only GLib's own `-h`/`--help`, `--help-all`, `--help-gapplication` and `--gapplication-service` are accepted. A positional argument prints a `GLib-GIO-CRITICAL` line ending `This application can not open files.` and exits 1 |
 | Reading the version | `dpkg-query -W helios`, or `python3 -c "import helios; print(helios.__version__)"` (with `PYTHONPATH=~/helios/src` on a checkout) |
 | Single instance | `Adw.Application` with `DEFAULT_FLAGS`: on a session bus a second `helios` activates and raises the running window instead of opening a second one |
-| CLIs | Not packaged and not depended on. Claude sessions need the `claude` CLI (install: 5.1); GPT sessions need the `codex` CLI (optional); Kimi sessions need `kimi` with ACP support and `kimi login` (see `kimi-subscription.md`); OpenRouter needs a key file (optional) |
-| `.deb` Depends | `gir1.2-adw-1 gir1.2-gtk-4.0 gir1.2-gtksource-5 libgtksourceview-5-0 python3-gi python3-gi-cairo` plus the Python dependency; Recommends `git` (needed for Rewind) |
+| CLIs | Not bundled: Claude uses `claude`, GPT uses `codex`, Google uses Antigravity `agy`, Muse uses `muse`, and Kimi uses `kimi acp`; install only the providers you want. OpenRouter uses a key and Helios's own runtime. See section 5 |
+| `.deb` Depends | `gir1.2-adw-1 gir1.2-gtk-4.0 gir1.2-gtksource-5 gir1.2-webkit-6.0 libgtksourceview-5-0 python3-gi python3-gi-cairo` plus Python; Recommends `git`, `gir1.2-xdp-1.0`, `gir1.2-xdpgtk4-1.0`, `gir1.2-vte-3.91` |
 
 ## 1. Choose the install path
 
 | Condition | Path |
 |---|---|
-| Ubuntu 26.04 on `amd64` | Procedure A — APT repository `apt.globalentry.systems`, package `helios` (`Architecture: all`; only the `resolute` suite is published) |
+| Ubuntu 26.04 on `amd64` | Procedure A — current GitHub release package, or the deliberately older stable APT channel |
 | Anything else (Ubuntu 24.04, other distributions, other architectures) | Procedure B — run from a source checkout |
 
 ```bash
@@ -41,36 +46,63 @@ This document is for an agent with shell access on a Linux machine that has to i
 
 Expected: `ubuntu 26.04 amd64` selects Procedure A; any other output (for example `ubuntu 24.04 amd64`, `ubuntu 26.04 arm64`, or `fedora <version> x86_64` on a system without `dpkg`) selects Procedure B.
 
-## 2. Procedure A — APT (Ubuntu 26.04 amd64)
+## 2. Procedure A — release package (Ubuntu 26.04 amd64)
 
-Step A1. Add the repository. `setup.sh` installs the signing key and the suite for the release; it is short, read it first if policy requires. The script requires root and `curl`, which it checks before starting. It also needs `gpg` to verify the key; without it, the script stops with `error: signing key fingerprint mismatch`.
-
-It reads `VERSION_CODENAME` from `/etc/os-release` and the architecture from `dpkg --print-architecture`. Before making changes, it rejects any platform other than `resolute` on `amd64`.
-
-It then verifies the published key fingerprint, writes `/etc/apt/keyrings/norvi-archive-keyring.asc` and `/etc/apt/sources.list.d/norvi.sources`, and runs `apt-get update`.
+Step A1. Download the package and its checksums from the same release, verify
+the package, then install it. The command chain stops before installation if
+a download or checksum check fails.
 
 ```bash
-curl -fsSL https://apt.globalentry.systems/setup.sh | sudo sh
-apt-cache policy helios
+mkdir -p ~/Downloads/helios-0.114.4 &&
+cd ~/Downloads/helios-0.114.4 &&
+curl -fLO https://github.com/spencernorton/helios/releases/download/v0.114.4/helios_0.114.4_all.deb &&
+curl -fLO https://github.com/spencernorton/helios/releases/download/v0.114.4/SHA256SUMS.txt &&
+grep '  helios_0.114.4_all.deb$' SHA256SUMS.txt | sha256sum --check - &&
+sudo apt install -y ./helios_0.114.4_all.deb
 ```
 
-Expected: the `apt-get update` output, then the two lines `Norvi repository added. See what is available with:` and `  apt list '?origin(Norvi)'`, exit code 0; then a `Candidate:` line with a version and a version-table entry from `apt.globalentry.systems`. On an unsupported release the script prints `error: this repository has no packages for '<codename>'.` and on another architecture `error: this repository only has amd64 packages, and this machine is <arch>.`, exits 1 and changes nothing; use Procedure B.
+Expected: `helios_0.114.4_all.deb: OK`. Stop on a checksum failure.
+[GitHub Releases](https://github.com/spencernorton/helios/releases/latest)
+has the current version and matching source. Use the package and checksums
+from the same release when selecting a newer version.
 
-Step A2. Install.
+Step A2. Confirm the installed package. Keep APT's recommended packages
+enabled for the full workspace.
 
 ```bash
-sudo apt install -y helios
 dpkg -s helios | grep -E '^(Status|Version):'
 ```
 
-Expected:
+Expected: `Status: install ok installed` and `Version: 0.114.4`. APT installs
+WebKit for the browser and, by default, Git, VTE and desktop portal typelibs
+for review, the terminal and screenshots.
 
-```
-Status: install ok installed
-Version: 0.114.4
+### Optional: stable APT system updates
+
+```bash
+curl -fsSL https://apt.norvitech.com/setup.sh | sudo sh
+apt-cache policy helios
+sudo apt install -y helios
 ```
 
-`apt` pulls in `python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-gtksource-5 libgtksourceview-5-0` and, because Recommends are installed by default, `git`.
+The setup script requires root, `curl` and `gpg`. It accepts Ubuntu 26.04
+(`resolute`) on amd64, verifies the archive key fingerprint, and installs the
+`norvi-archive-keyring` package. That package owns
+`/etc/apt/sources.list.d/norvi.sources` and
+`/usr/share/keyrings/norvi-archive-keyring.gpg`; the script finishes with
+`apt-get update`. Existing subscribers can rerun it to adopt the keyring
+package.
+
+Expected: `NorviTech repository added.` followed by the update information
+and an `apt-cache policy` table for `helios`. Read the reported version:
+**stable APT and the latest release can differ**. On 29 October 2026, stable
+`resolute` supplies 0.101.0 and the separately signed, opt-in
+`resolute-candidate` channel supplies 0.114.4. The setup script enables only
+stable. Installing a newer downloaded package does not enable candidate
+updates, and APT does not normally downgrade it to an older stable version.
+Use [the installation guide](https://norvitech.com/helios/install/) to choose
+an update path. Do not change the keyring package's managed source to enrol
+in candidates.
 
 Step A3. Confirm the files the package placed.
 
@@ -79,7 +111,7 @@ test -x /usr/bin/helios && test -f /usr/share/applications/dev.norvi.Helios.desk
 command -v git >/dev/null && echo GIT_OK
 ```
 
-Expected: `FILES_OK` and `GIT_OK`. `git` is only a Recommends of the package (`--no-install-recommends` leaves it out); without it Rewind is silently unavailable, so install it if `GIT_OK` is missing.
+Expected: `FILES_OK` and `GIT_OK`. `git` is only a Recommends of the package (`--no-install-recommends` leaves it out); without it Rewind is unavailable, so install it if `GIT_OK` is missing.
 
 Step A4. Run the runtime check in section 4.
 
@@ -88,10 +120,10 @@ Step A4. Run the runtime check in section 4.
 Step B1. Install the system packages. PyGObject and GTK must come from the distribution and must not be pip-installed; `pyproject.toml` declares no pip runtime dependencies on purpose. A `pip install -e .` of Helios itself is allowed but unnecessary: the launcher only needs `src` on `PYTHONPATH`. `git` is for the clone and for Rewind; `python3-pil` is required only by `scripts/install-desktop.sh`, which imports `PIL` to render the icon sizes.
 
 ```bash
-sudo apt install -y python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-gtksource-5 libgtksourceview-5-0 git python3-pil
+sudo apt install -y python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-gtksource-5 libgtksourceview-5-0 gir1.2-webkit-6.0 gir1.2-vte-3.91 gir1.2-xdp-1.0 gir1.2-xdpgtk4-1.0 git python3-pil
 ```
 
-Expected: exit code 0. On a non-Debian distribution the package names differ and this document does not list them; what the installed set must provide is fixed by the source and is what section 4 checks: the `gi` Python module (PyGObject) for the `python3` that `scripts/helios` will run, the typelibs for the namespaces `Gtk` 4.0, `Adw` 1 and `GtkSource` 5 (`src/helios/deps.py`), PyGObject's cairo integration (the `.deb` names it `python3-gi-cairo`; the context meter is a `Gtk.DrawingArea` draw function), `git`, and `PIL` for `install-desktop.sh`. Install, then run section 4; each `ValueError: Namespace ... not available` names the piece still missing.
+Expected: exit code 0. On a non-Debian distribution the package names differ and this document does not list them; what the installed set must provide is fixed by the source and is what section 4 checks: the `gi` Python module (PyGObject) for the `python3` that `scripts/helios` will run, the typelibs for the namespaces `Gtk` 4.0, `Adw` 1 and `GtkSource` 5 (`src/helios/deps.py`), PyGObject's cairo integration (the `.deb` names it `python3-gi-cairo`; the context meter is a `Gtk.DrawingArea` draw function), `git`, WebKitGTK 6.0 for the browser, VTE 3.91 for the terminal, desktop portal typelibs for screenshots, and `PIL` for `install-desktop.sh`. Install, then run section 4; each `ValueError: Namespace ... not available` names the piece still missing.
 
 Step B2. Check the interpreter. Python older than 3.11 fails at import time (for example on `from enum import StrEnum`), not with a startup message.
 
@@ -104,11 +136,11 @@ Expected: a version of `3.11` or newer.
 Step B3. Clone and read the version.
 
 ```bash
-git clone --branch v0.114.4 https://github.com/spencercnorton/helios.git ~/helios
+git clone --branch v0.114.4 https://github.com/spencernorton/helios.git ~/helios
 PYTHONPATH=~/helios/src python3 -c "import helios; print(helios.__version__)"
 ```
 
-Expected: the clone prints `Note: switching to '<sha>'.` and a `You are in 'detached HEAD' state` paragraph (normal for a tag checkout), then `0.114.4`. Drop `--branch v0.114.4` to track the newest release instead; the version printed is then whatever `main` carries, and the `0.114.4` strings in this document, 7.3 and 12 are the release it was written for, not a mismatch.
+Expected: the clone prints `Note: switching to '<sha>'.` and a `You are in 'detached HEAD' state` paragraph (normal for a tag checkout), then `0.114.4`. Drop `--branch v0.114.4` to use development `main` instead; the version printed is then whatever `main` carries, and the `0.114.4` strings in this document, 7.3 and 12 are the release it was written for, not a mismatch.
 
 Step B4. Optional: app-grid entry and icon.
 
@@ -274,7 +306,7 @@ Expected: JSON containing `"loggedIn": true`.
 ### 5.2 Codex / GPT (optional)
 
 Resolution: `$HELIOS_CODEX_BINARY`, then `codex` on `PATH`, then `~/.local/bin/codex`. Not found: ``OpenAI Codex CLI not found. Install it (`npm install -g --prefix
-~/.local @openai/codex`) or set $HELIOS_CODEX_BINARY.`` A missing `codex` is silent at startup: the GPT header toggle is simply disabled with the tooltip `Add an OpenAI key in Settings → Providers to enable GPT`.
+~/.local @openai/codex`) or set $HELIOS_CODEX_BINARY.`` Check Settings → Providers to confirm discovery; installing the application does not install `codex`.
 
 Sign-in truth is `codex login status` (15 s timeout, scrubbed environment): signed in means exit 0 and output containing `logged in` but not `not logged in`. Helios never reads `~/.codex/auth.json`.
 
@@ -282,7 +314,7 @@ Sign-in truth is `codex login status` (15 s timeout, scrubbed environment): sign
 codex login status; echo "exit=$?"
 ```
 
-Expected when signed in: output containing `logged in` and `exit=0`. If not, either hand back `codex login` (ChatGPT account, interactive; there is no ChatGPT sign-in button in Settings, whose row reads `Not signed in` / `Paste an API key below to enable OpenAI models.`) or use the API-key path: Settings → Providers → "Use or replace an OpenAI API key" pipes the key to `codex login --with-api-key` on stdin (never argv, 30 s timeout) and keeps no copy. The same command from a shell has the same effect. It is refused with `Close active GPT sessions first` while a GPT session is live.
+Expected when signed in: output containing `logged in` and `exit=0`. If not, hand back `codex login` (ChatGPT account, interactive), use Settings → Accounts → GPT to open the native sign-in flow, or use the API-key path: Settings → Providers → "Use or replace an OpenAI API key" pipes the key to `codex login --with-api-key` on stdin (never argv, 30 s timeout) and keeps no copy. The same command from a shell has the same effect. It is refused with `Close active GPT sessions first` while a GPT session is live.
 
 `OPENAI_API_KEY` is never read by Helios and never reaches any child process (its name matches the `_KEY` scrub marker), so exporting it does nothing. `CODEX_API_KEY` in Helios's environment is not forwarded to App Server sessions either; its only effect is to force per-token billing detection (token cap on).
 
@@ -315,6 +347,34 @@ ls -l ~/.helios/openrouter-models.json
 ```
 
 Expected: `fetched <N>` (the number of selectable models), a log line `OpenRouter catalog refreshed: <N> models`, and the cache file. `no-key 0` means the key file is missing or empty; `fallback 3` after a warning `OpenRouter catalog fetch failed (...); using cache` means the fetch failed and there was no earlier cache. The picker reads the cache at the next launch.
+
+### 5.4 Google / Gemini (optional)
+
+Install the official Antigravity CLI and open `agy` to complete Google-account
+sign-in. Check `agy models`, then refresh Settings → Providers → Google.
+This integration uses the account allowance and rejects API/custom-provider
+routing and automatic credit overages. Google requires a project folder;
+its distinct Sandboxed, Accept edits, Bypass and Read only policies do not
+provide an interactive approval surface in headless mode. Follow
+[google-subscription.md](google-subscription.md) for the full setup and limits.
+
+### 5.5 Muse Code (optional)
+
+Install `muse`, then hand back `muse login` for Meta-account sign-in. Settings
+→ Accounts can open the same native flow. Settings → Providers can pipe an
+optional API key to `muse auth set --provider meta --api-key-stdin`; Muse
+stores the key and Helios keeps no copy. `META_API_KEY` in the environment
+takes precedence over the stored login. Refresh the provider page to check
+the account and its available models.
+
+### 5.6 Kimi Code (optional)
+
+Install Kimi Code 2.3.2+ and hand back `kimi login` for membership device-code
+sign-in. Settings → Accounts exposes the same flow; Settings → Providers
+performs a tool-free ACP handshake and lists models from the live account.
+Credentials stay with Kimi. Helios uses `kimi acp` and does not fall back to
+OpenRouter or a metered API route. See
+[kimi-subscription.md](kimi-subscription.md).
 
 ## 6. Configure without the GUI
 
@@ -484,16 +544,17 @@ Sections 8–11 are reference and recovery; the procedure continues at section 1
 
 ### 8.1 Permission modes
 
-Key is what `ui-state.json` and `conversation-perms.json` store; the label is what the Settings combo and the Execution capsule show. All six modes are selectable for all four providers.
+Key is what `ui-state.json` and `conversation-perms.json` store; the label is what the Settings combo and the Execution capsule show. The table covers Claude, Codex, OpenRouter and Google; labels and available
+choices vary by provider. Muse and Kimi use their native runtime policies.
 
 | Key | UI label | Claude `--permission-mode` | Codex `approvalPolicy` / sandbox / network | OpenRouter tool loop | Google (Antigravity) CLI flags |
 |---|---|---|---|---|---|
 | `default` | Ask | `default` | `on-request` / `workspace-write` / off | In-workspace `Read`, `Grep`, `Glob` run; everything else asks | `--sandbox` |
 | `acceptEdits` | Accept edits | `acceptEdits` | `on-request` / `workspace-write` / on | In-workspace reads and `Write`/`Edit` run; everything else asks | `--mode accept-edits --sandbox` |
-| `auto` | Auto | `auto` | `on-request` / `workspace-write` / on | As `acceptEdits` | `--sandbox` |
+| `auto` | Auto | `auto` | `on-request` / `workspace-write` / on | As `acceptEdits` | Legacy alias; not offered separately |
 | `bypassPermissions` | Bypass | `bypassPermissions` | `never` / `danger-full-access` / on | Every tool runs | `--dangerously-skip-permissions` |
 | `plan` | Plan | `plan` | `never` / `read-only` / off | In-workspace reads run; everything else is denied | `--mode plan --sandbox` |
-| `dontAsk` | Never ask | `dontAsk` | `never` / `workspace-write` / off | As `plan` | `--sandbox` |
+| `dontAsk` | Never ask | `dontAsk` | `never` / `workspace-write` / off | As `plan` | Legacy alias; not offered separately |
 
 Claude is always started with `--allow-dangerously-skip-permissions` (so Bypass can be selected later over the control protocol without enabling it), `--permission-prompt-tool stdio` (approvals come to Helios) and `--setting-sources user,project,local` (the person's own `~/.claude/settings.json` rules still apply). In `bypassPermissions` every Claude `can_use_tool` request is allowed; in `plan` and `dontAsk` every one is denied; in the other three a dialog is shown. `ExitPlanMode` (plan approval) is always a dialog. Codex sends the mapping every turn as `approvalPolicy`, `approvalsReviewer: "user"` and a `sandboxPolicy` object (`workspaceWrite` with `writableRoots: [realpath(cwd)]`, `readOnly`, or `dangerFullAccess`); with network off, a network-touching command fails inside the Codex sandbox and escalates to an approval. For OpenRouter a path argument outside the working directory strips a tool of its read-only or auto-edit standing.
 
@@ -503,26 +564,41 @@ Fail-safe. `SAFE_FALLBACK_MODE` is `default`. Unknown or corrupt persisted modes
 
 Precedence at spawn: an unsaved composer choice, then the `conversation-perms.json` record, then the global default (only if `permission_mode_confirmed` is `true`; otherwise the more restrictive of the global default and any legacy `project-perms.json` entry for that directory), then the HOME clamp.
 
+Google labels `default` **Sandboxed** and `plan` **Read only**. Its picker
+also offers Accept edits and Bypass. Auto and Never ask are legacy aliases,
+not distinct Google choices; existing saved aliases use the sandboxed policy.
+The headless integration cannot show or answer interactive CLI approvals.
+
 ### 8.2 Workflow modes
 
 A separate axis from permissions: `default` (label Default, all providers) and `plan` (label Plan, Codex only, offered only when the App Server's `collaborationMode/list` advertises it). Selecting the Plan workflow on Codex forces permission mode `plan` (read-only sandbox, `approvalPolicy: never`) for the thread and every turn. Stored as `workflow_mode` in `conversation-perms.json` (omitted when `default`).
 
 ### 8.3 Reasoning effort
 
-Keys `off`, `low`, `medium`, `high`, `xhigh`, `max`; default `high`; toolbar labels Off, Low, Medium, High, X-High, Max.
+The Execution capsule shows the levels advertised for the selected provider
+and model. A missing capability is not permission to invent a level. Live
+provider settings and restored choices are validated against the available
+catalogue; a model switch may repair an incompatible saved choice.
 
-| Provider | How the key reaches the model |
+| Provider | Source of the available choices |
 |---|---|
-| Claude | `off` → `--max-thinking-tokens 0`. Any other key → `--effort <key>` when `claude --help` lists `--effort`; otherwise approximated as `--max-thinking-tokens` low=4000, medium=8000, high=16000, xhigh=32000, max=32000. The picker narrows to the CLI's `supportedEffortLevels` (`off` always kept). A live change sends `apply_flag_settings` then `set_max_thinking_tokens` over the control channel |
-| Codex | Keys come from the App Server's `model/list` row (`supportedReasoningEfforts`); a fresh conversation sends `""` (model default). Never persisted globally |
-| OpenRouter | Offered only when the model's catalog row lists `reasoning`; `off`, `low`, `medium`, `high`, default `medium`. Sent as the request's `reasoning` object: `off` → `{"enabled": false}`, others → `{"effort": "<key>"}`; `xhigh` maps to `high`; `max` is dropped |
-| Google | Keys come from the Antigravity catalog row (`reasoning_efforts` grouped from model variants like `gemini-3.8-flash-high`); fresh conversations default to `"high"`. Passed on spawn as `--effort <key>` |
+| Claude | Installed CLI and model effort metadata; unsupported controls are disabled |
+| Codex | App Server `model/list`, including supported reasoning efforts and model default |
+| OpenRouter | The selected model's reasoning capability and exact advertised levels; levels are not silently renamed |
+| Google | Antigravity's model catalogue and native effort flags; no forced High when no effort was selected |
+| Muse | Native model capabilities and settings over MSP |
+| Kimi | Native ACP configuration options, with acknowledgement of the selected setting |
 
-Typed `/model <alias>` and `/effort <level>` are handled for Claude chats only.
+Typed `/model <alias>` and `/effort <level>` are handled for Claude chats.
+The toolbar's supported levels remain authoritative for the selected model.
 
 ### 8.4 Budgets
 
-Three constants. There is no settings key, file or environment variable for any of them; the only lever is the billing mode.
+The three controls below apply to the named paths. They do not establish an
+equivalent spend cap for Google, Muse or Kimi, or an account-wide limit
+across other applications. There is no settings key, file or environment
+variable for these constants; billing mode determines whether the Claude
+and Codex caps apply.
 
 | Provider | Breaker | Applies when | Disabled when |
 |---|---|---|---|
@@ -692,7 +768,7 @@ Reset state (what is lost, per path):
 rm -rf ~/.helios ~/.local/share/helios ~/.cache/helios
 ```
 
-`~/.claude` is left alone by both uninstall and reset. The only Helios-written files under it are the GPT/OpenRouter mirror transcripts (`helios-codex` / `helios-openrouter` version tag) in `~/.claude/projects/<encoded-cwd>/`, anything under `~/.claude/projects-archive/`, empty project directories created for a `default_cwd`, and memory notes saved through the editor; remove them by hand only if the person asks. `~/.codex` is never written by the Helios app; only the optional `scripts/setup-codex-estate --apply` helper appends to `~/.codex/config.toml` and `~/.codex/AGENTS.md` (or `AGENTS.override.md` when that exists), keeping a `.helios-backup-*` copy of any file it changes, and only when run explicitly.
+`~/.claude` is left alone by both uninstall and reset. Helios-written files under it include Claude-compatible display mirrors for GPT, Google, Muse, Kimi and OpenRouter in `~/.claude/projects/<encoded-cwd>/`, anything under `~/.claude/projects-archive/`, empty project directories created for a `default_cwd`, and memory notes saved through the editor; remove them by hand only if the person asks. `~/.codex` is never written by the Helios app; only the optional `scripts/setup-codex-estate --apply` helper appends to `~/.codex/config.toml` and `~/.codex/AGENTS.md` (or `AGENTS.override.md` when that exists), keeping a `.helios-backup-*` copy of any file it changes, and only when run explicitly.
 
 ## 12. Verification checklist
 
