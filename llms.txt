@@ -6,7 +6,7 @@ Helios keeps provider-backed conversations, model and permission controls, goals
 
 Packaged releases target Ubuntu 26.04. Source builds require Python 3.11+, GTK 4.10+, libadwaita 1.5+, GtkSourceView 5 and PyGObject/cairo, plus WebKitGTK 6.0 for the browser and VTE 3.91 for the terminal. Stable APT may lag behind GitHub releases; consult the installation guide before promising latest features from the default APT commands.
 
-This index describes source release 0.114.4. Check the installation guide for the version available from each update channel.
+This index describes source release 0.115.0. Check the installation guide for the version available from each update channel.
 
 ## Start here
 

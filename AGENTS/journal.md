@@ -1,5 +1,27 @@
 # Helios — Session Journal
 
+## 2026-10-30 — Inline Archive/Delete confirm on sidebar rows (0.115.0)
+
+- Spencer asked for no pop-up on a row's delete: the trash icon now crossfades
+  (Gtk.Stack, interpolated width) into *Delete* while *Archive* slides in from
+  the right (Gtk.Revealer SLIDE_LEFT), all in `_SessionRow`. One row open at a
+  time (`SessionList._confirming_id`, reopened without animation across a list
+  rebuild); Escape, a capture-phase press elsewhere in the list, or 1.5 s off
+  the row folds it back.
+- A confirmed row folds (child revealer SLIDE_UP plus `.helios-row-removing`,
+  which also collapses libadwaita's sidebar-row min-height; without it an empty
+  36 px pill sat there until the rebuild), then runs the action exactly once
+  with a timeout backstop.
+- Archive = `session_archiver.archive_session` (same move as the 4-day pass).
+  It emits `sessions-deleting` (drivers stop first) then a new
+  `sessions-archived`, NOT `sessions-deleted`: that handler wipes conversation
+  settings and Work bindings, and an archived transcript still exists.
+- GPT review (gpt-6.1-sol) caught a retired row's leave timer clearing the
+  rebuilt row's ownership; `_on_row_confirm_changed` now ignores any row not
+  currently in `_rows_by_id`.
+- Validation: tests/test_session_row_inline_confirm.py (8), full suite green,
+  frames captured on a private Xvfb with the real stylesheet.
+
 ## 2026-10-29 — Show real app interactions with short GIFs
 
 - Replace the README's static hero with an app-action loop; add Git review,

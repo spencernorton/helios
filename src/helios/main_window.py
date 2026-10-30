@@ -966,6 +966,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         )
         self._sessions.connect("sessions-deleting", self._on_sessions_deleting)
         self._sessions.connect("sessions-deleted", self._on_sessions_deleted)
+        self._sessions.connect("sessions-archived", self._on_sessions_archived)
         self._sessions.connect("session-stop-requested", self._on_session_stop_requested)
         self._goal_strip.connect("edit-requested", lambda *_: self._edit_goal())
         self._goal_strip.connect("pause-requested", lambda *_: self._set_goal_status(session_goals.GOAL_PAUSED))
@@ -8833,6 +8834,15 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         # Selecting a different (or no) session also resets transcript view —
         # SessionList.set_project re-selects the first row, which fires
         # session-selected and rebuilds the transcript pane.
+
+    def _on_sessions_archived(self, _list, archived_ids: list[str]) -> None:
+        if not archived_ids:
+            return
+        n = len(archived_ids)
+        self._toast(f"Archived {n} session{'s' if n != 1 else ''}.")
+        # The transcript survives in the archive, so its execution settings
+        # and Work binding stay; only a staged resume against it is now dead.
+        self._next_chat = clear_deleted_resume(self._next_chat, set(archived_ids))
 
     def _on_driver_error(self, drv, message: str) -> None:
         # Durable first: return an un-accepted prompt to its author. When the
