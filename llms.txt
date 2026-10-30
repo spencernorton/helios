@@ -10,6 +10,7 @@ This index describes source release 0.114.4. Check the installation guide for th
 
 ## Start here
 
+- [Complete hosted user guide](https://norvitech.com/helios/docs/): local search, six provider setup guides, sessions, permissions, workspace tools, settings, backups and troubleshooting.
 - [Quickstart](docs/quickstart.md): latest package, checksums, provider sign-in, a project folder and a first task.
 - [README](README.md): screenshots, current features, installation, data paths, contribution and development.
 - [Website](https://norvitech.com/helios/): project overview, installation, providers, feature walkthrough and narrated demos.
