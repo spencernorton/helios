@@ -11,8 +11,10 @@ Helios reads Claude transcripts and writes Claude-compatible display mirrors
 for its other providers under `~/.claude/projects/`. These mirrors do not
 replace a native provider's authoritative context. Housekeeping moves idle
 sessions to `~/.helios/session-archive/` and dead temporary projects to
-`~/.claude/projects-archive/`. Deleting a session from the sidebar asks for
-confirmation; the maintenance cleanup rules are described in
+`~/.claude/projects-archive/`. A sidebar row's trash icon confirms in place:
+it turns into *Delete* with *Archive* beside it, and nothing is removed until
+you pick one (Escape or a click elsewhere cancels). Bulk delete in select mode
+still asks in a dialog; the maintenance cleanup rules are described in
 [SECURITY.md](../SECURITY.md#what-helios-does-with-credentials-and-data).
 
 **Install and launch.** Follow [Install](../README.md#install) for a current
@@ -63,6 +65,7 @@ notification is posted, and the dialog opens when you switch to that session.
 (never deleted) from `~/.claude/projects/<encoded-cwd>/` to
 `~/.helios/session-archive/<encoded-cwd>/<id>.jsonl`, 15 s after launch and
 every 24 h, at most 8 per run; a session with a live agent process is skipped.
+A row's inline *Archive* moves that one session the same way, immediately.
 Claude Code's own `claude --resume` no longer sees an archived session; `mv`
 the file back into `~/.claude/projects/<encoded-cwd>/` to restore it.
 

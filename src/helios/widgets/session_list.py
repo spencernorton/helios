@@ -27,7 +27,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, GLib, GObject, Gtk  # noqa: E402
 
-from helios.backend import session_providers
+from helios.backend import session_archiver, session_providers
 from helios.backend.project_names import store as name_store
 from helios.backend.projects import (
     Session,
@@ -98,6 +98,10 @@ class SessionList(Gtk.Box):
         "sessions-deleting": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
         # Emitted after a delete completes; carries a list[str] of session ids.
         "sessions-deleted": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
+        # Emitted after a row's inline Archive moved transcripts into
+        # ~/.helios/session-archive; carries a list[str] of session ids. Not a
+        # delete: the transcript survives, so observers keep its settings.
+        "sessions-archived": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
         # Emitted from a row's right-click "Stop session"; carries session_id.
         "session-stop-requested": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
     }
@@ -177,6 +181,13 @@ class SessionList(Gtk.Box):
         self._scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         self._scroller.set_vexpand(True)
         self.append(self._scroller)
+        # A press anywhere in the list outside the open Archive/Delete pair
+        # folds it back — the "tap elsewhere" of a swipe-to-delete row.
+        # Capture phase so the press still reaches the row it lands on.
+        dismiss = Gtk.GestureClick()
+        dismiss.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        dismiss.connect("pressed", self._on_list_pressed)
+        self._scroller.add_controller(dismiss)
         # Scroll offset to put back after a rebuild, and how many more frames
         # to keep asserting it for. Non-None also means "a restore tick is in
         # flight", which is what keeps a second render from stacking another.
@@ -243,6 +254,10 @@ class SessionList(Gtk.Box):
         self._reload_gen = 0
 
         self._select_mode = False
+
+        # The one row showing its inline Archive/Delete pair, by session id so
+        # a list rebuild can reopen it rather than snap it shut mid-decision.
+        self._confirming_id = ""
 
         # Session ids that MainWindow knows are live (e.g. its own driver
         # whose id was just emitted in `system/init`). The /proc scan can't
@@ -893,6 +908,8 @@ class SessionList(Gtk.Box):
                 s,
                 statuses[s.session_id],
                 on_delete=self._row_delete_one,
+                on_archive=self._row_archive_one,
+                on_confirm_changed=self._on_row_confirm_changed,
                 on_stop=lambda sess: self.emit("session-stop-requested", sess.session_id),
                 show_host_chip=show_host_chips,
                 provider=prior_providers.get(s.session_id),
@@ -902,6 +919,8 @@ class SessionList(Gtk.Box):
                 row.set_live_activity(live)
             self._rows_by_id[s.session_id] = row
             self._listbox.append(row)
+            if s.session_id == self._confirming_id:
+                row.reveal_confirm(animate=False)
 
         # Resolve the chips (and statuses) now rather than up to
         # _STATUS_REFRESH_MS later. Queued as an idle so it lands after
@@ -1252,10 +1271,41 @@ class SessionList(Gtk.Box):
             self._show_delete_dialog(sessions)
 
     def _row_delete_one(self, session: Session) -> None:
-        """Inline/right-click delete path — single session, no select mode."""
+        """A row's inline Delete — already confirmed in place, so no dialog."""
         if session.project.read_only or getattr(session, "pending", False):
             return
-        self._show_delete_dialog([session])
+        self._confirming_id = ""
+        self._on_delete_response(None, "delete", [session])
+
+    def _row_archive_one(self, session: Session) -> None:
+        """A row's inline Archive: move the transcript out, never unlink it."""
+        if session.project.read_only or getattr(session, "pending", False):
+            return
+        self._confirming_id = ""
+        self._on_delete_response(None, "archive", [session])
+
+    def _on_row_confirm_changed(self, row: "_SessionRow", shown: bool) -> None:
+        sid = row.session.session_id
+        # A row retired by a rebuild can still report (its leave timer); only
+        # the row currently listed under that id owns the confirmation.
+        if self._rows_by_id.get(sid) is not row:
+            return
+        if not shown:
+            if self._confirming_id == sid:
+                self._confirming_id = ""
+            return
+        previous = self._rows_by_id.get(self._confirming_id)
+        self._confirming_id = sid
+        if previous is not None and previous is not row:
+            previous.collapse_confirm()
+
+    def _on_list_pressed(self, _gesture, _n_press: int, x: float, y: float) -> None:
+        row = self._rows_by_id.get(self._confirming_id)
+        if row is None:
+            return
+        target = self._scroller.pick(x, y, Gtk.PickFlags.DEFAULT)
+        if not row.owns_remove_control(target):
+            row.collapse_confirm()
 
     def _show_delete_dialog(self, sessions: list[Session]) -> None:
         n = len(sessions)
@@ -1288,8 +1338,11 @@ class SessionList(Gtk.Box):
         dlg.present(root)
 
     def _on_delete_response(self, _dlg, response: str, sessions: list[Session]) -> None:
-        if response != "delete":
+        """Remove ``sessions``: response "delete" unlinks, "archive" moves the
+        transcripts into the session archive; anything else is a cancel."""
+        if response not in ("delete", "archive"):
             return
+        archive = response == "archive"
         # A `claude` process Helios does not own (a script, a terminal) keeps
         # appending to its transcript, so unlinking it only resurrects the row
         # as "Session <id>" on the next write. Refuse those; Helios-owned
@@ -1303,6 +1356,14 @@ class SessionList(Gtk.Box):
         deleted_ids: list[str] = []
         touched_projects = set()
         for s in sessions:
+            if archive:
+                # Moves the auxiliary directory along with the transcript.
+                try:
+                    session_archiver.archive_session(s)
+                    deleted_ids.append(s.session_id)
+                except OSError as e:
+                    _log.warning("failed to archive %s: %s", s.path, e)
+                continue
             try:
                 s.path.unlink(missing_ok=True)
                 deleted_ids.append(s.session_id)
@@ -1318,12 +1379,16 @@ class SessionList(Gtk.Box):
                     shutil.rmtree(aux)
                 except OSError:
                     pass
-        self.emit("sessions-deleted", deleted_ids)
-        # MainWindow's synchronous handler still needs the provider mapping to
-        # remove the matching conversation-scoped execution record. Forget it
-        # only after observers have handled the deletion.
-        for session_id in deleted_ids:
-            session_providers.forget(session_id)
+        if archive:
+            # archive_session already forgot each provider mapping.
+            self.emit("sessions-archived", deleted_ids)
+        else:
+            self.emit("sessions-deleted", deleted_ids)
+            # MainWindow's synchronous handler still needs the provider mapping
+            # to remove the matching conversation-scoped execution record.
+            # Forget it only after observers have handled the deletion.
+            for session_id in deleted_ids:
+                session_providers.forget(session_id)
         self._set_select_mode(False)
         # Re-discover from disk (cheap, local only). discover_local_sessions
         # builds fresh Project objects, so no stale per-Project caches survive.
@@ -1336,10 +1401,11 @@ class SessionList(Gtk.Box):
         root = self.get_root()
         if held and root is not None:
             n = len(held)
+            verb = "archiving" if archive else "deleting"
             dlg = Adw.AlertDialog.new(
                 "Still running elsewhere",
                 f"{n} session{'s are' if n != 1 else ' is'} still running in a "
-                "process Helios did not start, so deleting would only bring "
+                f"process Helios did not start, so {verb} would only bring "
                 f"{'them' if n != 1 else 'it'} back. Stop that process first.",
             )
             dlg.add_response("ok", "OK")
@@ -1374,6 +1440,10 @@ _DOT_TOOLTIP = {
 
 
 class _SessionRow(Gtk.ListBoxRow):
+    # A pointer that wanders off an open Archive/Delete pair folds it back
+    # after this long; coming back inside cancels the fold.
+    _CONFIRM_LEAVE_MS = 1500
+
     def __init__(
         self,
         session: Session,
@@ -1381,6 +1451,8 @@ class _SessionRow(Gtk.ListBoxRow):
         on_delete,
         on_stop=None,
         *,
+        on_archive=None,
+        on_confirm_changed=None,
         show_host_chip: bool = True,
         provider=None,
     ) -> None:
@@ -1389,8 +1461,14 @@ class _SessionRow(Gtk.ListBoxRow):
         self.status = status
         self.provider_resolution = provider
         self._pending_question = False  # a queued question is waiting on the user
-        self._on_delete = on_delete  # callback (session: Session) -> None
+        self._on_delete = on_delete  # callback (session: Session) -> None, confirmed
+        self._on_archive = on_archive  # callback (session: Session) -> None, confirmed
+        self._on_confirm_changed = on_confirm_changed  # (row, shown: bool) -> None
         self._on_stop = on_stop      # callback (session: Session) -> None
+        self._remove_box: Gtk.Box | None = None
+        self._confirming = False
+        self._removing = False
+        self._leave_source = 0
         self.add_css_class("helios-session-row")
         ro = session.project.read_only
         if ro:
@@ -1482,15 +1560,16 @@ class _SessionRow(Gtk.ListBoxRow):
         # machine's archive copy over CIFS. Hidden for pending rows too:
         # there is no transcript file to delete yet.
         if not ro and not getattr(session, "pending", False):
-            delete_btn = Gtk.Button.new_from_icon_name("user-trash-symbolic")
-            delete_btn.add_css_class("flat")
-            delete_btn.add_css_class("helios-row-delete")
-            delete_btn.set_valign(Gtk.Align.CENTER)
-            delete_btn.set_tooltip_text("Delete session")
-            delete_btn.connect("clicked", lambda *_: self._on_delete(self.session))
-            outer.append(delete_btn)
+            outer.append(self._build_remove_controls())
 
-        self.set_child(outer)
+        # The whole row folds up once a removal is confirmed, so it leaves the
+        # list smoothly instead of vanishing on the next rebuild.
+        self._body = Gtk.Revealer()
+        self._body.set_transition_type(Gtk.RevealerTransitionType.SLIDE_UP)
+        self._body.set_transition_duration(BASE_MS)
+        self._body.set_reveal_child(True)
+        self._body.set_child(outer)
+        self.set_child(self._body)
         self._refresh_identity_tooltip()
 
         # Right-click also offers delete — via a plain popover button (direct
@@ -1500,6 +1579,168 @@ class _SessionRow(Gtk.ListBoxRow):
             right_click.set_button(3)  # BUTTON_SECONDARY
             right_click.connect("pressed", self._on_right_click)
             self.add_controller(right_click)
+
+    # ── Inline Archive / Delete confirmation ─────────────────────────
+    #
+    # No modal: the trash icon morphs, in place, into a red Delete button
+    # while Archive slides in from the right beside it — swipe-to-delete,
+    # driven by a click. Escape, a press elsewhere in the list, or the pointer
+    # leaving the row folds it back.
+
+    def _build_remove_controls(self) -> Gtk.Box:
+        trash = Gtk.Button.new_from_icon_name("user-trash-symbolic")
+        trash.add_css_class("flat")
+        trash.add_css_class("helios-row-delete")
+        trash.set_valign(Gtk.Align.CENTER)
+        trash.set_tooltip_text("Delete or archive session")
+        trash.connect("clicked", lambda *_: self.reveal_confirm())
+
+        delete = Gtk.Button.new_with_label("Delete")
+        delete.add_css_class("destructive-action")
+        delete.add_css_class("helios-row-confirm")
+        delete.set_valign(Gtk.Align.CENTER)
+        delete.set_tooltip_text("Permanently delete this transcript")
+        delete.connect("clicked", lambda *_: self._confirm_removal(self._on_delete))
+
+        archive = Gtk.Button.new_with_label("Archive")
+        archive.add_css_class("helios-row-confirm")
+        archive.add_css_class("helios-row-archive")
+        archive.set_valign(Gtk.Align.CENTER)
+        archive.set_margin_end(6)
+        archive.set_tooltip_text("Move the transcript to ~/.helios/session-archive")
+        archive.connect("clicked", lambda *_: self._confirm_removal(self._on_archive))
+        self._archive_btn = archive
+
+        # Archive grows in from zero width; the stack interpolates its width
+        # as the icon crossfades into the wider Delete button, so the row's
+        # text column shrinks smoothly rather than jumping.
+        self._archive_revealer = Gtk.Revealer()
+        self._archive_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_LEFT)
+        self._archive_revealer.set_child(archive)
+
+        self._remove_stack = Gtk.Stack()
+        self._remove_stack.set_hhomogeneous(False)
+        self._remove_stack.set_interpolate_size(True)
+        self._remove_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self._remove_stack.add_named(trash, "trash")
+        self._remove_stack.add_named(delete, "confirm")
+        self._remove_stack.set_visible_child_name("trash")
+        self._set_confirm_duration(BASE_MS)
+
+        # One child of the row's spaced box, so the collapsed revealer adds no
+        # gap beside the trash icon at rest.
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        box.set_valign(Gtk.Align.CENTER)
+        box.append(self._archive_revealer)
+        box.append(self._remove_stack)
+        self._remove_box = box
+
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self._on_confirm_key)
+        self.add_controller(keys)
+        motion = Gtk.EventControllerMotion()
+        motion.connect("enter", lambda *_: self._cancel_leave_fold())
+        motion.connect("leave", lambda *_: self._arm_leave_fold())
+        self.add_controller(motion)
+        return box
+
+    def _set_confirm_duration(self, ms: int) -> None:
+        self._archive_revealer.set_transition_duration(ms)
+        self._remove_stack.set_transition_duration(ms)
+
+    @property
+    def confirming(self) -> bool:
+        return self._confirming
+
+    def owns_remove_control(self, widget) -> bool:
+        box = self._remove_box
+        return box is not None and widget is not None and (
+            widget is box or widget.is_ancestor(box)
+        )
+
+    def _focus_in_remove_controls(self) -> bool:
+        root = self.get_root()
+        return root is not None and self.owns_remove_control(root.get_focus())
+
+    def reveal_confirm(self, *, animate: bool = True) -> None:
+        if self._remove_box is None or self._confirming or self._removing:
+            return
+        # The trash button is about to leave the stack; if it held focus, GTK
+        # would otherwise hand focus to the list top and scroll there.
+        refocus = self._focus_in_remove_controls()
+        self._confirming = True
+        self.add_css_class("helios-row-confirming")
+        self._set_confirm_duration(BASE_MS if animate else 0)
+        self._remove_stack.set_visible_child_name("confirm")
+        self._archive_revealer.set_reveal_child(True)
+        self._set_confirm_duration(BASE_MS)
+        if refocus:
+            # Archive, not Delete: Enter on a fresh reveal is the reversible one.
+            self._archive_btn.grab_focus()
+        if self._on_confirm_changed is not None:
+            self._on_confirm_changed(self, True)
+
+    def collapse_confirm(self) -> None:
+        if not self._confirming or self._removing:
+            return
+        self._cancel_leave_fold()
+        refocus = self._focus_in_remove_controls()
+        self._confirming = False
+        self.remove_css_class("helios-row-confirming")
+        self._remove_stack.set_visible_child_name("trash")
+        self._archive_revealer.set_reveal_child(False)
+        if refocus:
+            self.grab_focus()
+        if self._on_confirm_changed is not None:
+            self._on_confirm_changed(self, False)
+
+    def _on_confirm_key(self, _ctl, keyval: int, _keycode: int, _state) -> bool:
+        if keyval == Gdk.KEY_Escape and self._confirming:
+            self.collapse_confirm()
+            return True
+        return False
+
+    def _arm_leave_fold(self) -> None:
+        if not self._confirming or self._leave_source:
+            return
+        self._leave_source = GLib.timeout_add(self._CONFIRM_LEAVE_MS, self._leave_fold)
+
+    def _cancel_leave_fold(self) -> None:
+        if self._leave_source:
+            GLib.source_remove(self._leave_source)
+            self._leave_source = 0
+
+    def _leave_fold(self) -> bool:
+        self._leave_source = 0
+        if self.get_parent() is not None:  # a rebuild may have retired this row
+            self.collapse_confirm()
+        return False
+
+    def _confirm_removal(self, action) -> None:
+        """Fold the row away, then run the confirmed ``action`` exactly once."""
+        if action is None or self._removing:
+            return
+        self._removing = True
+        self._cancel_leave_fold()
+        self.set_can_target(False)  # no second click while it folds
+        self.add_css_class("helios-row-removing")
+        fired = False
+
+        def _run(*_args) -> bool:
+            nonlocal fired
+            if not fired:
+                fired = True
+                action(self.session)
+            return False
+
+        def _on_revealed(revealer, _pspec) -> None:
+            if not revealer.get_child_revealed():
+                _run()
+
+        self._body.connect("notify::child-revealed", _on_revealed)
+        self._body.set_reveal_child(False)
+        # Backstop: an unmapped row, or animations off, may never notify.
+        GLib.timeout_add(BASE_MS + 200, _run)
 
     def set_live_activity(self, text: str) -> None:
         """Show (or clear) the one-line "doing X now" caption on this row."""
@@ -1569,9 +1810,7 @@ class _SessionRow(Gtk.ListBoxRow):
         box.append(_item("Copy folder path", lambda: self._copy(self.session.project.cwd)))
         box.append(_item("Copy session ID", lambda: self._copy(self.session.session_id)))
         box.append(Gtk.Separator())
-        box.append(
-            _item("Delete session", lambda: self._on_delete(self.session), "destructive-action")
-        )
+        box.append(_item("Delete session…", self.reveal_confirm, "destructive-action"))
         popover.set_child(box)
         popover.popup()
 

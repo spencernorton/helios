@@ -4,6 +4,11 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.115.0 — 2026-10-30
+
+- A sidebar row's trash icon no longer opens a confirmation dialog. It morphs in place into a red *Delete* button while *Archive* slides in beside it, swipe-to-delete style; Escape, a click elsewhere in the list or moving the pointer away folds it back. A confirmed row fades and collapses out of the list.
+- *Archive* moves that session's transcript to `~/.helios/session-archive/` immediately, the same move the four-day housekeeping pass makes, and keeps its execution settings and Work binding. Right-click *Delete session…* opens the same inline pair; bulk delete in select mode still confirms in a dialog.
+
 ## 0.114.4 — 2026-10-29
 
 - New sessions appear in the sidebar immediately (staged fresh chat, then the started session under its real provider id) instead of waiting for the transcript file, so several sessions can be launched in quick succession.

@@ -118,6 +118,18 @@ def archive_old_sessions(
     return report
 
 
+def archive_session(session: Session) -> Path:
+    """Archive one session now — the sidebar row's inline Archive action.
+
+    Same move and provider bookkeeping as the automatic pass, without its
+    age or live checks: the caller has already stopped Helios's own driver
+    and refused sessions a foreign process still writes.
+    """
+    dest = _move_session_to_archive(session)
+    session_providers.forget(session.session_id)
+    return dest
+
+
 def _no_summary(_session: Session) -> str:
     """Default archiver policy: preserve data without hidden model spend."""
     return ""

@@ -583,6 +583,47 @@ window.helios-glass .helios-session-list list {
     color: @error_color;
 }
 
+/* The inline Archive / Delete pair the trash icon opens in place of a modal.
+ * Compact so the row keeps its height while the pair slides in. */
+.helios-row-confirm {
+    min-height: 24px;
+    padding: 2px 10px;
+    border-radius: 7px;
+    font-size: 0.85em;
+    font-weight: 600;
+}
+
+.helios-row-archive {
+    background-color: alpha(currentColor, 0.12);
+}
+
+.helios-row-archive:hover {
+    background-color: alpha(currentColor, 0.18);
+}
+
+/* A confirmed row folds away. The child revealer only shrinks the content;
+ * the sidebar row's own min-height, margin and padding would leave an empty
+ * pill until the list rebuilds, so they collapse with it. */
+.helios-session-row.helios-row-removing {
+    min-height: 0;
+    margin-top: 0;
+    margin-bottom: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    opacity: 0;
+    transition:
+        min-height 220ms cubic-bezier(0.4, 0, 0.2, 1),
+        margin 220ms cubic-bezier(0.4, 0, 0.2, 1),
+        padding 220ms cubic-bezier(0.4, 0, 0.2, 1),
+        opacity 220ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* While the pair is open the row reads as "about to go": a faint red wash
+ * that still loses to the :selected rail. */
+.helios-session-row.helios-row-confirming:not(:selected) {
+    background-color: alpha(@error_color, 0.07);
+}
+
 /* One blink per colour. `alpha()` cannot take a variable hue, so a shared
  * keyframe would pulse every dot in whatever colour was baked into it — which
  * is exactly the bug the old amber twin was written to work around, back when
