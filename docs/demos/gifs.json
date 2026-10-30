@@ -1,0 +1,208 @@
+{
+  "schema_version": 1,
+  "application": "Helios",
+  "version": "0.114.4",
+  "application_source": "https://github.com/spencernorton/helios/tree/30b69fa9e8e797f1e205b4c7a28dbd9bf68ac89d",
+  "recorded_on": "2026-10-29",
+  "disclosure": "Recorded in Helios using a fictional project and staged conversations.",
+  "production": "Real application screen recordings at normal speed. No generated UI, interpolated motion, narration or title cards. Browser preview omits one idle interval between its two actions.",
+  "recommended_primary": "browser-preview",
+  "assets": [
+    {
+      "slug": "sessions",
+      "caption": "Switch between saved project conversations.",
+      "disclosure": "Recorded in Helios using a fictional project and staged conversations.",
+      "width": 1064,
+      "height": 506,
+      "fps": 12,
+      "duration": 7.91,
+      "loop_count": 0,
+      "source_capture": "04-sessions-and-search-raw.mp4",
+      "source_sha256": "8d0437f5a3c3a523a8cac3f038a099ca2036f691569f4c8ac14c86649676dc93",
+      "source_segments_seconds": [
+        {
+          "start": 6.6,
+          "duration": 7.9
+        }
+      ],
+      "crop_from_1600x900": {
+        "x": 0,
+        "y": 0,
+        "width": 1600,
+        "height": 760
+      },
+      "full_tour_chapter_start_seconds": 158.666667,
+      "motion": {
+        "decoded_frames": 95,
+        "unique_frames": 72,
+        "changing_frame_pairs": 81,
+        "maximum_changed_pixels_percent": 31.845,
+        "mean_changed_pixels_percent": 1.18
+      },
+      "files": {
+        "sessions-5aa9f3376005.gif": {
+          "bytes": 275241,
+          "sha256": "5aa9f3376005da63069ed4e75ebc12e2b3ce2b60e71bf50d67262b1e010c8446"
+        },
+        "sessions-7bacc2eee799.mp4": {
+          "bytes": 80524,
+          "sha256": "7bacc2eee799c637ef38c0bb08e3d4bc10604c8289ffd9335ce6eb91cda3c959"
+        },
+        "sessions-poster-bebfc3023add.png": {
+          "bytes": 84167,
+          "sha256": "bebfc3023add6a54877254b9f78907067ee7b9c2486942437211c937994ff165"
+        }
+      }
+    },
+    {
+      "slug": "composer",
+      "caption": "Draft a prompt and add a file reference.",
+      "disclosure": "Recorded in Helios using a fictional project and staged conversations.",
+      "width": 1080,
+      "height": 168,
+      "fps": 12,
+      "duration": 8.25,
+      "loop_count": 0,
+      "source_capture": "03-first-chat-raw.mp4",
+      "source_sha256": "a46b97b2bbe4c80072382e8fa37443f1725d7a371bab8e14a3ac54b96e4b050e",
+      "source_segments_seconds": [
+        {
+          "start": 10.85,
+          "duration": 8.25
+        }
+      ],
+      "crop_from_1600x900": {
+        "x": 310,
+        "y": 700,
+        "width": 1280,
+        "height": 198
+      },
+      "full_tour_chapter_start_seconds": 106.566667,
+      "motion": {
+        "decoded_frames": 99,
+        "unique_frames": 37,
+        "changing_frame_pairs": 36,
+        "maximum_changed_pixels_percent": 15.834,
+        "mean_changed_pixels_percent": 0.53
+      },
+      "files": {
+        "composer-5064c50cc15b.gif": {
+          "bytes": 54803,
+          "sha256": "5064c50cc15b095b9067f1891dac6c16841011004a22e64d4e261329d7b85b3a"
+        },
+        "composer-8f902588d16f.mp4": {
+          "bytes": 19524,
+          "sha256": "8f902588d16ff1fb651a2bb441e22c83104fce12509d8023bb3f8ce007ddcd61"
+        },
+        "composer-poster-79c59746b2bd.png": {
+          "bytes": 33576,
+          "sha256": "79c59746b2bd3925da3741e34a1bd64961e61881c124525573527e1f040605e0"
+        }
+      }
+    },
+    {
+      "slug": "git-review",
+      "caption": "Stage and unstage a Git hunk without leaving the chat.",
+      "disclosure": "Recorded in Helios using a fictional project and staged conversations.",
+      "width": 1080,
+      "height": 494,
+      "fps": 12,
+      "duration": 10.83,
+      "loop_count": 0,
+      "source_capture": "09-review-changes-raw.mp4",
+      "source_sha256": "bef64f362579b2650b6ce1c68aaf6fa2a00896855854998dffbdd120b3a36a67",
+      "source_segments_seconds": [
+        {
+          "start": 18.9,
+          "duration": 10.8
+        }
+      ],
+      "crop_from_1600x900": {
+        "x": 310,
+        "y": 110,
+        "width": 1286,
+        "height": 588
+      },
+      "full_tour_chapter_start_seconds": 421.566667,
+      "motion": {
+        "decoded_frames": 130,
+        "unique_frames": 73,
+        "changing_frame_pairs": 129,
+        "maximum_changed_pixels_percent": 2.272,
+        "mean_changed_pixels_percent": 0.117
+      },
+      "files": {
+        "git-review-3a2348523f66.gif": {
+          "bytes": 213218,
+          "sha256": "3a2348523f66cdf0f81546313a8d9d2d365fce0339e4fabced3583a2ae26d477"
+        },
+        "git-review-77275b66a536.mp4": {
+          "bytes": 56175,
+          "sha256": "77275b66a5362cc9559332f1fef3f2bc1ff5e58b0924a8f3a82564ddffaa1e40"
+        },
+        "git-review-poster-3bd98881e56b.png": {
+          "bytes": 133636,
+          "sha256": "3bd98881e56b9ada73f9fd9d439a722a8257338691957c1fda7555e33c6af67a"
+        }
+      }
+    },
+    {
+      "slug": "browser-preview",
+      "caption": "Open a local preview, then attach its screenshot to the draft.",
+      "disclosure": "Recorded in Helios using a fictional project and staged conversations.",
+      "width": 1080,
+      "height": 608,
+      "fps": 12,
+      "duration": 7.91,
+      "loop_count": 0,
+      "source_capture": "10-browser-and-screenshots-raw.mp4",
+      "source_sha256": "9a3c25c61ecf0bfd676eecd88ba682a12bff61f994ad1c7a80384e479b1c8b42",
+      "source_segments_seconds": [
+        {
+          "start": 1.7,
+          "duration": 3.4
+        },
+        {
+          "start": 18.35,
+          "duration": 4.5
+        }
+      ],
+      "crop_from_1600x900": {
+        "x": 0,
+        "y": 0,
+        "width": 1600,
+        "height": 900
+      },
+      "full_tour_chapter_start_seconds": 472.8,
+      "motion": {
+        "decoded_frames": 95,
+        "unique_frames": 95,
+        "changing_frame_pairs": 94,
+        "maximum_changed_pixels_percent": 39.289,
+        "mean_changed_pixels_percent": 1.35
+      },
+      "files": {
+        "browser-preview-09c48384e3ae.gif": {
+          "bytes": 384736,
+          "sha256": "09c48384e3ae7bd803b5d54be42314d94b08b61f0503456b76cb2e20d8e84e21"
+        },
+        "browser-preview-1bd125273cfc.mp4": {
+          "bytes": 104581,
+          "sha256": "1bd125273cfcf0c1207a5cd871b9e85cecb4d2c65f6affb679c665cd60a97ed3"
+        },
+        "browser-preview-poster-7b5f9e81b75a.png": {
+          "bytes": 193586,
+          "sha256": "7b5f9e81b75aff5efb6927dccaaaec49e19364262ebb5c4abc1274494c4dc64a"
+        }
+      }
+    }
+  ],
+  "total_gif_bytes": 927998,
+  "verification": {
+    "full_gif_decode": "passed",
+    "beginning_middle_end_visual_inspection": "passed for all four final GIFs",
+    "privacy_review": "Fictional project and home paths only; staged conversation disclosure supplied separately.",
+    "mp4_audio_streams": 0,
+    "gif_loop": "infinite"
+  }
+}

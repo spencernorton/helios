@@ -14,3 +14,7 @@ Never commit credentials, private prompts, personal paths or local infrastructur
 details. Public documentation and media should explain any staged provider
 content. Record meaningful changes as a new top entry in AGENTS/journal.md;
 preserve earlier entries.
+
+Prefer short GIFs of real app interactions to static feature screenshots in the
+public presentation. Keep demos fictional and staged provider content explicit;
+offer still fallbacks and link the complete narrated walkthrough.

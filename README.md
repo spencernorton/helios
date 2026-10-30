@@ -18,14 +18,9 @@
   <a href="https://buy.stripe.com/8x26oH2U44f65TRe574wM04"><img alt="Donate" src="https://img.shields.io/badge/donate-Stripe-635bff.svg?logo=stripe&logoColor=white"></a>
 </p>
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/overview-dark.png">
-    <img alt="Helios on Linux with project sessions, a staged coding conversation, readable tool results and model and permission controls" src="docs/screenshots/overview-light.png" width="900">
-  </picture>
-</p>
+<p align="center"><picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/demos/browser-preview-poster-7b5f9e81b75a.png"><img src="docs/demos/browser-preview-09c48384e3ae.gif" alt="Preview a local app and attach its screenshot to the chat." width="900"></picture></p>
 
-<p align="center"><sub>The current Helios interface, captured in light and dark mode with a fictional project and staged agent replies. Watch the narrated demos for the controls and workspace.</sub></p>
+<p align="center"><sub>Real app actions in a fictional project; provider replies are staged. <a href="https://www.youtube.com/watch?v=rnsyTwf7WOc">Watch the full narrated tour</a> · <a href="https://norvitech.com/helios/features/">Explore the GIF demos</a></sub></p>
 
 Helios is a free, open-source Linux desktop app for developers who use coding
 agents. Run Claude Code, OpenAI Codex, Google Antigravity, Muse Code, Kimi
@@ -50,6 +45,8 @@ hunks, send review comments back to the agent, commit, push and open a pull
 request. Start a chat in an optional Git worktree to keep its file changes
 separate from your main checkout.
 
+<p align="center"><picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/demos/git-review-poster-3bd98881e56b.png"><img src="docs/demos/git-review-3a2348523f66.gif" alt="Inspect the actual diff, then stage and unstage a Git hunk." width="900"></picture></p>
+
 **Go back or try another direction.** Rewind restores files from a
 checkpoint taken before a message in a Git repository; ignored files and
 external effects are outside its coverage. Fork a Claude conversation from a
@@ -64,6 +61,15 @@ spend controls, described in the [user guide](docs/user-guide.md#budgets).
 in Claude chats, discovered commands and skills; open the command palette
 with `Ctrl+Shift+P`. Helios follows your desktop's light/dark theme and accent
 colour, with an optional translucent sidebar.
+
+<details>
+<summary>More app demos: conversations and file references</summary>
+
+<p align="center"><picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/demos/sessions-poster-bebfc3023add.png"><img src="docs/demos/sessions-5aa9f3376005.gif" alt="Switch between project conversations without losing the workspace." width="900"></picture></p>
+
+<p align="center"><picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/demos/composer-poster-79c59746b2bd.png"><img src="docs/demos/composer-5064c50cc15b.gif" alt="Draft a prompt and add a project-file reference." width="900"></picture></p>
+
+</details>
 
 ## Install
 
