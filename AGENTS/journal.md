@@ -1,5 +1,15 @@
 # Helios — Session Journal
 
+## 2026-10-29 — Show real app interactions with short GIFs
+
+- Replace the README's static hero with an app-action loop; add Git review,
+  conversation switching and project-file references.
+- Keep fictional project data and staged provider replies explicit. Provide
+  reduced-motion stills and link the narrated full tour and hosted guide.
+- Use reviewed recordings of the current app; preserve the application version
+  and runtime. Validate decoded motion, media sizes/hashes and documentation
+  links, then run the required repository CI checks.
+
 ## 2026-10-29 — Complete the hosted user guide and refresh reference details
 
 - Link the searchable website guide from the README and assistant index.

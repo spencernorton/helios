@@ -1,0 +1,13 @@
+Recorded in Helios using a fictional project and staged conversations.
+
+sessions.gif
+Switch between saved project conversations.
+
+composer.gif
+Draft a prompt and add a file reference.
+
+git-review.gif
+Stage and unstage a Git hunk without leaving the chat.
+
+browser-preview.gif
+Open a local preview, then attach its screenshot to the draft.
