@@ -142,13 +142,14 @@ by provider.
 
 ## Documentation
 
+- [Complete user guide](https://norvitech.com/helios/docs/) — searchable setup instructions for every provider, everyday workflows, workspace tools, backups and troubleshooting.
 - [Quickstart](docs/quickstart.md) — install, sign in and finish your first task.
 - [User guide](docs/user-guide.md) — sessions, permissions, goals, usage, browser, terminal, changes and shortcuts.
 - [Google account setup](docs/google-subscription.md) — Antigravity sign-in and provider limits.
 - [Kimi membership setup](docs/kimi-subscription.md) — native ACP sign-in, models and supported features.
 - [Agent setup](docs/agent-setup.md) — install, configure and verify from a shell; [llms.txt](llms.txt) indexes the docs.
 - [Feature walkthrough](https://norvitech.com/helios/features/) and [provider guide](https://norvitech.com/helios/providers/) — the current workbench and its integrations.
-- [Two narrated demos](https://norvitech.com/helios/demos/) — watch the app with captions and readable transcripts.
+- [Narrated demos](https://norvitech.com/helios/demos/) — watch the app with captions and readable transcripts.
 - [Changelog](CHANGELOG.md) — changes by release.
 
 ## Where your data lives

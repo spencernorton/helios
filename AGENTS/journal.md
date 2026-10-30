@@ -1,5 +1,16 @@
 # Helios — Session Journal
 
+## 2026-10-29 — Complete the hosted user guide and refresh reference details
+
+- Link the searchable website guide from the README and assistant index.
+- Correct title-generation defaults, app-state relocation and native provider
+  capability details in the source reference guides. Keep the application
+  version and runtime behaviour unchanged.
+- Document current image routes, reasoning controls, Kimi permission mapping
+  and the scope of native settings. Add concise contributor guidance.
+- Validation: documentation links and fragments, release consistency and
+  existing CI acceptance checks; no provider request is needed for this change.
+
 ## 2026-10-29 — Refresh public documentation and first-run guidance
 
 - Rework the README around the six provider integrations, the project workspace and a clear first chat. Add a quickstart and links to the feature, provider and demonstration guides.

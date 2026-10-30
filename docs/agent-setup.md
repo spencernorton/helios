@@ -18,10 +18,10 @@ installed version before expecting the current feature set.
 | Desktop file (APT) | `/usr/share/applications/dev.norvi.Helios.desktop`, `Exec=helios` |
 | Desktop file (source, after `scripts/install-desktop.sh`) | `~/.local/share/applications/dev.norvi.Helios.desktop`, `Exec=<checkout>/scripts/helios` |
 | Icons | `icons/hicolor/{16,24,32,48,64,128,256,512}x<N>/apps/dev.norvi.Helios.png` under `/usr/share` (APT) or `~/.local/share` (source) |
-| State directory | `~/.helios`, created on first use; `logs/` and `work/` are 0700 from creation and the directory itself is chmod 0700 on the first state-file write (at the latest when the window closes and `ui-state.json` is saved). `HELIOS_STATE_DIR` (read on every call; empty means unset) relocates only part of it — next two rows |
-| Files that honour `HELIOS_STATE_DIR` | `logs/helios.log`, `work/work.db`, `conversation-perms.json`, `session-providers.json`, `checkpoints.json`, `checkpoint-trash/`, `session-goals.json`, `openrouter-routes.json`, `openrouter-sessions/`, `openrouter-context/`, `AGENTS.md` (optional input), `estate-mcp.json` (optional input), `project-perms.json` (legacy) |
-| Files fixed to `~/.helios` whatever `HELIOS_STATE_DIR` says | `ui-state.json`, `openrouter.key`, `openrouter-models.json`, `model-catalog.json`, `title-cache.json`, `project-names.json`, `session-archive/`, `backups/` |
-| Full relocation | Override `HOME`; every path above goes through `Path.home()` |
+| State directory | `~/.helios` by default, created on first use. `HELIOS_STATE_DIR` selects the app-owned state root; private directories and files use the permissions described below |
+| Files that honour `HELIOS_STATE_DIR` | App-owned settings, keys/catalogues, title/project caches, archives, backups, logs, media, browser state, managed worktrees, local title models, checkpoints, goals, provider mirrors and Work data |
+| Data outside that root | Native provider credential/history stores, Claude projects and memory, optional tandem state and `~/.cache/helios/titlegen/`; other explicit provider-home overrides also need separate handling |
+| Demo/test isolation | Use a disposable HOME and XDG directories, and review explicit provider-home overrides. `HELIOS_STATE_DIR` alone does not isolate provider histories or credentials |
 | Log file | `<state dir>/logs/helios.log`, rotating at 1,000,000 bytes with 3 backups (`helios.log.1`..`3`), directory 0700; the same lines also go to stderr |
 | Settings file | `~/.helios/ui-state.json` (flat JSON object, 0600, written atomically via `ui-state.json.tmp`) |
 | Per-conversation file | `<state dir>/conversation-perms.json` |
@@ -378,6 +378,8 @@ OpenRouter or a metered API route. See
 
 ## 6. Configure without the GUI
 
+Paths written as `~/.helios` below show the default. Use the configured app-state root when `HELIOS_STATE_DIR` is set. Edit application settings only while Helios is closed.
+
 ### 6.1 `~/.helios/ui-state.json`
 
 Two rules:
@@ -402,7 +404,8 @@ The file is written atomically (`ui-state.json.tmp` then rename) with `indent=2,
 | `effort_openai` | — | — | — | Written by the app but read back as `""` on purpose: OpenAI effort is conversation-owned and never a global default. Do not set it |
 | `color_scheme` | string | `"auto"` | `auto`, `light`, `dark` | Theme (Settings → Appearance → Theme). Anything else reads as `auto` |
 | `glass_sidebar` | boolean | `false` | JSON `true`/`false`, or the strings `"true"`/`"false"` | Translucent sessions sidebar. Any other truthy value does not enable it |
-| `title_backend` | string | `"ollama"` | `ollama`, `claude` | Session-title generator. Only the exact value `claude` opts into metered Claude haiku titles (`--max-budget-usd 0.05` per call); anything else means Ollama |
+| `title_backend` | string | `"first_message"` | `first_message`, `ollama`, `builtin`, `claude` | First-message titles make no model call; unknown values also make none. Ollama needs its server/model; builtin needs installed `llama-cli` and can download a selected GGUF; Claude makes an extra CLI model request using the active account/API allowance with its supported per-title guard |
+| `builtin_title_model` | string | `"qwen2.5-0.5b"` | `qwen2.5-0.5b`, `llama-3.2-1b`, `phi-3-mini` | Selected model for the opt-in local title backend; requires installed `llama-cli` |
 | `ollama_url` | string | `"http://localhost:11434"` | `http://` or `https://` URL with a host, no credentials, query or fragment | Ollama server for titles |
 | `ollama_title_model` | string | `"qwen2.5-coder:14b"` | non-empty tag, at most 256 characters, no whitespace | Ollama model for titles |
 | `notify_on_finish` | boolean | `true` | `true`, `false` | Desktop notification when a background session finishes or asks a question |
@@ -569,6 +572,8 @@ also offers Accept edits and Bypass. Auto and Never ask are legacy aliases,
 not distinct Google choices; existing saved aliases use the sandboxed policy.
 The headless integration cannot show or answer interactive CLI approvals.
 
+Kimi maps both `dontAsk` and `bypassPermissions` to native YOLO. Muse maps modes through MSP and establishes sandbox posture at process spawn. Google uses the distinct headless modes in its setup guide; identical labels do not establish identical isolation.
+
 ### 8.2 Workflow modes
 
 A separate axis from permissions: `default` (label Default, all providers) and `plan` (label Plan, Codex only, offered only when the App Server's `collaborationMode/list` advertises it). Selecting the Plan workflow on Codex forces permission mode `plan` (read-only sandbox, `approvalPolicy: never`) for the thread and every turn. Stored as `workflow_mode` in `conversation-perms.json` (omitted when `default`).
@@ -618,7 +623,7 @@ When the Claude CLI supplies `permission_suggestions` with a tool request, the a
 |---|---|
 | `HELIOS_CLAUDE_BINARY` | Step 1 of the `claude` search |
 | `HELIOS_CODEX_BINARY` | Step 1 of the `codex` search |
-| `HELIOS_STATE_DIR` | Relocates the files listed in Facts at a glance (partial); read on every call |
+| `HELIOS_STATE_DIR` | App-owned state root (default `~/.helios`), including settings, keys, catalogues, caches, archives, backups, media, browser state, managed worktrees, local title models and Work data. Native provider stores and other locations in section 9 remain separate |
 | `HELIOS_DEBUG` | Any non-empty value → DEBUG logging with driver wire tracing; read at startup |
 | `HELIOS_LOG_LEVEL` | Python level name, case-insensitive, default `INFO`; an unknown name silently falls back to `INFO`; ignored when `HELIOS_DEBUG` is set |
 | `HELIOS_CODEX_TRANSPORT` | Only `exec` has an effect: every GPT session refuses to start. Leave unset |
@@ -635,25 +640,25 @@ When the Claude CLI supplies `permission_suggestions` with a tool request, the a
 
 ## 9. Data and network inventory
 
-### 9.1 Under `~/.helios`
+### 9.1 Under the app-state root (default `~/.helios`)
 
 | Path | Read / written | Purpose |
 |---|---|---|
 | `logs/helios.log` (+ `.1`..`.3`) | W | Log, created before anything else, even when the dependency check fails |
-| `ui-state.json` | R at startup, W on change and window close | Settings (section 6). Fixed to `~/.helios` |
+| `ui-state.json` | R at startup, W on change and window close | Settings (section 6). Under the app-state root |
 | `conversation-perms.json` | R at startup, W on change | Per-conversation execution overrides |
 | `session-providers.json` | R/W | `session_id → anthropic\|openai\|openrouter` |
 | `checkpoints.json`, `checkpoint-trash/<tree12>-<unix>/` | R/W | Rewind metadata (max 50 per session); files displaced by a restore are moved here, never deleted |
 | `session-goals.json` | R/W | Goals per session or Work |
 | `work/work.db` (+ `-wal`, `-shm` while running), `work/<work_id>/artifacts/<sha256>` | R/W | Work graph (SQLite, WAL mode, `user_version` 11); directory 0700, db 0600. Created at first launch. If it cannot be opened Helios logs `Work graph unavailable; using legacy sessions` and continues |
-| `openrouter.key` | R | OpenRouter key (5.3). Fixed to `~/.helios` |
-| `openrouter-models.json`, `openrouter-routes.json`, `openrouter-sessions/<id>.json`, `openrouter-context/<sha256>.json` | R/W | Catalog cache (fixed to `~/.helios`), pinned routes (TTL 3600 s), authoritative message histories, context archive |
-| `model-catalog.json` | R/W | Claude model scan cache keyed on the binary's path, mtime and size; refreshed at startup and every 6 hours. Fixed to `~/.helios` |
-| `title-cache.json`, `project-names.json` | R/W | Generated titles; project display names. Fixed to `~/.helios` |
-| `session-archive/<project-dirname>/<uuid>.jsonl` | W | Transcripts moved out of `~/.claude/projects` (9.2). Fixed to `~/.helios` |
-| `backups/memory/...`, `backups/context/...` | W | Last 5 versions of each memory file, `CLAUDE.md` or `MEMORY.md` saved from the editor. Fixed to `~/.helios` |
+| `openrouter.key` | R | OpenRouter key (5.3). Under the app-state root |
+| `openrouter-models.json`, `openrouter-routes.json`, `openrouter-sessions/<id>.json`, `openrouter-context/<sha256>.json` | R/W | Catalog cache (under the app-state root), pinned routes (TTL 3600 s), authoritative message histories, context archive |
+| `model-catalog.json` | R/W | Claude model scan cache keyed on the binary's path, mtime and size; refreshed at startup and every 6 hours. Under the app-state root |
+| `title-cache.json`, `project-names.json` | R/W | Generated titles; project display names. Under the app-state root |
+| `session-archive/<project-dirname>/<uuid>.jsonl` | W | Transcripts moved out of `~/.claude/projects` (9.2). Under the app-state root |
+| `backups/memory/...`, `backups/context/...` | W | Last 5 versions of each memory file, `CLAUDE.md` or `MEMORY.md` saved from the editor. Under the app-state root |
 | `AGENTS.md` | R (optional) | Global instruction file for OpenRouter sessions, loaded before the repository's `AGENTS.override.md`/`AGENTS.md`; absent is fine |
-| `estate-mcp.json` | R (optional) | Extra MCP servers for Codex/OpenRouter sessions; absent means none. Optional, inert unless configured |
+| `estate-mcp.json` | R (optional) | Extra MCP servers for supported Codex/OpenRouter/Kimi sessions; absent means none. Optional, inert unless configured |
 | `project-perms.json` | R (legacy) | Retired per-directory map; never written. Do not create |
 
 Elsewhere: `$XDG_DATA_HOME/helios/tool_snapshot.json` and `codex_mcp_snapshot.json` (default `~/.local/share/helios/`; the last Claude session's tool list and the last Codex MCP inventory, shown in Settings → Tools), `~/.cache/helios/titlegen/` (working directory for `claude`-backed title generation, excluded from project discovery), and `~/.tandem` (read-only, optional Missions pane; absent means no missions).
@@ -677,7 +682,7 @@ Throwaway rule for display: sessions whose working directory is `/tmp`, under `/
 
 | Endpoint | When |
 |---|---|
-| `http://localhost:11434/api/generate` (POST; `ollama_url`) | Default title backend. On every sidebar reload, for the 30 most recent untitled local sessions, one request at a time, 30 s timeout. Ollama absent: logged at DEBUG (`ollama title failed`), first-message titles remain, nothing else changes |
+| `http://localhost:11434/api/generate` (POST; `ollama_url`) | Opt-in Ollama title backend. On every sidebar reload, for the 30 most recent untitled local sessions, one request at a time, 30 s timeout. Ollama absent: logged at DEBUG (`ollama title failed`), first-message titles remain, nothing else changes |
 | `http://localhost:11434/api/tags` (GET) | Only from Settings → Behavior "Save and check", 5 s timeout |
 | `claude --print --model haiku --max-budget-usd 0.05 ...` | Only when `title_backend` is `claude`; skipped silently if the CLI lacks `--max-budget-usd` |
 | `https://openrouter.ai/api/v1/models` | Only with a key: when Settings is opened or a key is saved (force refresh); periodic refreshes read the cache |
@@ -687,7 +692,7 @@ Throwaway rule for display: sessions whose working directory is `/tmp`, under `/
 | `/run/helios-router/router.sock` (local Unix socket, `$HELIOS_ROUTER_SOCKET`) | At startup and every 300 s; an absent socket is silently "unavailable". Optional broker, inert unless configured |
 | Anthropic and OpenAI APIs | Contacted by the `claude` and `codex` CLIs themselves, never by Helios |
 
-Helios itself makes no Internet request at startup unless the sticky model is an OpenRouter model. Every Helios-side network failure is a logged warning, never fatal.
+Network activity depends on the active provider, catalogue/account checks, browser pages and any selected title backend. First-message titles make no title-model request. Optional integration failures are reported without making those services a prerequisite for ordinary chats.
 
 ### 9.4 Child-environment scrub
 
@@ -725,7 +730,7 @@ The interactive Claude session additionally receives `CLAUDE_CODE_ENABLE_TODO_TO
 | `ImportError: cannot import name 'StrEnum' from 'enum'` or similar at launch from source | Python older than 3.11; the floor is not checked at startup | Use Python 3.11 or newer as the first `python3` on `PATH` (`scripts/helios` uses it) |
 | `Helios can't start because some system libraries are too old:` on stderr, exit 1 | GTK < 4.10, libadwaita < 1.5 or GtkSourceView < 5 | Upgrade `gir1.2-gtk-4.0`, `gir1.2-adw-1`, `gir1.2-gtksource-5` and the libraries behind them (section 4); Ubuntu 24.04 and newer have them |
 | `ValueError: Namespace Adw not available` (or Gtk, GtkSource) | The `gir1.2-*` typelib package is missing | Install the package named in the error |
-| Titles are the first message, never generated | No Ollama at `ollama_url` (default `http://localhost:11434`), or `ollama_title_model` (default `qwen2.5-coder:14b`) is not pulled. The failure is logged at DEBUG only | Run Ollama and pull the model, change the two keys, or set `title_backend` to `claude` (metered). Not an error |
+| Titles are the first message, never generated | This is the default `first_message` backend and is expected | Check Behavior → Title Generation Backend before diagnosing a model service. Optional Ollama needs its server/model; builtin needs `llama-cli`; Claude makes an extra account/API model request. No change is required for first-message titles |
 | Rewind dialog shows `No checkpoints yet` — `A checkpoint is taken before each message you send, in sessions whose folder is a git repository.` | The chat's working directory is not inside a git worktree, or `git` is not installed | Use a git repository as `default_cwd`; install `git` (only a Recommends of the package) |
 | Toast `Sent without a checkpoint — the snapshot was taking too long. Rewind is unavailable for this message.` | The pre-turn `git` snapshot exceeded its 4000 ms deadline | Large or slow worktree; the message was still sent |
 | Every chat is read-only | Working directory is `$HOME` | Set `default_cwd` (6.3) |

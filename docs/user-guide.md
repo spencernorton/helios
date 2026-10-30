@@ -66,15 +66,14 @@ every 24 h, at most 8 per run; a session with a live agent process is skipped.
 Claude Code's own `claude --resume` no longer sees an archived session; `mv`
 the file back into `~/.claude/projects/<encoded-cwd>/` to restore it.
 
-**Titles.** Titles come from a local Ollama by default
-(`http://localhost:11434`, model `qwen2.5-coder:14b` — pull it, or change
-*Title model* in Settings → Behavior and press *Save and check*). Each sidebar
-reload queues titles for the 30 most recent untitled sessions; when Ollama is
-not running the failure is silent and the first message stays the title.
-Turning the *Generate session titles with Ollama* switch **off** does not
-disable titling: it switches to metered Claude titles (`claude --print --model
-haiku`, capped at $0.05 per title). Right-click a row → *Rename…* sets a
-title by hand.
+**Titles.** Settings → Behavior → *Title Generation Backend* defaults to
+*First message (no model)*. Optional choices are *Ollama* (a separately
+running server and configured model), *Built-in Local Engine* (an installed
+`llama-cli`; the selected GGUF model can be downloaded if absent), and
+*Claude* (an extra CLI model request consuming the active account or API
+allowance, with the supported $0.05 per-title CLI guard). Subscription usage
+is not necessarily a separate dollar charge. Unknown backend values also
+make no model call. Right-click a row → *Rename…* sets a title by hand.
 
 **Starting a chat.** Pick a model in the toolbar, choose a folder, type,
 and send with `Ctrl+Enter`. `Enter` is a newline. Typing `/` lists Helios's
@@ -103,8 +102,8 @@ resend. GPT chats fork at the end from the command palette.
 clipboard), drop an image file, or press the camera button to take a
 screenshot through the desktop portal (pick a window or an area). Each becomes
 an `@path` reference in your message — pasted images are saved under
-`~/.helios/media/` — and appears as a thumbnail above the text. Claude, GPT
-and Muse receive the image itself, not just the path (images over 5 MB stay a
+`~/.helios/media/` — and appears as a thumbnail above the text. Claude, GPT,
+Muse and Kimi receive the image itself, not just the path (images over 5 MB stay a
 path); Gemini and OpenRouter get the path as text.
 
 **Browser pane for agents.** Besides opening, reading and screenshotting
@@ -138,14 +137,13 @@ Settings → Defaults.
 - **Workflow** is *Default* for every provider, and additionally *Plan* for
   GPT when the Codex App Server advertises native plan mode. The Plan
   workflow forces read-only permissions for that thread.
-- **Reasoning** is `off`, `low`, `medium`, `high` (default), `xhigh` or
-  `max`. Claude gets `--effort <level>` (on a CLI without `--effort`, an
-  equivalent `--max-thinking-tokens` value); `off` is always
-  `--max-thinking-tokens 0`. OpenRouter offers `off` to `high` only for
-  models whose catalog row advertises reasoning. GPT uses the levels the App
-  Server lists for the model.
-- **Permissions** are the six modes below. The key is what the CLI receives
-  and what you write to a state file (see [Settings keys](#settings-keys)).
+- **Reasoning** follows the provider and model's advertised capabilities.
+  Available levels, defaults and whether reasoning can be disabled differ.
+  Codex uses App Server's levels; OpenRouter preserves its model's exact
+  supported levels and mandatory-reasoning policy. Controls can be absent
+  when the model explicitly does not support them.
+- **Permissions** use the stored Helios identifiers below; these are not
+  literal CLI arguments. The table covers Claude, Codex and OpenRouter.
 
 | Mode | Key | Claude | GPT (Codex) | OpenRouter |
 |---|---|---|---|---|
@@ -159,6 +157,12 @@ Settings → Defaults.
 Where the Codex network is off, a command that needs it fails inside the
 sandbox: in Ask that raises an approval prompt, in Plan and Never ask it is
 refused.
+
+Kimi maps both **Never ask** and **Bypass** to its native YOLO mode; Never ask
+must not be treated as a restricted refusal mode there. Muse maps permissions
+through MSP and establishes sandbox posture when its process starts. Google
+uses the distinct modes described above. Read each provider's native policy
+before assuming the same label creates the same isolation.
 
 Two rules hold whatever you pick:
 
@@ -322,8 +326,9 @@ model for new chats (persisted only by the **Save chat defaults** button at
 the bottom of the page) and the default working directory (saved as soon as
 you choose it). *Appearance* — colour scheme (auto, light, dark) and a
 translucent sessions sidebar. *Behavior* — notifications when a background
-session finishes or a tandem mission is gated, Ollama titles (server URL and
-model, persisted by *Save and check*), other machines' sessions.
+session finishes or a tandem mission is gated, the four-choice title backend
+(First message is the default), and other machines' sessions. Optional
+Ollama server/model edits are persisted by *Save and check*.
 *Diagnostics* — the log file.
 
 **Providers.** Each native provider has discovery and account information
@@ -359,7 +364,8 @@ rewritten whole on every change, so edit it only while Helios is closed.
 | Appearance → Translucent sessions sidebar | `glass_sidebar` | `true` · `false` |
 | Behavior → Notify when a background session finishes | `notify_on_finish` | `true` (default) · `false` |
 | Behavior → Notify when a tandem mission is gated | `notify_on_mission_gate` | `true` (default) · `false` |
-| Behavior → Generate session titles with Ollama | `title_backend` | `ollama` (on, default) · `claude` (off) |
+| Behavior → Title Generation Backend | `title_backend` | `first_message` (default, no model) · `ollama` · `builtin` · `claude`; unknown values make no model call |
+| Behavior → Built-in Model | `builtin_title_model` | `qwen2.5-0.5b` (default) · `llama-3.2-1b` · `phi-3-mini`; requires installed `llama-cli` |
 | Behavior → Ollama server URL | `ollama_url` | default `http://localhost:11434` |
 | Behavior → Title model | `ollama_title_model` | default `qwen2.5-coder:14b` |
 | Behavior → Show other machines' sessions | `show_pool_sessions` | `true` · `false` (default) |
@@ -373,11 +379,13 @@ files each key lives in, is in [agent-setup.md](agent-setup.md).
 
 ## Environment variables
 
+Paths written as `~/.helios` are the default app-state location. A configured `HELIOS_STATE_DIR` relocates app-owned paths; native provider data remains separate.
+
 | Variable | Effect |
 |---|---|
 | `HELIOS_CLAUDE_BINARY` | Path of the `claude` binary to use, ahead of `PATH`; must be an executable file, otherwise it is silently skipped |
 | `HELIOS_CODEX_BINARY` | Path of the `codex` binary, ahead of `PATH` and `~/.local/bin/codex` |
-| `HELIOS_STATE_DIR` | Root for `logs/`, `work/work.db`, `checkpoints.json`, `checkpoint-trash/`, `conversation-perms.json`, `session-providers.json`, `session-goals.json`, `openrouter-sessions/`, `openrouter-routes.json`, `openrouter-context/`, `AGENTS.md`, `estate-mcp.json` (optional input) and `project-perms.json` (legacy) (default `~/.helios`). `ui-state.json`, `openrouter.key`, `openrouter-models.json`, `model-catalog.json`, `title-cache.json`, `project-names.json`, `session-archive/` and `backups/` always live in `$HOME/.helios` regardless. To relocate everything, run with a different `HOME` |
+| `HELIOS_STATE_DIR` | Helios app-state root (default `~/.helios`), including UI settings, keys/catalogues, title/project caches, archives, backups, media, browser state, managed worktrees, checkpoints, goals and Work data. Native provider stores, Claude projects/memory, tandem state and the title-generation working cache can remain elsewhere; this variable alone does not isolate a demonstration environment |
 | `HELIOS_DEBUG` | Any non-empty value: everything at DEBUG, including the Claude driver's spawn argv, the type of every record the CLI emits, its stderr and its exit code; overrides `HELIOS_LOG_LEVEL` |
 | `HELIOS_LOG_LEVEL` | Python logging level name (`DEBUG` … `CRITICAL`); default `INFO`; an unknown name is treated as `INFO`. `WARNING` quiets startup |
 | `HELIOS_CODEX_TRANSPORT` | Leave unset; `exec` refuses every GPT chat |
