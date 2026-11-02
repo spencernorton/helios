@@ -80,6 +80,8 @@ def test_delete_stops_drivers_first_and_skips_external_holders(tmp_path, monkeyp
         emit=emit,
         _set_select_mode=lambda _on: None,
         reload=lambda **kw: reloads.append(kw),
+        _removed_sessions={},
+        _schedule_removed_recheck=lambda: None,
         get_root=lambda: None,
     )
     SessionList._on_delete_response(fake, None, "delete", [ours, theirs, gone])
@@ -93,3 +95,5 @@ def test_delete_stops_drivers_first_and_skips_external_holders(tmp_path, monkeyp
     ]
     assert not ours.path.exists()
     assert theirs.path.exists()  # another process would only rewrite it
+    # Only what was removed is remembered: a refused external holder stays listable.
+    assert fake._removed_sessions == {"ours": "delete", "gone": "delete"}

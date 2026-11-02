@@ -1,5 +1,27 @@
 # Helios — Session Journal
 
+## 2026-11-02 — Deleted sessions no longer return as ghost rows (0.115.1)
+
+- Spencer deleted a session and the row came back as "Session 82f94fae". The
+  file on disk held only `last-prompt`, `atis-latch` and `cost-state`: the
+  exit trailer the claude CLI writes on SIGTERM. `_teardown_driver` only
+  *starts* the stop (SIGTERM now, SIGKILL backstop at 1.6 s), the unlink runs
+  immediately, and the dying process recreates `<id>.jsonl` afterwards. A
+  fresh no-content stub sits inside `_SIDECAR_DISPLAY_GRACE_S`, so the next
+  reload listed it. Archive had the same race.
+- Fix: `SessionList._removed_sessions` records each id removed this run and
+  how (delete/archive). `projects.purge_removed_sessions` runs on every
+  `reload()`: it re-applies the same removal to a late-written file and never
+  lists that id again, even if the late write has real content (an in-flight
+  turn). A one-shot recheck 3 s after the removal clears the file from disk
+  without waiting for some other reload. Read-only pool rows are never touched.
+- Not covered: if Helios quits within the stop window, a contentless stub can
+  flash for up to 15 s on the next launch; the orphan sweep archives it after
+  10 minutes.
+- Validation: tests/test_deleted_session_ghost.py (6 helper tests plus 3 that
+  go through the real SessionList delete/archive path; those 3 fail on main
+  with `{'doomed', 'kept'} == {'kept'}`), full suite, ruff.
+
 ## 2026-10-30 — Inline Archive/Delete confirm on sidebar rows (0.115.0)
 
 - Spencer asked for no pop-up on a row's delete: the trash icon now crossfades

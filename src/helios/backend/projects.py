@@ -19,6 +19,7 @@ import shutil
 import socket
 import time
 from dataclasses import dataclass
+from typing import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -605,6 +606,65 @@ def drop_empty_sessions(
             or session_has_content(s.path)
         ):
             out.append(s)
+    return out
+
+
+def delete_session_files(session: Session) -> None:
+    """Unlink a session transcript and its same-named auxiliary directory.
+
+    Raises OSError when the transcript itself cannot be removed; a missing
+    file is not an error. The aux dir (claude sometimes keeps partial state
+    there) is best-effort."""
+    session.path.unlink(missing_ok=True)
+    aux = session.path.with_suffix("")
+    if aux.is_dir():
+        try:
+            shutil.rmtree(aux)
+        except OSError:
+            pass
+
+
+REMOVED_BY_DELETE = "delete"
+REMOVED_BY_ARCHIVE = "archive"
+
+
+def purge_removed_sessions(
+    sessions: list[Session],
+    removed: Mapping[str, str],
+    *,
+    archive: Callable[[Session], object],
+) -> list[Session]:
+    """Drop sessions the user already deleted or archived, removing any file
+    that came back.
+
+    Stopping a session's process is asynchronous: ``claude`` exits up to the
+    driver's SIGKILL backstop after Helios unlinks (or archives) its
+    transcript, and on the way out it appends its exit trailer
+    (``last-prompt``/``atis-latch``/``cost-state``, sometimes the in-flight
+    turn). That recreates ``<id>.jsonl`` and the row returned as a dead
+    "Session <id>" shell. ``removed`` maps each removed id to how it was
+    removed (``REMOVED_BY_DELETE`` / ``REMOVED_BY_ARCHIVE``); the late file
+    gets the same treatment — unlinked, or moved into the archive beside the
+    original — and the row is never shown, whatever the file holds.
+
+    Only LOCAL writable sessions are touched. A file that cannot be removed
+    is still hidden and retried on the next reload."""
+    if not removed:
+        return list(sessions)
+    out: list[Session] = []
+    for s in sessions:
+        how = removed.get(s.session_id)
+        if how is None or s.project.read_only:
+            out.append(s)
+            continue
+        try:
+            if how == REMOVED_BY_ARCHIVE:
+                archive(s)
+            else:
+                delete_session_files(s)
+        except OSError:
+            pass
+        # Hidden either way: the user removed this id.
     return out
 
 

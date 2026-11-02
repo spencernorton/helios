@@ -30,12 +30,16 @@ from gi.repository import Adw, Gdk, GLib, GObject, Gtk  # noqa: E402
 from helios.backend import session_archiver, session_providers
 from helios.backend.project_names import store as name_store
 from helios.backend.projects import (
+    REMOVED_BY_ARCHIVE,
+    REMOVED_BY_DELETE,
     Session,
+    delete_session_files,
     discover_local_sessions,
     discover_pool_sessions,
     drop_empty_sessions,
     ensure_local_project,
     is_throwaway_cwd,
+    purge_removed_sessions,
 )
 from helios.backend.session_state import (
     STATE_AWAITING,
@@ -266,6 +270,13 @@ class SessionList(Gtk.Box):
         # fresh chats). MainWindow pushes updates via set_live_session_ids.
         self._live_session_ids: set[str] = set()
 
+        # Ids the user deleted or archived this run, mapped to how. A stopped
+        # claude process can rewrite its transcript after removal (its exit
+        # trailer), so reload() re-applies the removal instead of showing a
+        # dead "Session <id>" row. See projects.purge_removed_sessions.
+        self._removed_sessions: dict[str, str] = {}
+        self._removed_recheck_id = 0
+
         # Optimistic sidebar rows whose transcript file has not landed yet:
         # the staged fresh chat (PENDING_STAGED_ID) and just-started live
         # sessions under their real provider id. Kept apart from the
@@ -358,8 +369,13 @@ class SessionList(Gtk.Box):
         sel_row = self._listbox.get_selected_row()
         if sel_row is not None and getattr(sel_row, "session", None) is not None:
             keep_ids.add(sel_row.session.session_id)
-        self._local_sessions = drop_empty_sessions(
+        local = purge_removed_sessions(
             discover_local_sessions(),
+            self._removed_sessions,
+            archive=session_archiver.archive_session,
+        )
+        self._local_sessions = drop_empty_sessions(
+            local,
             live_ids=keep_ids,
             now=time.time(),
         )
@@ -1337,6 +1353,31 @@ class SessionList(Gtk.Box):
             return
         dlg.present(root)
 
+    # The driver's SIGTERM/SIGKILL stop escalation finishes 1.6 s after the
+    # removal; recheck once it is certainly over.
+    _REMOVED_RECHECK_MS = 3000
+
+    def _schedule_removed_recheck(self) -> None:
+        """Once the stopped process has surely exited, clear any transcript it
+        rewrote after removal — from disk too, not only the list — so no
+        other reload has to be the one that notices."""
+        if self._removed_recheck_id:
+            GLib.source_remove(self._removed_recheck_id)
+        self._removed_recheck_id = GLib.timeout_add(
+            self._REMOVED_RECHECK_MS, self._recheck_removed_sessions
+        )
+
+    def _recheck_removed_sessions(self) -> bool:
+        self._removed_recheck_id = 0
+        if self._destroyed:
+            return False
+        if any(
+            s.session_id in self._removed_sessions and s.path.exists()
+            for s in discover_local_sessions()
+        ):
+            self.reload(preserve_selection=True, rescan_pool=False)
+        return False
+
     def _on_delete_response(self, _dlg, response: str, sessions: list[Session]) -> None:
         """Remove ``sessions``: response "delete" unlinks, "archive" moves the
         transcripts into the session archive; anything else is a cancel."""
@@ -1365,20 +1406,16 @@ class SessionList(Gtk.Box):
                     _log.warning("failed to archive %s: %s", s.path, e)
                 continue
             try:
-                s.path.unlink(missing_ok=True)
+                delete_session_files(s)
                 deleted_ids.append(s.session_id)
                 touched_projects.add(id(s.project))
             except OSError as e:
                 _log.warning("failed to delete %s: %s", s.path, e)
-            # Also clean any auxiliary directory with the same uuid name —
-            # claude sometimes writes there for partial state.
-            aux = s.path.with_suffix("")
-            if aux.is_dir():
-                import shutil
-                try:
-                    shutil.rmtree(aux)
-                except OSError:
-                    pass
+        how = REMOVED_BY_ARCHIVE if archive else REMOVED_BY_DELETE
+        for session_id in deleted_ids:
+            self._removed_sessions[session_id] = how
+        if deleted_ids:
+            self._schedule_removed_recheck()
         if archive:
             # archive_session already forgot each provider mapping.
             self.emit("sessions-archived", deleted_ids)
