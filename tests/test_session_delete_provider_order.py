@@ -29,6 +29,8 @@ def test_delete_observer_sees_provider_before_index_is_forgotten(tmp_path):
         get_root=lambda: None,
         _set_select_mode=lambda _active: None,
         reload=lambda **_kwargs: None,
+        _removed_sessions={},
+        _schedule_removed_recheck=lambda: None,
     )
     session = SimpleNamespace(
         path=transcript,

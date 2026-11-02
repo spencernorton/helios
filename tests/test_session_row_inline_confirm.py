@@ -166,6 +166,8 @@ def test_archive_moves_the_transcript_and_keeps_settings(tmp_path, monkeypatch):
         get_root=lambda: None,
         _set_select_mode=lambda _on: None,
         reload=lambda **kw: reloads.append(kw),
+        _removed_sessions={},
+        _schedule_removed_recheck=lambda: None,
     )
     SL.SessionList._on_delete_response(owner, None, "archive", [session])
 
@@ -176,6 +178,7 @@ def test_archive_moves_the_transcript_and_keeps_settings(tmp_path, monkeypatch):
     dest = archive_root / session.project.dirname
     assert (dest / "keep.jsonl").exists() and (dest / "keep").is_dir()
     assert reloads
+    assert owner._removed_sessions == {"keep": "archive"}
 
 
 def test_cancelled_response_removes_nothing(tmp_path):

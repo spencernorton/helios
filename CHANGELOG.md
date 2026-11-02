@@ -4,6 +4,10 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.115.1 — 2026-11-02
+
+- A deleted or archived session no longer comes back as an empty "Session <id>" row. Its stopped `claude` process wrote its exit records into the transcript after Helios had removed it, recreating the file; the sidebar now remembers what was removed, applies the same removal to anything written later, and checks again once the process has certainly exited.
+
 ## 0.115.0 — 2026-10-30
 
 - A sidebar row's trash icon no longer opens a confirmation dialog. It morphs in place into a red *Delete* button while *Archive* slides in beside it, swipe-to-delete style; Escape, a click elsewhere in the list or moving the pointer away folds it back. A confirmed row fades and collapses out of the list.
