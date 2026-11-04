@@ -329,6 +329,43 @@ def _body_of(bubble) -> object:
 
 
 @_skip_gtk
+def test_many_reasoning_summaries_share_readable_live_and_resting_overview():
+    from helios.backend.process.streaming import Block, StreamingAssistant
+    from helios.backend.transcript import ContentSpan
+    from helios.widgets.message_bubble import MessageBubble, StreamingBubble, _ReasoningOverview
+
+    stream = StreamingAssistant(model="muse")
+    live = StreamingBubble(assistant_label="Muse")
+    for i in range(40):
+        stream.blocks.append(Block(type="reasoning_summary", text=f"Summary {i}"))
+        stream.blocks.append(Block(type="tool_use", tool_use_name="Bash", tool_use_id=str(i)))
+        live.update(stream)
+    children = _direct_children(live._body)
+    assert len(children) == 2  # one reasoning overview and one activity group
+    overview = next(c for c in children if isinstance(c, _ReasoningOverview))
+    assert overview.preview.get_text() == "Summary 39"
+    assert not overview.history.get_expanded()
+    overview.history.set_expanded(True)
+    stream.blocks[-2].text += " updated <literal>"
+    live.update(stream)
+    assert overview.history.get_expanded()  # new deltas preserve user disclosure
+    assert overview.preview.get_text() == "Summary 39 updated <literal>"
+    history = _widget_text(overview.history.get_child())
+    for i in range(40):
+        assert f"Summary {i}" in history
+
+    turn = Turn(role="assistant")
+    turn.content.extend(ContentSpan(b.type, b.text) for b in stream.blocks if b.type != "tool_use")
+    turn.content.append(ContentSpan("text", "The final answer."))
+    resting = _direct_children(_body_of(MessageBubble(turn)))
+    assert len(resting) == 2
+    assert isinstance(resting[0], _ReasoningOverview)
+    assert resting[0].preview.get_text() == overview.preview.get_text()
+    assert "The final answer." in _widget_text(resting[1])
+    live.shutdown()
+
+
+@_skip_gtk
 def test_message_bubble_preserves_interleaved_content_order():
     """Grouped updates occupy their first source position; final stays last."""
     from helios.widgets.message_bubble import MessageBubble
