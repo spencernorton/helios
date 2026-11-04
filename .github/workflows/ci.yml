@@ -9,6 +9,9 @@ on:
     branches: [main]
 permissions:
   contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   backend:
     strategy:
@@ -89,6 +92,7 @@ jobs:
     if: always()
     needs: [backend, native]
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - name: Require backend and installed native runtime acceptance
         env:
