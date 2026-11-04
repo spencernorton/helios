@@ -147,6 +147,12 @@ class Session:
     size: int
     title: str = ""  # filled in lazily
     first_message_loaded: bool = False
+    # True only for an in-memory sidebar placeholder whose transcript file
+    # has not landed yet (a staged fresh chat or a just-started live
+    # session). A pending session is never read from, written to or deleted
+    # on disk — discovery replaces it with the real Session once the file
+    # exists. See SessionList.show_pending_session / show_staged_session.
+    pending: bool = False
 
     @property
     def mtime_dt(self) -> datetime:

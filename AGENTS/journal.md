@@ -1,5 +1,12 @@
 # Helios — Session Journal
 
+## 2026-11-04 — claude — Pending sidebar sessions and session-restore settings
+
+- **Branch:** `codex/muse-reasoning-presentation`.
+- **Change:** Sidebar gains in-memory pending/staged session placeholders (`Session.pending`) that are never read, written, or deleted on disk until the real transcript lands, plus session-restore settings wiring across `main_window.py` and `session_list.py`; Gemini/Muse driver adjustments with regression tests (`test_session_restore_settings.py`, `test_sidebar_pending_sessions.py`).
+- **Validation:** 99 focused tests pass (exit 0); ruff clean on all touched files.
+- **Shipping:** Committed and pushed to GitLab `kleos/helios` with an MR per Spencer's approval, to unfreeze the GitLab copy (stale since 2026-10-03). Running app untouched; restart loads it.
+
 ## 2026-10-29 — codex — Compact reasoning overview
 
 - **Branch:** `codex/muse-reasoning-presentation`.
