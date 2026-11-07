@@ -13,24 +13,23 @@ The application needs Python 3.11+, GTK 4.10+, libadwaita 1.5+ and
 GtkSourceView 5. The package installs the browser dependency; leave APT's
 recommended packages enabled to include the terminal and screenshot portal.
 
-For the latest features, download the current release package and its
-checksums into a new directory:
+Download the `.deb` and `SHA256SUMS.txt` from the
+[latest GitHub release](https://github.com/spencernorton/helios/releases/latest)
+into a new directory. Open a terminal there and replace
+`helios_VERSION_all.deb` with the exact filename you downloaded.
 
 ```bash
-mkdir -p ~/Downloads/helios-0.114.4 &&
-cd ~/Downloads/helios-0.114.4 &&
-curl -fLO https://github.com/spencernorton/helios/releases/download/v0.114.4/helios_0.114.4_all.deb &&
-curl -fLO https://github.com/spencernorton/helios/releases/download/v0.114.4/SHA256SUMS.txt &&
-grep '  helios_0.114.4_all.deb$' SHA256SUMS.txt | sha256sum --check - &&
-sudo apt install ./helios_0.114.4_all.deb &&
+package=helios_VERSION_all.deb
+checksum=$(awk -v package="$package" '$2 == package' SHA256SUMS.txt) &&
+test -n "$checksum" &&
+printf '%s\n' "$checksum" | sha256sum --check - &&
+sudo apt install "./$package" &&
 helios
 ```
 
-Expected checksum result: `helios_0.114.4_all.deb: OK`. Stop if verification
-fails. The release also includes its matching source archive. Check
-[the latest release](https://github.com/spencernorton/helios/releases/latest)
-when choosing a newer version; use the package and checksums from the same
-release.
+The checksum command prints the package filename followed by `OK`. If
+verification fails, download both files again from the same release. The
+release also includes its matching source archive.
 
 Helios appears in your application launcher. The `helios` command opens the
 same window; a second invocation activates the running instance.
@@ -39,10 +38,9 @@ same window; a second invocation activates the running instance.
 
 The [stable APT setup](../README.md#ubuntu-2604--stable-apt-updates) configures
 normal system updates. **Stable and the latest release are different
-channels.** On 29 October 2026, stable APT contains 0.101.0 and the separate
-opt-in candidate channel contains 0.114.4. The features in this guide require
-the newer release. Installing its downloaded package does not automatically
-enrol your machine in candidate updates.
+channels.** Stable may offer an older version than the release described in
+this guide. Installing a downloaded package does not enrol your machine in
+the separate candidate channel.
 
 `apt-cache policy helios` shows the versions available from your configured
 sources. Get subsequent release packages from GitHub, or use the
