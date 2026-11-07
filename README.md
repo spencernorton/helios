@@ -5,7 +5,7 @@
 <h1 align="center">Helios</h1>
 
 <p align="center">
-  <strong>Your coding agents, in one Linux desktop.</strong><br>
+  <strong>A native Linux desktop for AI coding agents.</strong><br>
   A native Linux GUI for Claude Code, OpenAI Codex, Google Antigravity, Muse Code, Kimi Code and OpenRouter, built with GTK4/libadwaita.
 </p>
 
@@ -16,6 +16,12 @@
   <a href="https://norvitech.com/#install"><img alt="APT repository" src="https://img.shields.io/badge/apt-Ubuntu%2026.04-e95420.svg?logo=ubuntu&logoColor=white"></a>
   <a href="LICENSE"><img alt="MIT licence" src="https://img.shields.io/badge/licence-MIT-blue.svg"></a>
   <a href="https://buy.stripe.com/8x26oH2U44f65TRe574wM04"><img alt="Donate" src="https://img.shields.io/badge/donate-Stripe-635bff.svg?logo=stripe&logoColor=white"></a>
+</p>
+
+<p align="center">
+  <a href="https://norvitech.com/helios/">Helios on NorviTech</a> ·
+  <a href="https://norvitech.com/helios/install/">Install Helios</a> ·
+  <a href="https://norvitech.com/helios/docs/">Helios user guide</a>
 </p>
 
 <p align="center"><picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/demos/browser-preview-poster-7b5f9e81b75a.png"><img src="docs/demos/browser-preview-09c48384e3ae.gif" alt="Preview a local app and attach its screenshot to the chat." width="900"></picture></p>
