@@ -81,21 +81,12 @@ colour, with an optional translucent sidebar.
 
 ### Ubuntu 26.04 — latest release package
 
-For the features described here, install the current GitHub release:
-
-```bash
-curl -fLO https://github.com/spencernorton/helios/releases/download/v0.114.4/helios_0.114.4_all.deb &&
-curl -fLO https://github.com/spencernorton/helios/releases/download/v0.114.4/SHA256SUMS.txt &&
-grep '  helios_0.114.4_all.deb$' SHA256SUMS.txt | sha256sum --check - &&
-sudo apt install ./helios_0.114.4_all.deb &&
-helios
-```
-
-The [Releases page](https://github.com/spencernorton/helios/releases/latest)
-has the package, matching source and checksums. The
-[quickstart](docs/quickstart.md) includes checksum verification and the first
-chat. Packages are built and tested on Ubuntu 26.04; the APT service currently
-supports amd64. Other distributions and architectures use the source route.
+Download the `.deb` and `SHA256SUMS.txt` from the
+[latest GitHub release](https://github.com/spencernorton/helios/releases/latest).
+The [quickstart](docs/quickstart.md#1-install-helios) shows how to verify the
+package, install it with APT and start your first chat. Packages are built
+and tested on Ubuntu 26.04. The APT service currently supports amd64. Other
+distributions and architectures can use the source route.
 
 ### Other distributions — run from source
 
@@ -124,11 +115,10 @@ sudo apt install helios
 ```
 
 The setup script installs the archive keyring and configures **stable** APT
-updates. Stable can lag behind GitHub releases: on 29 October 2026 stable
-provides 0.101.0 and the separate opt-in candidate channel provides 0.114.4.
-The six-provider and workspace features on this page describe the latest
-release. A downloaded newer package does not gain candidate-channel updates
-just because the stable repository is configured. See
+updates. Stable can lag behind GitHub releases. Use `apt-cache policy helios`
+to see which versions your configured channels offer. The six-provider and
+workspace features on this page describe the latest release. Installing its
+package does not subscribe you to candidate updates. See
 [installation and update choices](https://norvitech.com/helios/install/).
 
 ### Sign in and start a chat
