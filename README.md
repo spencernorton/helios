@@ -228,6 +228,8 @@ python3-pil python3-setuptools`, and runs `lintian` when available.
   <a href="https://github.com/spencernorton/helios">Helios</a> ·
   <a href="https://github.com/spencernorton/DH-Waypoint">DH-Waypoint</a> ·
   <a href="https://github.com/spencernorton/armiger">Armiger</a> ·
+  <a href="https://github.com/spencernorton/arrmes">Arrmes</a> ·
+  <a href="https://github.com/spencernorton/endexis">Endexis</a> ·
   <a href="https://github.com/spencernorton/xnote">XNote</a> ·
   <a href="https://github.com/spencernorton/xnote-placement">XNote Placement</a> ·
   <a href="https://github.com/spencernorton/snipsnap">SnipSnap</a> ·

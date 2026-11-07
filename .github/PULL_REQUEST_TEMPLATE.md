@@ -10,8 +10,8 @@
 
 ## Checklist
 
-- [ ] Backend tests pass the way CI runs them: `gi` hidden by the stub in [CONTRIBUTING.md](https://github.com/spencercnorton/helios/blob/main/CONTRIBUTING.md#backend-tests), with `git` on PATH (the checkpoint tests skip without it). With `python3-gi` installed a bare `pytest` runs the real GTK tests instead.
-- [ ] If the change touches `src/helios/widgets/`, `main_window.py` or a driver in `src/helios/backend/process/`, the GTK tests pass under Xvfb with isolated state ([recipe](https://github.com/spencercnorton/helios/blob/main/CONTRIBUTING.md#gtk-tests)); public CI does not run them.
+- [ ] Backend tests pass the way CI runs them: `gi` hidden by the stub in [CONTRIBUTING.md](https://github.com/spencernorton/helios/blob/main/CONTRIBUTING.md#backend-tests), with `git` on PATH (the checkpoint tests skip without it). With `python3-gi` installed a bare `pytest` runs the real GTK tests instead.
+- [ ] If the change touches `src/helios/widgets/`, `main_window.py` or a driver in `src/helios/backend/process/`, the GTK tests pass under Xvfb with isolated state ([recipe](https://github.com/spencernorton/helios/blob/main/CONTRIBUTING.md#gtk-tests)). Public CI runs the native GTK suite and an installed-package smoke test.
 - [ ] `ruff check .` prints `All checks passed!` with the version CI pins (`pip install ruff==0.15.20`)
 - [ ] A new test that imports `gi` starts with `gi = pytest.importorskip("gi")` and, if it builds widgets, skips when `Gtk.init_check()` is false — CI hides `gi`, so an unguarded import is a collection error
 - [ ] No secrets, machine names, or personal paths in the diff
