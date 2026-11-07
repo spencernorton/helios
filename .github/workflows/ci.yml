@@ -75,13 +75,13 @@ jobs:
         run: |
           cd "$RUNNER_TEMP"
           dbus-run-session -- xvfb-run -a python3 -I "$GITHUB_WORKSPACE/tests/smoke_installed.py" 2>&1 | tee "$GITHUB_WORKSPACE/out/installed-runtime.log"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: helios-debian-candidate
           path: dist/
           if-no-files-found: error
           retention-days: 14
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: native-runtime-evidence
