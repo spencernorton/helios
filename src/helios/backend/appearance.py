@@ -31,6 +31,11 @@ def normalize_scheme(value: object) -> str:
 #: with no blur it costs readability for nothing.
 GLASS_UI_STATE_KEY = "glass_sidebar"
 
+#: Window glass alpha. The owner is norvi-os `desktop/glass-tokens.json`
+#: (`window_alpha`); this mirrors it because GTK CSS cannot read Python.
+#: test_glass_sidebar.py fails if the stylesheet drifts from this value.
+GLASS_WINDOW_ALPHA = 0.72
+
 
 def normalize_glass(value: object) -> bool:
     """Coerce any stored/incoming value to a bool; default False.
