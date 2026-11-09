@@ -4,6 +4,11 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.115.3 — 2026-11-09
+
+- Stopping a Muse turn no longer bricks the session. Stop killed the `muse serve` process before Muse's cancellation could be recorded, leaving the chat blocked on an unconfirmed receipt and unable to take another message; it now waits for Muse's cancelled response and frees the session (a second Stop still forces the process to end).
+- The Muse context meter no longer shows turn spend as window occupancy (for example 19.1M against a 1M window). It now shows the context actually resident, refreshed at the end of each turn; sessions with an inflated saved reading heal on their next turn.
+
 ## 0.115.2 — 2026-11-09
 
 - A Claude turn refused by the API (for example at the weekly usage limit) no longer reads as an instant, empty success. The CLI reports those turns as `subtype: "success"` with `is_error`/`api_error` set and the refusal in its result text; Helios now books the attempt as failed and shows that text as an error in the transcript.

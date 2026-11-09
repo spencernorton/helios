@@ -548,6 +548,63 @@ def test_turn_usage_is_written_to_the_mirror_for_context_restore(tmp_path):
     assert context_fill_for(session) == 1700
 
 
+def test_mirror_usage_is_resident_context_not_turn_spend(tmp_path):
+    """Each model step re-sends the whole context, so summing steps (plus
+    cache reads the input already includes) showed 19.1M against a 1M
+    window. The mirror must store the last step's occupancy; turn spend
+    stays available separately as turn_usage."""
+    import json as _json
+
+    driver = _driver(tmp_path)
+    driver._transcript.bind_thread("session-1")
+    seen = []
+    driver.connect("usage-updated", lambda _d, used, window: seen.append((used, window)))
+    results = []
+    driver.connect("result", lambda _d, result: results.append(result))
+    driver._on_item({"itemId": "m1", "kind": "agentMessage", "turnId": "turn-1",
+                     "status": "inProgress", "text": ""}, terminal=False)
+    driver._on_delta({"itemId": "m1", "field": "text", "delta": "done"})
+    for step in ({"inputTokens": 1000, "outputTokens": 10, "cacheReadTokens": 900},
+                 {"inputTokens": 1500, "outputTokens": 20, "cacheReadTokens": 1400}):
+        driver._dispatch_message({"method": "session/tokenUsage", "params": {"usage": step}})
+    driver._dispatch_message({"method": "turn/completed", "params": {
+        "turnId": "turn-1", "terminal": "completed",
+        "usage": {"inputTokens": 2500, "outputTokens": 30, "cacheReadTokens": 2300}}})
+
+    path = driver._transcript._path()
+    records = [_json.loads(line) for line in path.read_text().splitlines() if line]
+    assistant = [r for r in records if r.get("type") == "assistant"]
+    assert assistant[-1]["message"]["usage"] == {"input_tokens": 1500, "output_tokens": 20}
+    assert results[-1]["usage"] == {"input_tokens": 1500, "output_tokens": 20}
+    assert results[-1]["turn_usage"]["input_tokens"] == 2500
+    assert seen and seen[-1][0] == 1500
+
+
+def test_mirror_usage_prefers_counted_once_context_usage(tmp_path):
+    import json as _json
+
+    driver = _driver(tmp_path)
+    driver._transcript.bind_thread("session-1")
+    seen = []
+    driver.connect("usage-updated", lambda _d, used, window: seen.append((used, window)))
+    driver._on_item({"itemId": "m1", "kind": "agentMessage", "turnId": "turn-1",
+                     "status": "inProgress", "text": ""}, terminal=False)
+    driver._on_delta({"itemId": "m1", "field": "text", "delta": "done"})
+    driver._dispatch_message({"method": "session/tokenUsage", "params": {
+        "usage": {"inputTokens": 5000, "outputTokens": 10}}})
+    driver._dispatch_message({"method": "session/contextUsage", "params": {
+        "sessionId": "session-1", "usedTokens": 4200, "windowTokens": 256_000}})
+    driver._dispatch_message({"method": "turn/completed", "params": {
+        "turnId": "turn-1", "terminal": "completed",
+        "usage": {"inputTokens": 5000, "outputTokens": 10}}})
+
+    path = driver._transcript._path()
+    records = [_json.loads(line) for line in path.read_text().splitlines() if line]
+    assistant = [r for r in records if r.get("type") == "assistant"]
+    assert assistant[-1]["message"]["usage"] == {"input_tokens": 4200}
+    assert seen[-1] == (4200, 256_000)
+
+
 def test_open_tool_call_survives_turn_completion_as_background_work_and_settles_across_turns(tmp_path):
     driver = _driver(tmp_path)
     bg_events = []
@@ -648,6 +705,87 @@ def test_continuation_transcript_failure_blocks_instead_of_claiming_saved(tmp_pa
     assert driver._accounting_failed
     assert not appended
     assert not results
+
+
+def test_stop_interrupts_turn_without_killing_serve_then_cancelled_releases_attempt(
+        tmp_path, monkeypatch):
+    """Explicit Stop must let Muse emit its cancelled terminal.
+
+    Killing `muse serve` right after `turn/interrupt` loses that terminal:
+    Helios then reports an unconfirmed receipt and the Work stays blocked
+    forever, so the chat never responds again.
+    """
+    driver = _driver(tmp_path)
+    driver._accepting_input = True
+    driver._execution_attempt_id = "attempt-1"
+    driver._accepted = True
+    driver._accepted_turn_id = "turn-1"
+    finished = []
+    driver.set_execution_attempt_controller(
+        None, lambda _d, aid, status, reason: finished.append((aid, status, reason)))
+    kills = []
+    monkeypatch.setattr("os.killpg", lambda pid, sig: kills.append((pid, sig)))
+    monkeypatch.setattr(
+        MuseServeDriver, "_reap_stopped", staticmethod(lambda proc: None))
+    errors, results = [], []
+    driver.connect("error", lambda _d, message: errors.append(message))
+    driver.connect("result", lambda _d, result: results.append(result))
+
+    driver.stop()
+
+    assert [f.get("method") for f in driver._proc.stdin.frames()] == ["turn/interrupt"]
+    assert kills == []
+    assert driver._stopped is False
+    assert driver.is_busy
+
+    driver._dispatch_message({"method": "turn/completed", "params": {
+        "turnId": "turn-1", "terminal": "cancelled"}})
+
+    assert results[-1]["subtype"] == "aborted"
+    assert finished == [("attempt-1", "aborted", "provider_result.aborted")]
+    assert driver.execution_attempt_id == ""
+    assert driver.is_busy is False
+    assert driver.is_accepting_input
+    assert errors == []
+
+
+def test_second_stop_escalates_to_kill_when_interrupt_is_ignored(tmp_path, monkeypatch):
+    import signal
+
+    driver = _driver(tmp_path)
+    kills = []
+    monkeypatch.setattr("os.killpg", lambda pid, sig: kills.append((pid, sig)))
+    monkeypatch.setattr(
+        MuseServeDriver, "_reap_stopped", staticmethod(lambda proc: None))
+
+    driver.stop()
+    assert kills == []
+    driver.stop()
+
+    assert kills == [(driver._proc.pid, signal.SIGTERM)]
+    assert driver._stopped is True
+
+
+def test_stop_without_interrupt_and_idle_stop_still_kill_serve(tmp_path, monkeypatch):
+    import signal
+
+    kills = []
+    monkeypatch.setattr("os.killpg", lambda pid, sig: kills.append((pid, sig)))
+    monkeypatch.setattr(
+        MuseServeDriver, "_reap_stopped", staticmethod(lambda proc: None))
+
+    busy = _driver(tmp_path)
+    busy.stop(interrupt=False)
+    assert kills == [(busy._proc.pid, signal.SIGTERM)]
+    assert busy._stopped is True
+    # No interrupt frame on the teardown path.
+    assert busy._proc.stdin.frames() == []
+
+    idle = _driver(tmp_path)
+    idle._is_busy = False
+    idle.stop()
+    assert kills[-1] == (idle._proc.pid, signal.SIGTERM)
+    assert idle._stopped is True
 
 
 def test_agent_updates_preserve_native_task_identity(tmp_path):
