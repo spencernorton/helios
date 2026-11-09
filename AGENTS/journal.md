@@ -1,5 +1,34 @@
 # Helios — Session Journal
 
+## 2026-11-09 — Muse Stop no longer bricks the session; context meter fixed
+
+- `MuseServeDriver.stop()` sent `turn/interrupt` and immediately SIGTERM'd
+  the `muse serve` process group, racing Muse's cancelled terminal. The
+  terminal was lost, so Helios reported an unconfirmed terminal receipt and
+  the execution attempt stayed `running` forever — the chat could never take
+  another message (observed live: the stuck session's Muse log shows a
+  clean `cancelled` terminal that Helios never recorded).
+- Fix: an explicit Stop during a turn now only sends `turn/interrupt` and
+  lets the cancelled terminal finish the attempt and free the session for
+  the next message (the Codex pattern); a second Stop for the same turn
+  escalates to the kill. Teardown (`interrupt=False`), idle stop and
+  protocol failure still kill the process, and a refused interrupt no longer
+  surfaces as a user-facing error. Cancelled turns now also flush messages
+  typed while the cancellation was in flight.
+- Context meter: the mirror transcript stored turn spend (every step's
+  full-context input summed, plus cache reads that input already includes),
+  and the restore path read it as resident occupancy — one live session
+  showed 19.1M against its 1M window. The mirror and result `usage` now
+  carry occupancy (Muse's counted-once `contextUsage` when sent, else the
+  last step's input) and each turn ends with a `usage-updated` refresh;
+  turn spend remains in `turn_usage` for the footer and receipt. Sessions
+  with an inflated record heal on their next turn.
+- The stuck live attempt was released by hand via
+  `reclaim_orphaned_execution_attempts([attempt_id])`; no app version or
+  changelog changes.
+- Validation: new stop and context tests in tests/test_muse_driver.py fail
+  on the old code and pass after; full suite and ruff clean.
+
 ## 2026-11-04 — claude — Reasoning overview carried onto main
 
 - **Branch:** `claude/reasoning-overview`. Cherry-picked the 2026-10-29 compact reasoning overview (`a86797f`) onto current main; the rest of its original branch (pending sidebar sessions, reliability) had already landed through PR #52 and the 0.114 train, so the old PR was closed as superseded.

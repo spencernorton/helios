@@ -180,7 +180,11 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         self._rpc_seq = 0
         self._pending_rpc: dict[int, str] = {}
         self._root_turn_id = ""
+        self._interrupt_requested_turn = ""
         self._turn_usage: dict[str, int] = {}
+        self._last_step_usage: dict[str, int] = {}
+        self._context_used = 0
+        self._context_window = 0
         self._session_mcp = False  # granted at initialize
         self._blocks: dict[str, Block] = {}
         self._summary_part: dict[str, str] = {}
@@ -667,6 +671,8 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         window = params.get("windowTokens")
         if not isinstance(window, int) or isinstance(window, bool) or window <= 0:
             window = model_catalog.context_window_for(self._model)
+        self._context_used = used
+        self._context_window = window
         self.emit("usage-updated", used, window)
 
     def _emit_subscription_usage(self, usage: Any) -> None:
@@ -715,6 +721,11 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
                     self._protocol_failure(f"Muse refused to start: {detail[:400]}")
                 elif method == "usage/read":
                     pass  # optional telemetry; an older host simply has none
+                elif method == "turn/interrupt":
+                    # A refused interrupt (e.g. the turn just finished) is
+                    # settled by the turn's own terminal; surfacing it would
+                    # make every Stop look like an error.
+                    _log.warning("Muse refused turn interrupt: %s", detail[:400])
                 elif method == "turn/start" and self.execution_attempt_id:
                     self.emit("error", f"Muse refused the turn: {detail[:400]}")
                     self._finish_turn("failed", error_text=detail[:400])
@@ -788,6 +799,9 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
             for key, value in usage.items():
                 if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                     self._turn_usage[key] = self._turn_usage.get(key, 0) + value
+                    # Keep the latest step separately: its input is the
+                    # resident context, while the sum above is turn spend.
+                    self._last_step_usage[key] = value
         elif method == "usage/changed":
             self._emit_subscription_usage(params)
         elif method == "session/contextUsage":
@@ -1116,6 +1130,19 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
             value = usage.get(source)
             if isinstance(value, int) and value >= 0 and target not in receipt_usage:
                 receipt_usage[target] = value
+        # The mirror's usage is read back as resident context, so it must
+        # hold occupancy, not turn spend: summing every step's full-context
+        # input (and adding cache reads that input already includes) showed
+        # e.g. 19.1M against a 1M window. Prefer Muse's counted-once
+        # contextUsage; fall back to the last step, whose input likewise
+        # already includes its cached prefix, so no cache term is added.
+        resident_usage = receipt_usage
+        if self._context_used > 0:
+            resident_usage = {"input_tokens": self._context_used}
+        elif self._last_step_usage.get("inputTokens", 0) > 0:
+            resident_usage = {"input_tokens": self._last_step_usage["inputTokens"]}
+            if self._last_step_usage.get("outputTokens", 0) > 0:
+                resident_usage["output_tokens"] = self._last_step_usage["outputTokens"]
         appended_turn = False
         if self._streaming is not None:
             turn = self._streaming.to_turn()
@@ -1133,7 +1160,7 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
                     return
                 try:
                     self._transcript.append_assistant(
-                        turn, model=self._model, result={"usage": receipt_usage}
+                        turn, model=self._model, result={"usage": resident_usage}
                     )
                 except Exception:
                     if has_user_attempt:
@@ -1165,9 +1192,11 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
                 del self._open_tool_calls[item_id]
         self._sync_background_tasks()
         self._is_busy = False
+        self._interrupt_requested_turn = ""
         self._accepted = False
         self._accepted_turn_id = ""
         self._turn_usage = {}
+        self._last_step_usage = {}
         self._pending_inputs.clear()
         self._input_commands.clear()
         approvals = list(self._pending_approvals)
@@ -1184,9 +1213,13 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         self._last_activity = time.monotonic()
         result: dict[str, Any] = {
             "subtype": subtype,
-            "usage": receipt_usage,
+            "usage": resident_usage,
             "turn_usage": receipt_usage,
         }
+        resident_used = resident_usage.get("input_tokens", 0)
+        if isinstance(resident_used, int) and resident_used > 0:
+            window = self._context_window or model_catalog.context_window_for(self._model)
+            self.emit("usage-updated", resident_used, window)
         if not has_user_attempt and not appended_turn:
             result["origin"] = {"kind": "task-notification"}
         if error_text:
@@ -1195,7 +1228,7 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         self.emit("turn-status-updated",
                   {"turnId": self._root_turn_id, "status": terminal or subtype})
         self.emit("result", result)
-        if subtype == "success" and not self._stopped:
+        if subtype in ("success", "aborted") and not self._stopped:
             self._flush_user_queue()
 
     # ── stop / exit / accounting ────────────────────────────────────────────
@@ -1219,7 +1252,7 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
     def _protocol_failure(self, message: str) -> None:
         self._finish_predispatch_attempt()
         self.emit("error", message)
-        self.stop()
+        self.stop(interrupt=False)
 
     def _read_stdout(self) -> None:
         proc = self._proc
@@ -1243,8 +1276,22 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
             self._stderr = (self._stderr + detail)[-4000:]
 
     def stop(self, *, interrupt: bool = True) -> None:
+        if interrupt and self._is_busy and self._session_id and self._root_turn_id:
+            # Explicit Stop during a turn: ask Muse to cancel and let its
+            # cancelled terminal finish the execution attempt (the Codex
+            # pattern). Killing the serve process here races that terminal
+            # and loses it, which leaves the Work blocked on an unconfirmed
+            # receipt and the session unable to take another message. A
+            # second Stop for the same turn escalates to the kill below.
+            if self._interrupt_requested_turn != self._root_turn_id:
+                self._interrupt_requested_turn = self._root_turn_id
+                self._send("turn/interrupt", {
+                    "commandId": uuid7(), "sessionId": self._session_id,
+                    "turnId": self._root_turn_id})
+                return
         self._stopped = True
         self._accepting_input = False
+        self._interrupt_requested_turn = ""
         self._open_tool_calls.clear()
         self._sync_background_tasks()
         self._finish_predispatch_attempt()
