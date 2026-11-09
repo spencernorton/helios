@@ -70,6 +70,62 @@ def _content_text(content: Any) -> str:
     return ""
 
 
+def _form_question_payload(params: dict) -> dict | None:
+    """Translate the Kimi ACP bridge's qN schema fields into question rows."""
+    schema = params.get("requestedSchema")
+    properties = schema.get("properties") if isinstance(schema, dict) else None
+    if not isinstance(properties, dict) or not properties:
+        return None
+
+    message = str(params.get("message") or "")
+    lines = message.splitlines()
+    aligned = len(lines) == len(properties)
+    rows = []
+    for index, (key, field) in enumerate(properties.items()):
+        if not isinstance(field, dict):
+            return {"questions": []}
+        multi = field.get("type") == "array"
+        choices = field.get("items") if multi else field
+        variants = choices.get("anyOf" if multi else "oneOf") if isinstance(choices, dict) else None
+        options = [
+            {"label": variant["const"], "description": variant.get("description") or ""}
+            for variant in variants or []
+            if isinstance(variant, dict) and isinstance(variant.get("const"), str)
+        ] if isinstance(variants, list) else []
+        rows.append({
+            "id": key,
+            "header": field.get("title") or f"Question {index + 1}",
+            "question": lines[index] if aligned else field.get("description") or "",
+            "multiSelect": multi,
+            "allowOther": False,
+            "options": options,
+        })
+    return {
+        "questions": rows,
+        # A multiline question makes the joined message ambiguous. Keep its
+        # text available as context without assigning it to the wrong field.
+        "caption": "" if aligned else message,
+    }
+
+
+def _form_content(payload: dict, answer: Any) -> dict | None:
+    """Return the native scalar/array values under the original field IDs."""
+    if not isinstance(answer, dict) or not payload["questions"]:
+        return None
+    content = {}
+    for row in payload["questions"]:
+        key = row["id"]
+        entry = answer.get(key)
+        values = entry.get("answers") if isinstance(entry, dict) else None
+        if not isinstance(values, list) or not values:
+            return None
+        labels = [option["label"] for option in row["options"]]
+        if labels and any(value not in labels for value in values):
+            return None
+        content[key] = values if row["multiSelect"] else values[0]
+    return content
+
+
 class KimiDriverSpawnError(RuntimeError):
     pass
 
@@ -87,6 +143,7 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
         "rate-limit-updated": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
         "budget-exhausted": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
         "question-asked": (GObject.SignalFlags.RUN_FIRST, None, (object, str)),
+        "interaction-resolved": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
         "queued-user-sent": (GObject.SignalFlags.RUN_FIRST, None, (int, str)),
         "delivery-confirmed": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "error": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
@@ -509,7 +566,8 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
             return False
         self._last_activity = time.monotonic()
         if "method" in msg and "id" in msg:
-            self._on_client_request(msg)
+            if not self._stopped:
+                self._on_client_request(msg)
             return False
         if "id" in msg and ("result" in msg or "error" in msg):
             method = self._pending_rpc.pop(msg["id"], "")
@@ -673,6 +731,9 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
             self._respond_error(request_id, -32601, f"Unsupported ACP client method: {method}")
 
     def _question_payload(self, params: dict) -> dict:
+        form = _form_question_payload(params)
+        if form is not None:
+            return form
         questions = params.get("questions") if isinstance(params.get("questions"), list) else [params]
         rows = []
         for question in questions:
@@ -705,13 +766,24 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
                 self._respond(request_id, {"outcome": {"outcome": "selected",
                               "optionId": selected.get("optionId")}})
         elif method == "elicitation/create":
-            if answer is None:
-                self._respond(request_id, {"action": "cancel"})
+            form = _form_question_payload(params)
+            if form is not None:
+                values = _form_content(form, answer)
             else:
                 values = answer if isinstance(answer, dict) else {"answer": answer}
+            if answer is None or values is None:
+                self._respond(request_id, {"action": "cancel"})
+            else:
                 self._respond(request_id, {"action": "accept", "content": values})
 
+    def _retire_pending_requests(self) -> None:
+        tokens = list(self._pending_requests)
+        self._pending_requests.clear()
+        for token in tokens:
+            self.emit("interaction-resolved", token)
+
     def _finish_turn(self, terminal: str, *, error_text: str = "") -> None:
+        self._retire_pending_requests()
         if not self.execution_attempt_id:
             return
         if not self._accept_prompt(self._accepted_turn_id or self._root_turn_id):
@@ -803,6 +875,7 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
     def stop(self, *, interrupt: bool = True) -> None:
         self._stopped = True
         self._accepting_input = False
+        self._retire_pending_requests()
         self._finish_predispatch_attempt()
         if interrupt and self._session_id and self._is_busy:
             self._send("session/cancel", {"sessionId": self._session_id}, notify=True)
@@ -837,6 +910,7 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
 
     def _on_exit(self, code: int) -> bool:
         self._accepting_input = False
+        self._retire_pending_requests()
         self._finish_predispatch_attempt()
         if self.execution_attempt_id:
             self.emit("error", "Kimi exited without a confirmed terminal receipt. This Work remains blocked; its input will not be replayed.")

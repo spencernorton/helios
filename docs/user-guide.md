@@ -191,10 +191,11 @@ edits auto-accepted*, or *keep planning* with your feedback. Approving
 switches the conversation out of Plan; the toolbar and the saved settings
 follow.
 
-**Questions.** When an agent asks a question (Claude's `AskUserQuestion`,
-Codex's one-to-three questions) it arrives as an explicit dialog with the
-options the agent offered plus a free-text answer. A subagent's question names
-the subagent that asked.
+**Questions.** Claude, Codex, Muse and Kimi Code can ask for input during
+a turn. Helios shows one question at a time with choices or a text field
+as supported by the provider. A batch shows your progress and sends your
+answers together after the final prompt. Cancel dismisses the entire
+request. A question from another session waits until you open that session.
 
 ## Budgets
 

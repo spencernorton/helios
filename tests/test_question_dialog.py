@@ -12,7 +12,7 @@ from helios.widgets.question_dialog import (
 )
 
 
-def test_normalizes_up_to_three_questions_and_sanitizes_options():
+def test_normalizes_every_question_and_sanitizes_options():
     questions = _normalize_questions(
         {
             "allowOther": False,
@@ -31,7 +31,7 @@ def test_normalizes_up_to_three_questions_and_sanitizes_options():
         }
     )
 
-    assert [question.question_id for question in questions] == ["q0", "q1", "q2"]
+    assert [question.question_id for question in questions] == ["q0", "q1", "q2", "q3"]
     assert questions[0].options == (("Yes", "Fine"),)
     assert questions[0].allow_other is False
 

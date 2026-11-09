@@ -4,6 +4,11 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.115.4 — 2026-11-09
+
+- Helios presents provider question batches one prompt at a time. Answers go back together after the final prompt, and cancelling any prompt cancels the request.
+- Kimi Code now reads the individual questions and choices from its ACP form and returns answers using the original field IDs.
+
 ## 0.115.3 — 2026-11-09
 
 - Stopping a Muse turn no longer bricks the session. Stop killed the `muse serve` process before Muse's cancellation could be recorded, leaving the chat blocked on an unconfirmed receipt and unable to take another message; it now waits for Muse's cancelled response and frees the session (a second Stop still forces the process to end).

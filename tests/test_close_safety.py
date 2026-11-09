@@ -261,8 +261,9 @@ def test_driver_exited_forgets_registry_before_queued_or_busy_ui():
 
 def test_interaction_resolved_clears_state_but_no_dialog_close_after_close():
     f, calls = _window_after_close()
-    drv = types.SimpleNamespace(session_id="s")
-    other = types.SimpleNamespace(session_id="o")
+    drv = object()
+    other = object()
+    f._answered_question_ids = {(drv, "tuid"): None}
     f._question_queue = [(drv, {}, "tuid"), (other, {}, "keep")]
     f._question_active_key = (drv, "tuid")
     f._question_active = True
