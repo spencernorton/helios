@@ -405,7 +405,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         self._reclaim_orphaned_execution_lanes()
         # AskUserQuestion dedup — tool_use_id -> None, insertion-ordered so
         # it can be pruned FIFO instead of growing for the window's lifetime.
-        self._answered_question_ids: dict[str, None] = {}
+        self._answered_question_ids: dict[tuple[object, str], None] = {}
         # AskUserQuestion serialization. Multiple (incl. background) sessions
         # can ask near-simultaneously; presenting each immediately would stack
         # modal dialogs on one window. Queue them and show one at a time.
@@ -5264,7 +5264,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                         ),
                     ]
                 )
-            if isinstance(driver, MuseServeDriver):
+            if isinstance(driver, (MuseServeDriver, KimiAcpDriver)):
                 handlers.append(driver.connect(
                     "interaction-resolved", self._on_interaction_resolved))
             if isinstance(driver, (MuseServeDriver, KimiAcpDriver)):
@@ -8279,7 +8279,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             return
         # The dedup memory must forget it too: the CLI may reissue the same
         # tool_use_id after cancelling, and a remembered id is dropped unread.
-        self._answered_question_ids.pop(token, None)
+        self._answered_question_ids.pop((drv, token), None)
         self._question_queue = [
             q for q in self._question_queue if not (q[0] is drv and q[2] == token)
         ]
@@ -8437,19 +8437,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             )
 
     def _on_question_asked(self, drv, input_payload: dict, tool_use_id: str) -> None:
-        """Claude invoked AskUserQuestion. Enqueue a dialog and route the answer
-        back to the asking driver.
-
-        Unlike the UI-painting callbacks, this is NOT sender-guarded: a
-        *background* session that asks a question would otherwise stall forever
-        waiting on an answer nobody can give. We present regardless of which
-        session is visible, surface which session it's for, and call
-        `answer_question` on the SPECIFIC driver that asked.
-
-        Questions are *queued* and shown one at a time: several sessions can ask
-        at once, and presenting each immediately would stack modal dialogs on
-        the single window.
-        """
+        """Queue a provider request for presentation in its owning session."""
         # Fail closed after window close: a question arriving as drivers are
         # stopped has no window to present in, so drop it rather than enqueue a
         # dialog that would present against a finalizing tree. The driver is
@@ -8458,9 +8446,10 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             return
         # Guard against duplicate emissions for the same tool_use_id.
         # Pruned FIFO so the dedup memory stays bounded for long windows.
-        if tool_use_id in self._answered_question_ids:
+        key = (drv, tool_use_id)
+        if key in self._answered_question_ids:
             return
-        self._answered_question_ids[tool_use_id] = None
+        self._answered_question_ids[key] = None
         while len(self._answered_question_ids) > 256:
             self._answered_question_ids.pop(next(iter(self._answered_question_ids)))
 
@@ -8505,7 +8494,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         self._sync_pending_question_indicators()
 
         # Local import to avoid module-load cost when no questions are asked.
-        from helios.widgets.question_dialog import present_question
+        from helios.widgets.question_dialog import present_question, split_question_batch
 
         active_key = (drv, tool_use_id)
 
@@ -8520,31 +8509,37 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             self._question_dialog = None
             self._pump_questions()  # show the next queued question, if any
 
-        def on_answer(text) -> None:
-            if self._question_active_key != active_key:
-                return
-            if drv.is_running:
-                drv.answer_question(tool_use_id, text)
-            _finish()
+        steps, combine = split_question_batch(input_payload)
+        answers = []
 
-        def on_dismiss() -> None:
-            if self._question_active_key != active_key:
-                return
-            if drv.is_running:
-                drv.answer_question(tool_use_id, None)
-            _finish()
+        def present_step(index: int) -> None:
+            # A completed step can still emit a late response while its
+            # successor owns the same provider token.
+            responded = False
 
-        dialog = present_question(
-            self,
-            input_payload,
-            on_answer,
-            on_dismiss,
-        )
-        # A malformed/empty payload may dismiss synchronously. Its `_finish`
-        # callback can pump and install the next dialog before this call
-        # returns, so never overwrite that newer dialog with the old result.
-        if self._question_active_key == active_key:
-            self._question_dialog = dialog
+            def respond(answer) -> None:
+                nonlocal responded
+                if responded or self._question_active_key != active_key:
+                    return
+                responded = True
+                if drv.is_running:
+                    if answer is None:
+                        drv.answer_question(tool_use_id, None)
+                    else:
+                        answers.append(answer)
+                        if len(answers) < len(steps):
+                            present_step(index + 1)
+                            return
+                        drv.answer_question(tool_use_id, combine(answers))
+                _finish()
+
+            dialog = present_question(self, steps[index], respond, lambda: respond(None))
+            # An empty payload can dismiss synchronously and pump the next
+            # request before present_question returns.
+            if not responded and self._question_active_key == active_key:
+                self._question_dialog = dialog
+
+        present_step(0)
 
     def _sync_pending_question_indicators(self) -> None:
         """Mark each session with a still-queued question so its row shows a
@@ -8575,8 +8570,8 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             self._notified_question_sids -= stale
 
     def _on_interaction_resolved(self, drv, tool_use_id: str) -> None:
-        """Remove an App Server prompt that the turn resolved elsewhere."""
-
+        """Remove a provider prompt that resolved elsewhere."""
+        self._answered_question_ids.pop((drv, tool_use_id), None)
         self._question_queue = [
             queued
             for queued in self._question_queue
@@ -8603,10 +8598,12 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
     def _resolve_questions_for_driver(self, drv) -> None:
         """Fail closed and remove every modal owned by a departing driver."""
 
+        for key in list(self._answered_question_ids):
+            if key[0] is drv:
+                self._answered_question_ids.pop(key)
         removed = [row for row in self._question_queue if row[0] is drv]
         self._question_queue = [row for row in self._question_queue if row[0] is not drv]
         for _owner, _payload, tool_use_id in removed:
-            self._answered_question_ids.pop(tool_use_id, None)
             if drv.is_running:
                 drv.answer_question(tool_use_id, None)
         # The departing driver's queued prompts are gone — reconcile dots even
@@ -8616,7 +8613,6 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         if active is None or active[0] is not drv:
             return
         tool_use_id = active[1]
-        self._answered_question_ids.pop(tool_use_id, None)
         if drv.is_running:
             drv.answer_question(tool_use_id, None)
         dialog = self._question_dialog

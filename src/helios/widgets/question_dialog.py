@@ -1,8 +1,8 @@
 """Dialog for provider-native user questions and approvals.
 
 Claude's ``AskUserQuestion`` and Codex App Server's
-``item/tool/requestUserInput`` share the same basic shape: one to three
-questions, optional choices, and an optional free-text answer.  The dialog
+``item/tool/requestUserInput`` share the same basic shape: one
+or more questions, optional choices, and an optional free-text answer. The dialog
 keeps Claude's historical string callback for a single question without an
 ``id``.  When every question has a unique ``id`` it instead returns the Codex
 answer map::
@@ -30,7 +30,6 @@ from gi.repository import Adw, GLib, Gtk, Pango  # noqa: E402
 # answer-or-cancel API in the response handler.
 _RESPONSE_SUBMIT = "submit"
 _RESPONSE_CANCEL = "cancel"
-_MAX_QUESTIONS = 3
 
 QuestionAnswer: TypeAlias = str | dict[str, dict[str, list[str]]]
 
@@ -56,13 +55,38 @@ class _QuestionControls:
     error_label: Gtk.Label | None = None
 
 
+def split_question_batch(
+    payload: dict,
+) -> tuple[list[dict], Callable[[list[QuestionAnswer]], QuestionAnswer]]:
+    """Make single-question payloads and preserve the original answer contract."""
+    questions = _normalize_questions(payload)
+    if len(questions) < 2:
+        return [payload], lambda answers: answers[0]
+
+    rows = [row for row in payload["questions"] if isinstance(row, dict)]
+    steps = [
+        {
+            **payload,
+            "questions": [{**row, "id": "step"}],
+            "questionProgress": f"Question {index} of {len(rows)}",
+            "questionSubmitLabel": "Next" if index < len(rows) else "Submit",
+        }
+        for index, row in enumerate(rows, 1)
+    ]
+
+    def combine(answers: list[QuestionAnswer]) -> QuestionAnswer:
+        return _format_answers(questions, [answer["step"]["answers"] for answer in answers])
+
+    return steps, combine
+
+
 def present_question(
     parent: Gtk.Widget,
     input_payload: dict,
     on_answer: Callable[[QuestionAnswer], None],
     on_dismiss: Callable[[], None],
 ) -> Adw.Dialog | None:
-    """Show up to three questions in one serialized dialog.
+    """Show one question or approval.
 
     Choice-less questions are rendered as free-text inputs. ``allowOther``
     can be set on the payload as the default and overridden per question;
@@ -71,25 +95,22 @@ def present_question(
     false, because text is then the only possible answer.
     """
     questions = _normalize_questions(input_payload)
-    if not questions:
+    if len(questions) != 1:
         on_dismiss()
         return None
 
+    question = questions[0]
     if (
         input_payload.get("presentation") == "tool-approval"
-        and len(questions) == 1
-        and not questions[0].multi_select
-        and not questions[0].allow_other
-        and 2 <= len(questions[0].options) <= 4
+        and not question.multi_select
+        and not question.allow_other
+        and 2 <= len(question.options) <= 4
     ):
-        return _present_approval(parent, input_payload, questions[0], on_answer, on_dismiss)
+        return _present_approval(parent, input_payload, question, on_answer, on_dismiss)
 
-    single = len(questions) == 1
-    title = questions[0].header if single else "Questions"
-    body = questions[0].question if single else "Please answer each question."
-    dlg = Adw.AlertDialog.new(title, body or None)
+    dlg = Adw.AlertDialog.new(question.header, question.question or None)
     dlg.add_response(_RESPONSE_CANCEL, "Cancel")
-    dlg.add_response(_RESPONSE_SUBMIT, "Submit")
+    dlg.add_response(_RESPONSE_SUBMIT, input_payload.get("questionSubmitLabel", "Submit"))
     dlg.set_response_appearance(_RESPONSE_SUBMIT, Adw.ResponseAppearance.SUGGESTED)
     require_explicit = bool(input_payload.get("requireExplicitChoice"))
     dlg.set_default_response(
@@ -99,6 +120,12 @@ def present_question(
 
     body_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
     body_box.set_margin_top(6)
+    progress = input_payload.get("questionProgress")
+    if progress:
+        label = Gtk.Label(label=progress, xalign=0)
+        label.add_css_class("caption")
+        label.add_css_class("dim-label")
+        body_box.append(label)
     caption = str(input_payload.get("caption") or "").strip()
     if caption:
         why = Gtk.Label(label=caption, xalign=0)
@@ -137,40 +164,28 @@ def present_question(
         countdown_label.add_css_class("dim-label")
         countdown_label.set_wrap(True)
         body_box.append(countdown_label)
-    controls: list[_QuestionControls] = []
-    for index, spec in enumerate(questions):
-        if index:
-            body_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
-        controls.append(
-            _build_question(spec, body_box, show_prompt=not single)
-        )
-
-    # Keep large option sets and multi-question requests within the window.
+    controls = _build_question(question, body_box)
     scroller = Gtk.ScrolledWindow()
     scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
     scroller.set_propagate_natural_height(True)
-    scroller.set_max_content_height(440 if not single else 320)
+    scroller.set_max_content_height(320)
     scroller.set_child(body_box)
     dlg.set_extra_child(scroller)
 
     def answers_complete(*_args, reveal: bool = False) -> bool:
-        complete = True
-        for spec, state in zip(questions, controls):
-            answered = bool(_read_question_answer(spec, state))
-            if state.error_label is not None:
-                state.error_label.set_visible(reveal and not answered)
-            complete = complete and answered
+        complete = bool(_read_question_answer(question, controls))
+        if controls.error_label is not None:
+            controls.error_label.set_visible(reveal and not complete)
         dlg.set_response_enabled(_RESPONSE_SUBMIT, complete)
         return complete
 
-    for state in controls:
-        for button in state.option_buttons:
-            button.connect("toggled", answers_complete)
-        if state.other_button is not None:
-            state.other_button.connect("toggled", answers_complete)
-        for entry in (state.other_entry, state.free_entry):
-            if entry is not None:
-                entry.connect("changed", answers_complete)
+    for button in controls.option_buttons:
+        button.connect("toggled", answers_complete)
+    if controls.other_button is not None:
+        controls.other_button.connect("toggled", answers_complete)
+    for entry in (controls.other_entry, controls.free_entry):
+        if entry is not None:
+            entry.connect("changed", answers_complete)
     answers_complete()
 
     def update_countdown() -> bool:
@@ -213,11 +228,7 @@ def present_question(
             # dismissal and must not become a provider-side cancellation.
             return
         cancel_countdown()
-        answers = [
-            _read_question_answer(spec, state)
-            for spec, state in zip(questions, controls)
-        ]
-        on_answer(_format_answers(questions, answers))
+        on_answer(_format_answers(questions, [_read_question_answer(question, controls)]))
 
     dlg.connect("response", on_response)
     dlg.present(parent)
@@ -328,7 +339,7 @@ def _present_approval(
 
 
 def _normalize_questions(input_payload: dict) -> list[_QuestionSpec]:
-    """Return a bounded, sanitized representation of provider questions."""
+    """Return a sanitized representation of provider questions."""
     if not isinstance(input_payload, dict):
         return []
     raw_questions = input_payload.get("questions") or []
@@ -393,24 +404,18 @@ def _normalize_questions(input_payload: dict) -> list[_QuestionSpec]:
                 ),
             )
         )
-        if len(normalized) == _MAX_QUESTIONS:
-            break
     return normalized
 
 
 def _build_question(
     spec: _QuestionSpec,
     parent_box: Gtk.Box,
-    *,
-    show_prompt: bool,
 ) -> _QuestionControls:
     section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
     required = Gtk.Label(label="Required", xalign=0)
     required.add_css_class("caption-heading")
     required.add_css_class("accent")
     section.append(required)
-    if show_prompt:
-        section.append(_option_row(spec.header, spec.question))
 
     if not spec.options:
         entry = Gtk.Entry()

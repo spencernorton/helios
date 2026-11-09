@@ -128,6 +128,64 @@ def test_dismissed_permission_cancels(tmp_path):
     assert driver._proc.stdin.frames()[-1]["result"]["outcome"]["outcome"] == "cancelled"
 
 
+def _form_elicitation(request_id=55):
+    return {"id": request_id, "method": "elicitation/create", "params": {
+        "sessionId": "session_kimi", "toolCallId": "call-9", "mode": "form",
+        "message": "Which region?\nWhat output?",
+        "requestedSchema": {
+            "type": "object",
+            "properties": {
+                "q0": {"type": "string", "title": "Region", "description": "Pick a deployment region.",
+                       "oneOf": [{"const": "us", "title": "us"}, {"const": "eu", "title": "eu"}]},
+                "q1": {"type": "array", "title": "Output", "minItems": 1,
+                       "items": {"anyOf": [{"const": "json", "title": "json"},
+                                           {"const": "table", "title": "table"}]}},
+            },
+            "required": ["q0", "q1"],
+        }}}
+
+
+def test_form_elicitation_preserves_question_ids_and_native_answer_types(tmp_path):
+    driver = _driver(tmp_path)
+    asked = []
+    driver.connect("question-asked", lambda _d, payload, token: asked.append((payload, token)))
+    driver._dispatch_message(_form_elicitation())
+
+    (payload, token), = asked
+    region, output = payload["questions"]
+    assert region["id"] == "q0"
+    assert region["header"] == "Region"
+    assert region["question"] == "Which region?\n\nPick a deployment region."
+    assert [option["label"] for option in region["options"]] == ["us", "eu"]
+    assert region["allowOther"] is False
+    assert output["id"] == "q1"
+    assert output["multiSelect"] is True
+    assert output["question"] == "What output?"
+    assert not driver._proc.stdin.writes
+
+    driver.answer_question(token, {"q0": {"answers": ["eu"]}, "q1": {"answers": ["json", "table"]}})
+    response = driver._proc.stdin.frames()[-1]
+    assert response["id"] == 55
+    assert response["result"] == {
+        "action": "accept", "content": {"q0": "eu", "q1": ["json", "table"]}}
+    assert driver._pending_requests == {}
+
+
+def test_dismissing_or_retiring_form_rejects_late_answers(tmp_path):
+    driver = _driver(tmp_path)
+    retired = []
+    driver.connect("interaction-resolved", lambda _d, token: retired.append(token))
+    driver._dispatch_message(_form_elicitation())
+    driver.answer_question("55", None)
+    assert driver._proc.stdin.frames()[-1]["result"] == {"action": "cancel"}
+
+    driver._dispatch_message(_form_elicitation(56))
+    driver._on_exit(0)
+    driver.answer_question("56", {"q0": {"answers": ["eu"]}, "q1": {"answers": ["json"]}})
+    assert retired == ["56"]
+    assert len(driver._proc.stdin.frames()) == 1
+
+
 def test_dynamic_model_effort_and_mode_settings(tmp_path):
     driver = _driver(tmp_path)
     driver._is_busy = False

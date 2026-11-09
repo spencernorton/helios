@@ -23,13 +23,13 @@ class FakeDrv:
     def __init__(self, sid: str, running: bool = True) -> None:
         self.session_id = sid
         self._running = running
-        self.answers: list[tuple[str, str | None]] = []
+        self.answers: list[tuple[str, object]] = []
 
     @property
     def is_running(self) -> bool:
         return self._running
 
-    def answer_question(self, tool_use_id: str, text: str | None) -> None:
+    def answer_question(self, tool_use_id: str, text: object) -> None:
         self.answers.append((tool_use_id, text))
 
 
@@ -48,11 +48,12 @@ def win(monkeypatch):
         captured.append((payload, on_answer, on_dismiss, dialog))
         return dialog
 
-    monkeypatch.setattr(
-        "helios.widgets.question_dialog.present_question", fake_present
-    )
+    from helios.widgets import question_dialog
 
     f = types.SimpleNamespace()
+    f._native_present = question_dialog.present_question
+    monkeypatch.setattr(question_dialog, "present_question", fake_present)
+
     f._destroyed = False
     f._question_active = False
     f._question_active_key = None
@@ -103,6 +104,100 @@ def test_only_one_dialog_at_a_time(win):
     win.captured[1][2]()  # on_dismiss
     assert d2.answers == [("t2", None)]
     assert win._question_active is False
+
+
+@pytest.mark.parametrize("settlement", ["submit", "cancel", "provider"])
+def test_batch_presents_one_question_and_completes_one_request(win, settlement):
+    drv, other = FakeDrv("s1"), FakeDrv("s2")
+    win._on_question_asked(drv, {"questions": [
+        {"id": str(index), "question": f"Question {index}?"} for index in range(4)
+    ]}, "same-request")
+    # Native IDs may be reused across connections.
+    win._on_question_asked(other, {"q": 2}, "same-request")
+    assert len(win.captured) == 1
+    first_answer = win.captured[0][1]
+    for index in range(3):
+        payload, answer, _dismiss, _dialog = win.captured[index]
+        assert [q["question"] for q in payload["questions"]] == [f"Question {index}?"]
+        assert payload["questionProgress"] == f"Question {index + 1} of 4"
+        assert payload["questionSubmitLabel"] == "Next"
+        answer({"step": {"answers": [f"answer-{index}", "value, with comma"]}})
+        assert drv.answers == []
+        assert len(win.captured) == index + 2
+
+    first_answer({"step": {"answers": ["stale"]}})
+    payload, answer, dismiss, dialog = win.captured[3]
+    assert payload["questionSubmitLabel"] == "Submit"
+    if settlement == "submit":
+        answer({"step": {"answers": ["final"]}})
+        expected = {str(i): {"answers": [f"answer-{i}", "value, with comma"]} for i in range(3)}
+        expected["3"] = {"answers": ["final"]}
+        assert drv.answers == [("same-request", expected)]
+    elif settlement == "cancel":
+        dismiss()
+        assert drv.answers == [("same-request", None)]
+    else:
+        win._on_interaction_resolved(drv, "same-request")
+        assert dialog.closed
+        answer({"step": {"answers": ["stale"]}})
+        assert drv.answers == []
+
+    assert len(win.captured) == 5
+    assert win._question_active_key == (other, "same-request")
+
+
+def test_native_dialog_advances_after_gtk_response(win, monkeypatch):
+    from gi.repository import Adw, GLib, Gtk
+    from helios.widgets import question_dialog
+
+    if not Gtk.init_check():
+        pytest.skip("GTK display unavailable")
+    Adw.init()
+    window = Adw.Window()
+    window.set_content(Gtk.Box())
+    window.present()
+    context = GLib.MainContext.default()
+
+    def present(_parent, payload, on_answer, on_dismiss):
+        return win._native_present(window, payload, on_answer, on_dismiss)
+
+    def submit(dialog, label):
+        widgets = [dialog]
+        while widgets:
+            widget = widgets.pop()
+            if isinstance(widget, Gtk.Button) and widget.get_label() == label:
+                widget.emit("clicked")
+                return
+            child = widget.get_first_child()
+            while child is not None:
+                widgets.append(child)
+                child = child.get_next_sibling()
+        pytest.fail(f"Missing dialog response button: {label}")
+
+    monkeypatch.setattr(question_dialog, "present_question", present)
+    try:
+        drv = FakeDrv("native")
+        win._on_question_asked(drv, {"questions": [
+            {"id": "region", "header": "Region", "question": "Which region?", "options": ["EU"]},
+            {"id": "format", "header": "Format", "question": "Which format?", "options": ["JSON"]},
+        ]}, "gtk")
+        first = win._question_dialog
+        assert first.get_body() == "Which region?"
+        assert first.get_response_label("submit") == "Next"
+        submit(first, "Next")
+        while context.pending():
+            context.iteration(False)
+        second = win._question_dialog
+        assert second is not first
+        assert second.get_body() == "Which format?"
+        assert drv.answers == []
+        submit(second, "Submit")
+        assert drv.answers == [("gtk", {
+            "region": {"answers": ["EU"]}, "format": {"answers": ["JSON"]},
+        })]
+        assert not win._question_active
+    finally:
+        window.destroy()
 
 
 def test_dead_driver_question_is_skipped(win):
