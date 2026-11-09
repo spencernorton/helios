@@ -92,10 +92,12 @@ def _form_question_payload(params: dict) -> dict | None:
             for variant in variants or []
             if isinstance(variant, dict) and isinstance(variant.get("const"), str)
         ] if isinstance(variants, list) else []
+        prompt = lines[index] if aligned else ""
+        description = str(field.get("description") or "")
         rows.append({
             "id": key,
             "header": field.get("title") or f"Question {index + 1}",
-            "question": lines[index] if aligned else field.get("description") or "",
+            "question": "\n\n".join(dict.fromkeys(filter(None, (prompt, description)))),
             "multiSelect": multi,
             "allowOther": False,
             "options": options,

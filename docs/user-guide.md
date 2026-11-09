@@ -196,6 +196,7 @@ a turn. Helios shows one question at a time with choices or a text field
 as supported by the provider. A batch shows your progress and sends your
 answers together after the final prompt. Cancel dismisses the entire
 request. A question from another session waits until you open that session.
+When Claude identifies a subagent as the asker, the dialog names it.
 
 ## Budgets
 

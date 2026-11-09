@@ -48,11 +48,12 @@ def win(monkeypatch):
         captured.append((payload, on_answer, on_dismiss, dialog))
         return dialog
 
-    monkeypatch.setattr(
-        "helios.widgets.question_dialog.present_question", fake_present
-    )
+    from helios.widgets import question_dialog
 
     f = types.SimpleNamespace()
+    f._native_present = question_dialog.present_question
+    monkeypatch.setattr(question_dialog, "present_question", fake_present)
+
     f._destroyed = False
     f._question_active = False
     f._question_active_key = None
@@ -149,8 +150,6 @@ def test_native_dialog_advances_after_gtk_response(win, monkeypatch):
     from gi.repository import Adw, GLib, Gtk
     from helios.widgets import question_dialog
 
-    # Restore the real presenter while keeping the lightweight window queue.
-    monkeypatch.undo()
     if not Gtk.init_check():
         pytest.skip("GTK display unavailable")
     Adw.init()
@@ -160,7 +159,7 @@ def test_native_dialog_advances_after_gtk_response(win, monkeypatch):
     context = GLib.MainContext.default()
 
     def present(_parent, payload, on_answer, on_dismiss):
-        return real_present(window, payload, on_answer, on_dismiss)
+        return win._native_present(window, payload, on_answer, on_dismiss)
 
     def submit(dialog, label):
         widgets = [dialog]
@@ -175,7 +174,6 @@ def test_native_dialog_advances_after_gtk_response(win, monkeypatch):
                 child = child.get_next_sibling()
         pytest.fail(f"Missing dialog response button: {label}")
 
-    real_present = question_dialog.present_question
     monkeypatch.setattr(question_dialog, "present_question", present)
     try:
         drv = FakeDrv("native")

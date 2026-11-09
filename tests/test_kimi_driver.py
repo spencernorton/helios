@@ -135,7 +135,7 @@ def _form_elicitation(request_id=55):
         "requestedSchema": {
             "type": "object",
             "properties": {
-                "q0": {"type": "string", "title": "Region",
+                "q0": {"type": "string", "title": "Region", "description": "Pick a deployment region.",
                        "oneOf": [{"const": "us", "title": "us"}, {"const": "eu", "title": "eu"}]},
                 "q1": {"type": "array", "title": "Output", "minItems": 1,
                        "items": {"anyOf": [{"const": "json", "title": "json"},
@@ -155,7 +155,7 @@ def test_form_elicitation_preserves_question_ids_and_native_answer_types(tmp_pat
     region, output = payload["questions"]
     assert region["id"] == "q0"
     assert region["header"] == "Region"
-    assert region["question"] == "Which region?"
+    assert region["question"] == "Which region?\n\nPick a deployment region."
     assert [option["label"] for option in region["options"]] == ["us", "eu"]
     assert region["allowOther"] is False
     assert output["id"] == "q1"
