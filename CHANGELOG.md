@@ -4,6 +4,10 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.115.2 — 2026-11-09
+
+- A Claude turn refused by the API (for example at the weekly usage limit) no longer reads as an instant, empty success. The CLI reports those turns as `subtype: "success"` with `is_error`/`api_error` set and the refusal in its result text; Helios now books the attempt as failed and shows that text as an error in the transcript.
+
 ## 0.115.1 — 2026-11-02
 
 - A deleted or archived session no longer comes back as an empty "Session <id>" row. Its stopped `claude` process wrote its exit records into the transcript after Helios had removed it, recreating the file; the sidebar now remembers what was removed, applies the same removal to anything written later, and checks again once the process has certainly exited.
