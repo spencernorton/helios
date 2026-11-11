@@ -536,14 +536,28 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         # the newest Fable automatically, so this stays current as models ship.
         self._model = self._ui_state.get("model", DEFAULT_MODEL) or DEFAULT_MODEL
         self._effort_key: str = migrate_effort_level(self._ui_state)
+        _saved_openai_effort = str(
+            self._ui_state.get("effort_openai", "") or ""
+        )
         self._provider_efforts: dict[str, str] = {
             model_catalog.PROVIDER_ANTHROPIC: str(
                 self._ui_state.get("effort_anthropic", self._effort_key) or ""
             ),
-            model_catalog.PROVIDER_OPENAI: str(
-                # OpenAI effort is conversation-owned. A persisted Ultra
-                # must never become the default for every fresh GPT Work.
-                ""
+            model_catalog.PROVIDER_OPENAI: (
+                # Ultra can proactively delegate and stays a one-session lease,
+                # never an ambient default. Non-Ultra choices persist across
+                # fresh GPT chats so models with a low catalog default do not
+                # silently drop every new conversation to low reasoning.
+                "high" if _saved_openai_effort == "ultra" else _saved_openai_effort
+            ),
+            model_catalog.PROVIDER_GOOGLE: str(
+                self._ui_state.get("effort_google", "") or ""
+            ),
+            model_catalog.PROVIDER_MUSE: str(
+                self._ui_state.get("effort_muse", "") or ""
+            ),
+            model_catalog.PROVIDER_KIMI: str(
+                self._ui_state.get("effort_kimi", "") or ""
             ),
             model_catalog.PROVIDER_OPENROUTER: str(
                 self._ui_state.get("effort_openrouter", "") or ""
@@ -2078,8 +2092,11 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             requested_effort = stored_effort
             source = "Saved"
         elif provider == model_catalog.PROVIDER_OPENAI:
-            requested_effort = ""
-            source = "Model default"
+            remembered_openai = self._provider_efforts.get(provider, "")
+            if remembered_openai == "ultra":
+                remembered_openai = ""
+            requested_effort = remembered_openai
+            source = "Global default" if requested_effort else "Model default"
         else:
             requested_effort = (
                 self._provider_efforts.get(provider, "") or self._effort_key
@@ -2104,6 +2121,11 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 entry is not None
                 and entry.default_effort in allowed
                 and entry.default_effort != "ultra"
+                and not (
+                    provider == model_catalog.PROVIDER_OPENAI
+                    and entry.default_effort == "low"
+                    and ("high" in allowed or "max" in allowed)
+                )
             ):
                 return entry.default_effort, "Model default"
             # Ultra is an explicit one-session lease, never an ambient model
@@ -3022,14 +3044,15 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             live_effort or self._staged_effort_key or stored_effort
         )
         conversation_owned = live or bool(self._staged_effort_key or stored_effort)
-        remembered = (
-            ""
-            if provider == model_catalog.PROVIDER_OPENAI
-            else self._provider_efforts.get(provider, "")
-        )
-        selected_effort = conversation_effort or remembered or self._effort_key
-        if provider == model_catalog.PROVIDER_OPENAI and not conversation_effort:
-            selected_effort = ""
+        remembered = self._provider_efforts.get(provider, "")
+        if provider == model_catalog.PROVIDER_OPENAI and remembered == "ultra":
+            remembered = ""
+        if provider == model_catalog.PROVIDER_OPENAI:
+            selected_effort = conversation_effort or remembered
+        else:
+            selected_effort = (
+                conversation_effort or remembered or self._effort_key
+            )
         if provider == model_catalog.PROVIDER_OPENROUTER:
             # The driver has mapped Helios effort keys onto OpenRouter's
             # unified `reasoning` parameter since the provider landed, with
@@ -3084,15 +3107,16 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 selected_effort,
                 supported_levels=supported,
             )
-        if (
-            effective
-            and not conversation_owned
-            and provider != model_catalog.PROVIDER_OPENAI
-        ):
-            self._effort_key = effective
-            self._provider_efforts[provider] = effective
-            self._ui_state.set(f"effort_{provider}", effective)
-            self._ui_state.set("effort_level", effective)
+        if effective and not conversation_owned:
+            if provider == model_catalog.PROVIDER_OPENAI:
+                if effective != "ultra":
+                    self._provider_efforts[provider] = effective
+                    self._ui_state.set(f"effort_{provider}", effective)
+            else:
+                self._effort_key = effective
+                self._provider_efforts[provider] = effective
+                self._ui_state.set(f"effort_{provider}", effective)
+                self._ui_state.set("effort_level", effective)
         # Re-apply the selected conversation after rebuilding the slider.  A
         # catalog refresh must never replace a live/staged/stored choice with
         # the provider-wide fallback used for brand-new conversations.

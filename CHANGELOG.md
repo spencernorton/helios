@@ -4,6 +4,11 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.115.5 — 2026-11-11
+
+- OpenAI reasoning defaults now persist non-Ultra levels (`effort_openai`) across fresh GPT conversations instead of dropping new chats to a model's `low` catalog default, while keeping `ultra` scoped to a single staged session.
+- Standing provider instructions across Claude, Codex and OpenRouter now direct sessions to execute unblocked phases end-to-end without pausing at preliminary slices or plan sign-offs, run authorized CLI/git/build/test steps directly instead of handing manual chores back to the user, and close temporary verification windows and tabs before finishing a turn.
+
 ## 0.115.4 — 2026-11-09
 
 - Helios presents provider question batches one prompt at a time. Answers go back together after the final prompt, and cancelling any prompt cancels the request.

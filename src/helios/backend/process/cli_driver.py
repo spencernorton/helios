@@ -56,7 +56,7 @@ from helios.backend.claude_binary import (
     supports_effort_flag,
     supports_forward_subagent_text,
 )
-from helios.backend.codex_context import EXTRA_SYSTEM_PROMPT
+from helios.backend.codex_context import EXTRA_SYSTEM_PROMPT, build_claude_system_prompt
 from helios.backend.model_catalog import context_window_for
 from helios.backend.process.spend_accounting import SpendAccumulator
 from helios.backend.process.env_scrub import (
@@ -615,8 +615,7 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
         # instruction channel it has: the operator's system-prompt.d files,
         # when there are any. A constant string, so it does not re-break the
         # cached prefix the flag above just stabilised.
-        if EXTRA_SYSTEM_PROMPT:
-            argv += ["--append-system-prompt", EXTRA_SYSTEM_PROMPT]
+        argv += ["--append-system-prompt", build_claude_system_prompt(EXTRA_SYSTEM_PROMPT)]
         # Forward each child agent's own messages into the root stream, tagged
         # with `parent_tool_use_id`, so the Agent Dock can show what a subagent
         # is actually saying instead of a bare status square. Measured on

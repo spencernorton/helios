@@ -68,3 +68,12 @@ def test_codex_policy_asks_only_at_material_decision_boundaries():
     assert "missing authority or credentials" in policy
     assert "Do not ask merely for confirmation" in policy
     assert "blocked plan task" in policy
+
+
+def test_end_to_end_execution_and_window_cleanup_policy_is_present():
+    policy = codex_context.CODEX_DEVELOPER_INSTRUCTIONS
+
+    assert "end-to-end in the current turn" in policy
+    assert "never stop at a plan ('Say go')" in policy
+    assert "instead of handing manual chores back to the user" in policy
+    assert "Close any temporary GUI windows, dialogs, or browser tabs" in policy

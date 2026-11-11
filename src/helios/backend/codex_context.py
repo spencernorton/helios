@@ -74,31 +74,53 @@ def load_extra_system_prompt(config_home: str | None = None) -> str:
 # in its system prompt), so the cached prompt prefix stays stable.
 EXTRA_SYSTEM_PROMPT = load_extra_system_prompt()
 
+END_TO_END_EXECUTION_POLICY = (
+    "Execute all unblocked phases, implementations, verifications, and "
+    "requested follow-through steps end-to-end in the current turn until the "
+    "user's full objective is complete or genuinely blocked; never stop at a "
+    "plan ('Say go'), a preliminary slice, or a self-invented checkpoint when "
+    "unblocked work remains. When the session's permission mode authorizes "
+    "tool execution, run CLI, git, build, test, install, and API operations "
+    "directly instead of handing manual chores back to the user. Close any "
+    "temporary GUI windows, dialogs, or browser tabs opened during "
+    "verification before ending the turn unless the user asked to keep them "
+    "open."
+)
 EXECUTION_PLAN_POLICY = (
     "For multi-step research, implementation, debugging, or operational work, "
     "create a concrete native execution plan before the first write or other "
     "consequential action and keep its statuses current. Use 2–8 outcome-based "
-    "tasks; keep at most one root task in progress unless the accepted Work "
-    "explicitly calls for parallel work; mark a task complete only after "
-    "evidence; and never silently drop an unfinished task. A simple one-step "
-    "answer needs no decorative plan. The execution plan does not replace the "
-    "user's objective, definition of done, or acceptance checklist."
+    "tasks; advance through every unblocked task within the turn; mark a task "
+    "complete only after evidence; and never silently drop an unfinished task. "
+    "A simple one-step answer needs no decorative plan. The execution plan "
+    "does not replace the user's objective, definition of done, or acceptance "
+    "checklist."
 )
 ASK_OR_CONTINUE_POLICY = (
     "Continue reversible, in-scope local work without asking and state material "
     "assumptions. Stop and ask the smallest focused question only when the "
     "answer would materially change acceptance criteria or architecture, "
-    "authorize an external, destructive, or irreversible effect, or provide "
-    "missing authority or credentials. Do not ask merely for confirmation when "
-    "the request is already clear. When a question blocks one task, keep safe "
-    "independent work moving and tie the question to that blocked plan task."
+    "authorize an unrequested external, destructive, or irreversible effect, "
+    "or provide genuinely missing authority or credentials. Do not ask merely "
+    "for confirmation, phase sign-off, or 'go' when the request is already "
+    "clear. When a question blocks one task, keep safe independent work moving "
+    "and tie the question to that blocked plan task."
 )
+
+
+def build_claude_system_prompt(extra: str | None = None) -> str:
+    """Standing Helios execution policy plus operator system-prompt.d text."""
+    site = EXTRA_SYSTEM_PROMPT if extra is None else extra
+    return f"{END_TO_END_EXECUTION_POLICY}\n\n{site}" if site else END_TO_END_EXECUTION_POLICY
+
 
 CODEX_DEVELOPER_INSTRUCTIONS = (
     "Follow the user request and the repository's native AGENTS.md instructions. "
     "Do not infer provider roles, tandem review, delegation, or additional scope "
     "unless the accepted Work context or user request explicitly requires it. "
     + PRESENTATION_POLICY
+    + " "
+    + END_TO_END_EXECUTION_POLICY
     + " "
     + EXECUTION_PLAN_POLICY
     + " "
@@ -127,4 +149,4 @@ def inject_shared_context(
     """Wrap a fallback prompt with only Helios-owned neutral policy."""
 
     del cwd, max_chars
-    return f"{PRESENTATION_POLICY}\n\nUser request:\n{user_text}"
+    return f"{PRESENTATION_POLICY} {END_TO_END_EXECUTION_POLICY}\n\nUser request:\n{user_text}"

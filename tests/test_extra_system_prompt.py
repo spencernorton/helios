@@ -62,5 +62,7 @@ def test_every_provider_gets_it(tmp_path, monkeypatch):
     # The Claude and OpenRouter drivers import GTK, so they are checked at the
     # source level to keep this test in the GTK-free lane.
     process = Path(helios.__file__).parent / "backend" / "process"
-    assert 'argv += ["--append-system-prompt", EXTRA_SYSTEM_PROMPT]' in (process / "cli_driver.py").read_text()
+    assert codex_context.build_claude_system_prompt("") == codex_context.END_TO_END_EXECUTION_POLICY
+    assert codex_context.build_claude_system_prompt("site policy").endswith("\n\nsite policy")
+    assert 'argv += ["--append-system-prompt", build_claude_system_prompt(EXTRA_SYSTEM_PROMPT)]' in (process / "cli_driver.py").read_text()
     assert "EXTRA_SYSTEM_PROMPT.replace(" in (process / "openrouter_driver.py").read_text()

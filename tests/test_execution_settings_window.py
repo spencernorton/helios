@@ -740,6 +740,7 @@ def test_gpt_model_default_ultra_is_narrowed_without_explicit_staging():
         ("high", ""),
         ("ultra", ""),
     )
+    h.window._provider_efforts["openai"] = ""
     h.window._catalog_entries_by_id["gpt-5.6"].default_effort = "ultra"
 
     effort, source = MainWindow._execution_effort_for_spawn(
@@ -749,6 +750,44 @@ def test_gpt_model_default_ultra_is_narrowed_without_explicit_staging():
     )
 
     assert (effort, source) == ("high", "Helios standard")
+
+
+def test_gpt_fresh_spawn_honors_non_ultra_global_default_and_avoids_low_catalog_drop():
+    h = _window(
+        session_id="",
+        selected_provider="openai",
+        target_provider="openai",
+        register_target=False,
+    )
+    h.window._model = "gpt-6.1-sol"
+    h.window._catalog_entries_by_id = {
+        "gpt-6.1-sol": SimpleNamespace(
+            reasoning_efforts=(
+                ("low", ""),
+                ("medium", ""),
+                ("high", ""),
+                ("xhigh", ""),
+                ("ultra", ""),
+            ),
+            default_effort="low",
+        )
+    }
+    h.window._provider_efforts["openai"] = "xhigh"
+    assert MainWindow._execution_effort_for_spawn(
+        h.window,
+        h.window._next_chat,
+        "openai",
+    ) == ("xhigh", "Global default")
+
+    # Even when no global OpenAI preference has been saved yet (or if a legacy
+    # "ultra" slipped into memory), fresh coding chats prefer "high" over a
+    # bare "low" catalog default.
+    h.window._provider_efforts["openai"] = "ultra"
+    assert MainWindow._execution_effort_for_spawn(
+        h.window,
+        h.window._next_chat,
+        "openai",
+    ) == ("high", "Helios standard")
 
 
 def test_stopped_gpt_non_ultra_effort_remains_durable():
