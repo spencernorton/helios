@@ -405,7 +405,7 @@ The file is written atomically (`ui-state.json.tmp` then rename) with `indent=2,
 | `glass_sidebar` | boolean | `false` | JSON `true`/`false`, or the strings `"true"`/`"false"` | Translucent sessions sidebar. Any other truthy value does not enable it |
 | `title_backend` | string | `"first_message"` | `first_message`, `ollama`, `builtin`, `claude` | First-message titles make no model call; unknown values also make none. Ollama needs its server/model; builtin needs installed `llama-cli` and can download a selected GGUF; Claude makes an extra CLI model request using the active account/API allowance with its supported per-title guard |
 | `builtin_title_model` | string | `"qwen2.5-0.5b"` | `qwen2.5-0.5b`, `llama-3.2-1b`, `phi-3-mini` | Selected model for the opt-in local title backend; requires installed `llama-cli` |
-| `ollama_url` | string | `"http://localhost:11434"` | `http://` or `https://` URL with a host, no credentials, query or fragment | Ollama server for titles |
+| `ollama_url` | string | `"http://localhost:11434"` | `http://` or `https://` URL with a host, no credentials, query or fragment | Ollama server (or `/v1` OpenAI-compatible server) for titles |
 | `ollama_title_model` | string | `"qwen2.5-coder:14b"` | non-empty tag, at most 256 characters, no whitespace | Ollama model for titles |
 | `notify_on_finish` | boolean | `true` | `true`, `false` | Desktop notification when a background session finishes or asks a question |
 | `notify_on_mission_gate` | boolean | `true` | `true`, `false` | Notification when a mission in the optional Missions pane is gated |
@@ -681,8 +681,8 @@ Throwaway rule for display: sessions whose working directory is `/tmp`, under `/
 
 | Endpoint | When |
 |---|---|
-| `http://localhost:11434/api/generate` (POST; `ollama_url`) | Opt-in Ollama title backend. On every sidebar reload, for the 30 most recent untitled local sessions, one request at a time, 30 s timeout. Ollama absent: logged at DEBUG (`ollama title failed`), first-message titles remain, nothing else changes |
-| `http://localhost:11434/api/tags` (GET) | Only from Settings → Behavior "Save and check", 5 s timeout |
+| `http://localhost:11434/api/generate` or `<ollama_url>/chat/completions` when `ollama_url` ends with `/v1` (POST; `ollama_url`) | Opt-in local HTTP title backend. On every sidebar reload, for the 30 most recent untitled local sessions, one request at a time, 30 s timeout, 32-token output cap. Server absent: logged at DEBUG (`ollama title failed`), first-message titles remain, nothing else changes |
+| `http://localhost:11434/api/tags` or `<ollama_url>/models` when `ollama_url` ends with `/v1` (GET) | Only from Settings → Behavior "Save and check", 5 s timeout |
 | `claude --print --model haiku --max-budget-usd 0.05 ...` | Only when `title_backend` is `claude`; skipped silently if the CLI lacks `--max-budget-usd` |
 | `https://openrouter.ai/api/v1/models` | Only with a key: when Settings is opened or a key is saved (force refresh); periodic refreshes read the cache |
 | `https://openrouter.ai/api/v1/key`, `https://openrouter.ai/api/v1/credits` | Only with a key and an OpenRouter model selected: at startup if the sticky `model` is an OpenRouter id, whenever the picker or provider toggle switches to an OpenRouter model from another provider, whenever the key is saved in Settings, and after a completed turn at most once per 60 s |
