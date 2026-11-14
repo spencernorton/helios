@@ -32,11 +32,23 @@ from helios.backend.execution_plan import (
     steps_from_json,
     steps_to_json,
 )
+from helios.backend.product_brief import (
+    BriefAuthorityError,
+    BriefCriterion,
+    DeliveryEvidence,
+    ExplicitStop,
+    ProductBrief,
+    ProductBriefError,
+    ReferenceArtifactRef,
+    StaleBriefRevisionError,
+    UserCorrection,
+    enforce_update_authority,
+)
 from helios.backend.project_perms import canonical_cwd
 from helios.backend.sensitive_text import scrub_sensitive
 from helios.paths import state_dir
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 _CLAUDE_PROVIDER = "anthropic"
 
 # Per-provider concurrency ceilings for the durable admission ledger.
@@ -2350,6 +2362,511 @@ class WorkStore:
                 )
         return participant
 
+    def get_product_brief(self, work_id: str) -> ProductBrief:
+        """Return the Work's current ProductBrief (revision 0 if uninitialized)."""
+
+        with self._lock:
+            work_row = self._work_row(self._conn, work_id)
+            work = _work(work_row)
+            row = self._conn.execute(
+                "SELECT brief_json FROM product_briefs WHERE work_id = ?",
+                (work_id,),
+            ).fetchone()
+        if row is not None:
+            return ProductBrief.from_dict(_load_json(str(row["brief_json"])))
+        criteria = (
+            (BriefCriterion(criterion_id="dod-1", text=work.definition_of_done),)
+            if work.definition_of_done.strip()
+            else ()
+        )
+        return ProductBrief(
+            work_id=work.work_id,
+            revision=0,
+            outcome=work.objective,
+            criteria=criteria,
+            updated_at=work.updated_at,
+        )
+
+    def list_product_brief_revisions(self, work_id: str) -> list[ProductBrief]:
+        """Return immutable historical ProductBrief revisions in ascending order."""
+
+        with self._lock:
+            self._work_row(self._conn, work_id)
+            rows = self._conn.execute(
+                """
+                SELECT brief_json FROM product_brief_revisions
+                WHERE work_id = ?
+                ORDER BY revision ASC
+                """,
+                (work_id,),
+            ).fetchall()
+        return [ProductBrief.from_dict(_load_json(str(r["brief_json"]))) for r in rows]
+
+    def update_product_brief(
+        self,
+        work_id: str,
+        *,
+        expected_revision: int | None = None,
+        author_role: str = "user",
+        outcome: str | None = None,
+        supersedes: str | None = None,
+        delivery_target: str | None = None,
+        criteria: Any = None,
+        reference_artifacts: Any = None,
+        source_message_ids: Any = None,
+        rejected_approaches: Any = None,
+        explicit_stops: Any = None,
+        unresolved_corrections: Any = None,
+        summary: str = "",
+    ) -> ProductBrief:
+        """Advance a Work's ProductBrief with optimistic revision & authority checks."""
+
+        with self._transaction() as conn:
+            work_row = self._work_row(conn, work_id)
+            work = _work(work_row)
+            existing_row = conn.execute(
+                "SELECT brief_json FROM product_briefs WHERE work_id = ?",
+                (work_id,),
+            ).fetchone()
+            if existing_row is not None:
+                current = ProductBrief.from_dict(
+                    _load_json(str(existing_row["brief_json"]))
+                )
+            else:
+                init_criteria = (
+                    (BriefCriterion(criterion_id="dod-1", text=work.definition_of_done),)
+                    if work.definition_of_done.strip()
+                    else ()
+                )
+                current = ProductBrief(
+                    work_id=work.work_id,
+                    revision=0,
+                    outcome=work.objective,
+                    criteria=init_criteria,
+                    updated_at=work.updated_at,
+                )
+
+            if expected_revision is not None and expected_revision != current.revision:
+                raise StaleBriefRevisionError(
+                    f"stale brief revision for {work_id}: expected {expected_revision}, "
+                    f"current is {current.revision}"
+                )
+
+            next_criteria = (
+                tuple(
+                    BriefCriterion.from_any(item, idx + 1)
+                    for idx, item in enumerate(criteria)
+                )
+                if criteria is not None
+                else None
+            )
+            next_stops = (
+                tuple(
+                    ExplicitStop.from_any(item, idx + 1)
+                    for idx, item in enumerate(explicit_stops)
+                )
+                if explicit_stops is not None
+                else None
+            )
+            enforce_update_authority(
+                current,
+                author_role=author_role,
+                next_criteria=next_criteria,
+                next_stops=next_stops,
+            )
+
+            next_refs = (
+                tuple(
+                    ReferenceArtifactRef.from_any(item, idx + 1)
+                    for idx, item in enumerate(reference_artifacts)
+                )
+                if reference_artifacts is not None
+                else current.reference_artifacts
+            )
+            next_corrections = (
+                tuple(
+                    UserCorrection.from_any(item, idx + 1)
+                    for idx, item in enumerate(unresolved_corrections)
+                )
+                if unresolved_corrections is not None
+                else current.unresolved_corrections
+            )
+            next_src_msgs = (
+                tuple(str(m).strip() for m in source_message_ids if str(m).strip())
+                if source_message_ids is not None
+                else current.source_message_ids
+            )
+            next_rejected = (
+                tuple(str(r).strip() for r in rejected_approaches if str(r).strip())
+                if rejected_approaches is not None
+                else current.rejected_approaches
+            )
+
+            next_outcome = (
+                _text(outcome).strip() if outcome is not None else current.outcome
+            )
+            if supersedes is not None:
+                next_supersedes = _text(supersedes).strip()
+            elif (
+                outcome is not None
+                and current.outcome.strip()
+                and next_outcome != current.outcome.strip()
+            ):
+                next_supersedes = current.outcome.strip()
+            else:
+                next_supersedes = current.supersedes
+
+            now = _now()
+            next_rev = current.revision + 1
+            updated_brief = ProductBrief.from_dict(
+                {
+                    "work_id": work_id,
+                    "revision": next_rev,
+                    "outcome": next_outcome,
+                    "supersedes": next_supersedes,
+                    "delivery_target": (
+                        _text(delivery_target).strip()
+                        if delivery_target is not None
+                        else current.delivery_target
+                    ),
+                    "criteria": [
+                        c.to_dict()
+                        for c in (
+                            next_criteria if next_criteria is not None else current.criteria
+                        )
+                    ],
+                    "reference_artifacts": [r.to_dict() for r in next_refs],
+                    "source_message_ids": list(next_src_msgs),
+                    "rejected_approaches": list(next_rejected),
+                    "explicit_stops": [
+                        s.to_dict()
+                        for s in (
+                            next_stops if next_stops is not None else current.explicit_stops
+                        )
+                    ],
+                    "unresolved_corrections": [u.to_dict() for u in next_corrections],
+                    "delivery_evidence": [e.to_dict() for e in current.delivery_evidence],
+                    "updated_by": author_role,
+                    "updated_at": now,
+                }
+            )
+            serialized = _json(updated_brief.to_dict())
+            conn.execute(
+                """
+                INSERT INTO product_briefs (work_id, revision, brief_json, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(work_id) DO UPDATE SET
+                    revision = excluded.revision,
+                    brief_json = excluded.brief_json,
+                    updated_at = excluded.updated_at
+                """,
+                (work_id, next_rev, serialized, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO product_brief_revisions (
+                    work_id, revision, author_role, summary, brief_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    work_id,
+                    next_rev,
+                    author_role,
+                    _text(summary).strip() or f"Brief updated to revision {next_rev}",
+                    serialized,
+                    now,
+                ),
+            )
+            if (
+                author_role == "user"
+                and outcome is not None
+                and next_outcome != work.objective
+            ):
+                conn.execute(
+                    "UPDATE works SET objective = ?, updated_at = ? WHERE work_id = ?",
+                    (next_outcome, now, work_id),
+                )
+            self._append_event_conn(
+                conn,
+                work_id,
+                "brief.updated",
+                {
+                    "revision": next_rev,
+                    "author_role": author_role,
+                    "outcome": updated_brief.outcome,
+                    "supersedes": updated_brief.supersedes,
+                    "open_criteria_count": len(updated_brief.open_criteria()),
+                    "active_stop_count": len(updated_brief.active_stops()),
+                    "artifact_ids": [r.artifact_id for r in updated_brief.reference_artifacts],
+                    "summary": _text(summary).strip(),
+                },
+                created_at=now,
+            )
+        return updated_brief
+
+    def record_user_correction(
+        self,
+        work_id: str,
+        text: str,
+        *,
+        criterion_ids: Any = (),
+        artifact_ids: Any = (),
+        expected_revision: int | None = None,
+    ) -> ProductBrief:
+        """Record an untruncated user correction and reopen targeted visual claims."""
+
+        current = self.get_product_brief(work_id)
+        if expected_revision is not None and expected_revision != current.revision:
+            raise StaleBriefRevisionError(
+                f"stale brief revision for {work_id}: expected {expected_revision}, "
+                f"current is {current.revision}"
+            )
+        target_ids = {str(cid).strip() for cid in (criterion_ids or ()) if str(cid).strip()}
+        now = _now()
+        new_corr = UserCorrection.from_any(
+            {
+                "correction_id": f"corr-{len(current.unresolved_corrections) + 1}",
+                "text": text,
+                "criterion_ids": sorted(target_ids),
+                "artifact_ids": list(artifact_ids or ()),
+                "resolved": False,
+                "recorded_at": now,
+            },
+            len(current.unresolved_corrections) + 1,
+        )
+        updated_criteria: list[BriefCriterion] = []
+        for crit in current.criteria:
+            if crit.criterion_id in target_ids:
+                reopened_stage = (
+                    "installed_candidate"
+                    if crit.readiness_stage in {"loaded_normal_launcher", "user_accepted"}
+                    else crit.readiness_stage
+                )
+                updated_criteria.append(
+                    replace(
+                        crit,
+                        visual_status=(
+                            "pending"
+                            if crit.visual_status in {"candidate", "verified"}
+                            else crit.visual_status
+                        ),
+                        user_accepted=False,
+                        readiness_stage=reopened_stage,
+                        updated_at=now,
+                    )
+                )
+            else:
+                updated_criteria.append(crit)
+        return self.update_product_brief(
+            work_id,
+            expected_revision=current.revision,
+            author_role="user",
+            criteria=updated_criteria,
+            unresolved_corrections=(*current.unresolved_corrections, new_corr),
+            summary="Recorded user correction",
+        )
+
+    def record_delivery_evidence(
+        self,
+        work_id: str,
+        evidence: DeliveryEvidence | dict[str, Any],
+        *,
+        author_role: str = "model",
+        expected_revision: int | None = None,
+    ) -> ProductBrief:
+        """Attach criterion-linked runtime delivery evidence with stage enforcement."""
+
+        raw_user_accepted = (
+            evidence.user_accepted
+            if isinstance(evidence, DeliveryEvidence)
+            else bool(evidence.get("user_accepted", False))
+            if isinstance(evidence, dict)
+            else False
+        )
+        raw_stage = (
+            evidence.readiness_stage
+            if isinstance(evidence, DeliveryEvidence)
+            else str(evidence.get("readiness_stage") or "")
+            if isinstance(evidence, dict)
+            else ""
+        )
+        if author_role != "user" and (raw_user_accepted or raw_stage == "user_accepted"):
+            raise BriefAuthorityError(
+                f"non-user role {author_role!r} cannot self-certify user_accepted delivery"
+            )
+
+        with self._transaction() as conn:
+            self._work_row(conn, work_id)
+            existing_row = conn.execute(
+                "SELECT brief_json FROM product_briefs WHERE work_id = ?",
+                (work_id,),
+            ).fetchone()
+            current = (
+                ProductBrief.from_dict(_load_json(str(existing_row["brief_json"])))
+                if existing_row is not None
+                else self.get_product_brief(work_id)
+            )
+            if expected_revision is not None and expected_revision != current.revision:
+                raise StaleBriefRevisionError(
+                    f"stale brief revision for {work_id}: expected {expected_revision}, "
+                    f"current is {current.revision}"
+                )
+            parsed = DeliveryEvidence.from_any(
+                evidence, len(current.delivery_evidence) + 1
+            )
+            now = _now()
+            effective_stage = parsed.effective_readiness_stage()
+            next_criteria: list[BriefCriterion] = []
+            matched = False
+            for crit in current.criteria:
+                if crit.criterion_id == parsed.criterion_id:
+                    matched = True
+                    next_criteria.append(
+                        replace(
+                            crit,
+                            functional_status=parsed.functional_status,
+                            visual_status=parsed.visual_status,
+                            readiness_stage=effective_stage,
+                            user_accepted=(
+                                crit.user_accepted
+                                if author_role != "user" and not parsed.has_runtime_mismatch()
+                                else (parsed.user_accepted and not parsed.has_runtime_mismatch())
+                            ),
+                            updated_at=now,
+                        )
+                    )
+                else:
+                    next_criteria.append(crit)
+            if not matched:
+                next_criteria.append(
+                    BriefCriterion(
+                        criterion_id=parsed.criterion_id,
+                        text=f"Criterion {parsed.criterion_id}",
+                        functional_status=parsed.functional_status,
+                        visual_status=parsed.visual_status,
+                        readiness_stage=effective_stage,
+                        user_accepted=parsed.user_accepted and author_role == "user",
+                        updated_at=now,
+                    )
+                )
+            next_rev = current.revision + 1
+            updated_brief = ProductBrief.from_dict(
+                {
+                    **current.to_dict(),
+                    "revision": next_rev,
+                    "criteria": [c.to_dict() for c in next_criteria],
+                    "delivery_evidence": [
+                        *(e.to_dict() for e in current.delivery_evidence),
+                        parsed.to_dict(),
+                    ],
+                    "updated_by": author_role,
+                    "updated_at": now,
+                }
+            )
+            serialized = _json(updated_brief.to_dict())
+            conn.execute(
+                """
+                INSERT INTO product_briefs (work_id, revision, brief_json, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(work_id) DO UPDATE SET
+                    revision = excluded.revision,
+                    brief_json = excluded.brief_json,
+                    updated_at = excluded.updated_at
+                """,
+                (work_id, next_rev, serialized, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO product_brief_revisions (
+                    work_id, revision, author_role, summary, brief_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    work_id,
+                    next_rev,
+                    author_role,
+                    f"Delivery evidence recorded for {parsed.criterion_id} ({effective_stage})",
+                    serialized,
+                    now,
+                ),
+            )
+            self._append_event_conn(
+                conn,
+                work_id,
+                "delivery.verified",
+                {
+                    "revision": next_rev,
+                    "criterion_id": parsed.criterion_id,
+                    "readiness_stage": effective_stage,
+                    "functional_status": parsed.functional_status,
+                    "visual_status": parsed.visual_status,
+                    "stale_process_detected": parsed.stale_process_detected,
+                    "launcher_shadowed": parsed.launcher_shadowed,
+                },
+                created_at=now,
+            )
+        return updated_brief
+
+    def record_user_acceptance(
+        self,
+        work_id: str,
+        criterion_id: str,
+        *,
+        accepted: bool = True,
+        expected_revision: int | None = None,
+    ) -> ProductBrief:
+        """User-only acceptance decision on a specific brief criterion."""
+
+        current = self.get_product_brief(work_id)
+        if expected_revision is not None and expected_revision != current.revision:
+            raise StaleBriefRevisionError(
+                f"stale brief revision for {work_id}: expected {expected_revision}, "
+                f"current is {current.revision}"
+            )
+        now = _now()
+        updated_criteria: list[BriefCriterion] = []
+        found = False
+        for crit in current.criteria:
+            if crit.criterion_id == criterion_id:
+                found = True
+                updated_criteria.append(
+                    replace(
+                        crit,
+                        user_accepted=accepted,
+                        readiness_stage=(
+                            "user_accepted"
+                            if accepted
+                            else (
+                                "loaded_normal_launcher"
+                                if crit.readiness_stage == "user_accepted"
+                                else crit.readiness_stage
+                            )
+                        ),
+                        visual_status=(
+                            "verified"
+                            if accepted and crit.visual_status == "pending"
+                            else crit.visual_status
+                        ),
+                        functional_status=(
+                            "verified"
+                            if accepted and crit.functional_status == "pending"
+                            else crit.functional_status
+                        ),
+                        updated_at=now,
+                    )
+                )
+            else:
+                updated_criteria.append(crit)
+        if not found:
+            raise ProductBriefError(f"unknown criterion_id {criterion_id!r}")
+        return self.update_product_brief(
+            work_id,
+            expected_revision=current.revision,
+            author_role="user",
+            criteria=updated_criteria,
+            summary=f"User {'accepted' if accepted else 'reopened'} {criterion_id}",
+        )
+
     def publish_artifact(
         self,
         work_id: str,
@@ -3043,6 +3560,39 @@ class WorkStore:
                             ABORT,
                             'participant execution-plan identity is immutable'
                         );
+                    END
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS product_briefs (
+                    work_id TEXT PRIMARY KEY REFERENCES works(work_id),
+                    revision INTEGER NOT NULL CHECK (revision >= 0),
+                    brief_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS product_brief_revisions (
+                    work_id TEXT NOT NULL REFERENCES works(work_id),
+                    revision INTEGER NOT NULL CHECK (revision > 0),
+                    author_role TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    brief_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (work_id, revision)
+                )
+                """,
+                """
+                CREATE TRIGGER IF NOT EXISTS product_brief_revisions_no_update
+                    BEFORE UPDATE ON product_brief_revisions
+                    BEGIN
+                        SELECT RAISE(ABORT, 'product brief revisions are immutable');
+                    END
+                """,
+                """
+                CREATE TRIGGER IF NOT EXISTS product_brief_revisions_no_delete
+                    BEFORE DELETE ON product_brief_revisions
+                    BEGIN
+                        SELECT RAISE(ABORT, 'product brief revisions are immutable');
                     END
                 """,
             ):

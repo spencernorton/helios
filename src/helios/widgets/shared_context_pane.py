@@ -88,6 +88,19 @@ class SharedContextPane(Gtk.Box):
 
         self.append(header)
 
+        # Compact collapsible Current Brief summary for active local Work (H5).
+        self._brief_expander = Gtk.Expander(label="Current Work Brief")
+        self._brief_expander.set_margin_start(12)
+        self._brief_expander.set_margin_end(12)
+        self._brief_expander.set_margin_bottom(6)
+        self._brief_expander.set_visible(False)
+        self._brief_summary_label = Gtk.Label(xalign=0, wrap=True, selectable=True)
+        self._brief_summary_label.add_css_class("caption")
+        self._brief_summary_label.set_margin_top(4)
+        self._brief_summary_label.set_margin_bottom(4)
+        self._brief_expander.set_child(self._brief_summary_label)
+        self.append(self._brief_expander)
+
         # Stack: entry list | entry detail.
         self._stack = Gtk.Stack()
         self._stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
@@ -183,6 +196,33 @@ class SharedContextPane(Gtk.Box):
         self._loading = False
 
     # ── Hand-off ─────────────────────────────────────────────────────
+
+    def set_product_brief(self, brief) -> None:
+        """Render the active local Work's ProductBrief summary above scratchpad entries."""
+        if self._destroyed:
+            return
+        if brief is None or not getattr(brief, "has_material_content", lambda: False)():
+            self._brief_expander.set_visible(False)
+            self._brief_summary_label.set_label("")
+            return
+        stage = brief.overall_readiness_stage().replace("_", " ")
+        self._brief_expander.set_label(
+            f"Current Work Brief (r{brief.revision} · {stage})"
+        )
+        lines = []
+        if brief.outcome:
+            lines.append(f"Outcome: {brief.outcome}")
+        for stop in brief.active_stops():
+            lines.append(f"Active stop [{stop.scope}]: {stop.reason}")
+        if brief.open_criteria():
+            lines.append(f"Open criteria: {len(brief.open_criteria())}/{len(brief.criteria)}")
+        if brief.reference_artifacts:
+            roles = ", ".join(r.role for r in brief.reference_artifacts[:4])
+            lines.append(f"Reference artifacts: {len(brief.reference_artifacts)} ({roles})")
+        if brief.open_corrections():
+            lines.append(f"Unresolved user corrections: {len(brief.open_corrections())}")
+        self._brief_summary_label.set_label("\n".join(lines))
+        self._brief_expander.set_visible(True)
 
     def set_handoff_target(self, session) -> None:
         """Point the hand-off button at the currently open session (or None).

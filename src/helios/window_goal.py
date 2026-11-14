@@ -55,8 +55,55 @@ class GoalWorkMixin:
             return session_goals.get_goal(work_id)
         return self._pending_goal
 
+    def _visible_product_brief(self):
+        coordinator = getattr(self, "_work_coordinator", None)
+        if coordinator is None:
+            return None
+        current_fn = getattr(self, "_current_work_id", None)
+        if callable(current_fn):
+            work_id = current_fn()
+        elif hasattr(self, "_driver"):
+            work_id = GoalWorkMixin._current_work_id(self)
+        else:
+            return None
+        if not work_id:
+            return None
+        try:
+            return coordinator.store.get_product_brief(work_id)
+        except Exception as exc:
+            _log.warning("could not read ProductBrief for %s: %s", work_id, exc)
+            return None
+
+    def _save_current_product_brief(self, updates: dict) -> None:
+        coordinator = getattr(self, "_work_coordinator", None)
+        work_id = self._current_work_id() or self._ensure_target_work()
+        if coordinator is None or not work_id or not isinstance(updates, dict):
+            return
+        try:
+            current = coordinator.store.get_product_brief(work_id)
+            coordinator.store.update_product_brief(
+                work_id,
+                expected_revision=current.revision,
+                author_role="user",
+                delivery_target=updates.get("delivery_target"),
+                rejected_approaches=updates.get("rejected_approaches"),
+                explicit_stops=updates.get("explicit_stops"),
+                summary="Updated ProductBrief guardrails from Goal dialog",
+            )
+        except Exception as exc:
+            _log.warning("could not save ProductBrief updates for %s: %s", work_id, exc)
+        self._refresh_goal_strip()
+
     def _refresh_goal_strip(self) -> None:
         self._goal_strip.set_goal(self._visible_goal())
+        brief = GoalWorkMixin._visible_product_brief(self)
+        set_strip_brief = getattr(self._goal_strip, "set_brief", None)
+        if callable(set_strip_brief):
+            set_strip_brief(brief)
+        shared = getattr(self, "_shared", None)
+        set_shared_brief = getattr(shared, "set_product_brief", None)
+        if callable(set_shared_brief):
+            set_shared_brief(brief)
 
     def _refresh_execution_plan(self) -> None:
         """Project the Work's durable model plan into both visible surfaces."""
@@ -254,7 +301,17 @@ class GoalWorkMixin:
         if self._next_chat is not None and self._next_chat.project.read_only:
             self._toast("Read-only session is view-only.")
             return
-        present_goal_dialog(self, self._visible_goal(), self._save_current_goal)
+        brief = GoalWorkMixin._visible_product_brief(self)
+        if brief is not None:
+            present_goal_dialog(
+                self,
+                self._visible_goal(),
+                self._save_current_goal,
+                brief=brief,
+                on_save_brief=self._save_current_product_brief,
+            )
+        else:
+            present_goal_dialog(self, self._visible_goal(), self._save_current_goal)
 
     def _save_current_goal(self, goal: GoalState) -> None:
         goal = self._goal_with_current_metadata(goal)

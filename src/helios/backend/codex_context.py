@@ -15,6 +15,7 @@ wrapper until they gain an equivalent native channel.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 from pathlib import Path
@@ -150,3 +151,41 @@ def inject_shared_context(
 
     del cwd, max_chars
     return f"{PRESENTATION_POLICY} {END_TO_END_EXECUTION_POLICY}\n\nUser request:\n{user_text}"
+
+
+def get_codex_developer_instructions(extra: str | None = None) -> str:
+    """Build current Codex developer instructions with optional site extra text."""
+    site = EXTRA_SYSTEM_PROMPT if extra is None else extra
+    return (
+        "Follow the user request and the repository's native AGENTS.md instructions. "
+        "Do not infer provider roles, tandem review, delegation, or additional scope "
+        "unless the accepted Work context or user request explicitly requires it. "
+        + PRESENTATION_POLICY
+        + " "
+        + END_TO_END_EXECUTION_POLICY
+        + " "
+        + EXECUTION_PLAN_POLICY
+        + " "
+        + ASK_OR_CONTINUE_POLICY
+        + (" " + site if site else "")
+    )
+
+
+def refresh_extra_system_prompt(config_home: str | None = None) -> str:
+    """Reload system-prompt.d/*.md in place for new sessions and turns."""
+    global EXTRA_SYSTEM_PROMPT, CODEX_DEVELOPER_INSTRUCTIONS
+    EXTRA_SYSTEM_PROMPT = load_extra_system_prompt(config_home=config_home)
+    CODEX_DEVELOPER_INSTRUCTIONS = get_codex_developer_instructions(EXTRA_SYSTEM_PROMPT)
+    return EXTRA_SYSTEM_PROMPT
+
+
+def instruction_prompt_digest(provider: str, extra: str | None = None) -> str:
+    """Short deterministic digest of the active Helios policy prompt for diagnostics."""
+    if provider == "anthropic":
+        body = build_claude_system_prompt(extra=extra)
+    elif provider == "openai":
+        body = get_codex_developer_instructions(extra=extra)
+    else:
+        site = EXTRA_SYSTEM_PROMPT if extra is None else extra
+        body = f"{PRESENTATION_POLICY}\n{END_TO_END_EXECUTION_POLICY}\n{site}".strip()
+    return "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
