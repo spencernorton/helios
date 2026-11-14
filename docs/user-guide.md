@@ -400,7 +400,7 @@ Paths written as `~/.helios` are the default app-state location. A configured `H
 | `HELIOS_TANDEM_BINARY` | Path of the optional `tandem` binary for the Missions pane |
 | `CLAUDE_HOME` | Where Claude Code transcripts are read (default `~/.claude`) |
 | `XDG_DATA_HOME` | Tool inventories cached under `<dir>/helios/` (default `~/.local/share`) |
-| `XDG_CONFIG_HOME` | Optional extra instructions: every `*.md` file in `<dir>/helios/system-prompt.d/` (default `~/.config`), in name order, is added to every session's instructions; read at startup |
+| `XDG_CONFIG_HOME` | Optional extra instructions: every `*.md` file in `<dir>/helios/system-prompt.d/` (default `~/.config`), in name order, is added to every session's instructions; refreshed dynamically when preparing prompts |
 | `TANDEM_STATE_DIR` | Tandem mission state for the Missions pane (default `~/.tandem`) |
 | `TERMINAL` | Terminal emulator for the Settings → Accounts *Sign in…*, *Sign out* and *Switch account…* buttons (else the first of `x-terminal-emulator`, `gnome-terminal`, `kgx`, `konsole`, `tilix`, `kitty`, `alacritty`, `foot`, `xterm`) |
 

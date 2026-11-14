@@ -62,6 +62,7 @@ class PreparedPrompt:
 
     text: str
     on_sent: Callable[[], None] | None = None
+    diagnostics: object | None = None
 
     def mark_sent(self) -> None:
         callback = self.on_sent

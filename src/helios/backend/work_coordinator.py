@@ -7,10 +7,11 @@ the provider adapters' delivery contract.
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
-from helios.backend import model_catalog, session_goals
+from helios.backend import attachments, codex_context, model_catalog, session_goals
+from helios.backend.product_brief import BriefCriterion
 from helios.backend.execution_plan import ExecutionPlan
 from helios.backend.process.message_queue import PreparedPrompt
 from helios.backend.session_goals import GoalState
@@ -34,6 +35,18 @@ from helios.log import get_logger
 
 _log = get_logger("work-coordinator")
 _MAX_LEDGER_TEXT = 12_000
+
+
+@dataclass(frozen=True, slots=True)
+class PromptContextDiagnostics:
+    """Structured snapshot of prompt context assembly for diagnostics."""
+
+    work_id: str
+    provider: str
+    brief_revision: int
+    instruction_digest: str
+    attachment_dispositions: tuple[tuple[str, str], ...]
+    omitted_update_count: int
 
 
 class WorkCoordinator:
@@ -294,6 +307,13 @@ class WorkCoordinator:
                 include_envelope=include_goal_envelope,
                 include_supplement=include_goal_supplement,
             )
+        brief = self.store.get_product_brief(work_id)
+        artifact_paths: dict[str, str] = {}
+        for ref in brief.reference_artifacts:
+            art = self.store.get_artifact(work_id, ref.artifact_id)
+            if art is not None and art.path.is_file():
+                artifact_paths[ref.artifact_id] = str(art.path)
+        essential_intent = brief.render_essential_context(artifact_paths=artifact_paths)
         packet = build_packet(
             work_id,
             [
@@ -302,6 +322,7 @@ class WorkCoordinator:
                 if not _is_control_plane_audit_event(event)
             ],
             accepted_state=_accepted_state(work, safe_goal),
+            essential_intent=essential_intent,
         )
         wire_text = wrap_user_prompt(text, packet)
         wire_text = _wrap_goal_context(
@@ -315,6 +336,22 @@ class WorkCoordinator:
             snapshot.events,
             packet.through_seq,
         )
+        att_report = attachments.resolve_for_provider(
+            provider,
+            text,
+            store=self.store,
+            work_id=work_id,
+        )
+        diagnostics = PromptContextDiagnostics(
+            work_id=work_id,
+            provider=provider,
+            brief_revision=brief.revision,
+            instruction_digest=codex_context.instruction_prompt_digest(provider),
+            attachment_dispositions=tuple(
+                (item.reference, item.disposition) for item in att_report.items
+            ),
+            omitted_update_count=packet.omitted_update_count,
+        )
         if through_seq <= participant.last_event_seq:
             return wire_text
 
@@ -327,15 +364,29 @@ class WorkCoordinator:
                 expected_generation=generation,
             )
 
-        return PreparedPrompt(wire_text, acknowledge)
+        return PreparedPrompt(wire_text, acknowledge, diagnostics=diagnostics)
 
     def record_user_message(self, driver: Any, text: str) -> WorkEvent | None:
         bounded, redacted, truncated = _bounded_text(text)
-        return self._record_driver_event(
+        event = self._record_driver_event(
             driver,
             "user.message",
             {"text": bounded, "redacted": redacted, "truncated": truncated},
         )
+        work_id = str(getattr(driver, "_helios_work_id", "") or "")
+        if work_id:
+            for img_path, _media in attachments.mentioned_images(text):
+                try:
+                    attachments.persist_reference_attachment(
+                        self.store,
+                        work_id,
+                        img_path,
+                        role="target",
+                        source_message_id=event.event_id if event is not None else "",
+                    )
+                except Exception as exc:
+                    _log.warning("could not persist reference attachment %s: %s", img_path, exc)
+        return event
 
     def record_context_degradation(
         self,
@@ -500,6 +551,43 @@ class WorkCoordinator:
             updates["status"] = goal.status
         if updates:
             self.store.update_work(work_id, **updates)
+        try:
+            current_brief = self.store.get_product_brief(work_id)
+            existing_by_text = {c.text: c for c in current_brief.criteria}
+            synced_criteria: list[BriefCriterion] = []
+            for idx, item in enumerate(safe_goal.items):
+                prior = existing_by_text.get(item.text)
+                if prior is not None:
+                    synced_criteria.append(
+                        replace(
+                            prior,
+                            functional_status=(
+                                "verified"
+                                if item.status == "completed"
+                                else prior.functional_status
+                            ),
+                        )
+                    )
+                else:
+                    synced_criteria.append(
+                        BriefCriterion(
+                            criterion_id=f"goal-{idx + 1}",
+                            text=item.text,
+                            functional_status=(
+                                "verified" if item.status == "completed" else "pending"
+                            ),
+                        )
+                    )
+            self.store.update_product_brief(
+                work_id,
+                expected_revision=current_brief.revision,
+                author_role="user",
+                outcome=safe_goal.objective,
+                criteria=synced_criteria if safe_goal.items else None,
+                summary="Synchronized from Goal Mode",
+            )
+        except Exception as exc:
+            _log.warning("could not sync ProductBrief from Goal for %s: %s", work_id, exc)
         payload = {
             "objective": safe_goal.objective,
             "definition_of_done": safe_goal.definition_of_done,

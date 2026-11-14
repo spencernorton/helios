@@ -11,6 +11,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, GObject, Gtk, Pango  # noqa: E402
 
 from helios.backend import session_goals
+from helios.backend.product_brief import ExplicitStop, ProductBrief
 from helios.backend.session_goals import GoalPlanItem, GoalState
 from helios.widgets._motion import BASE_MS
 
@@ -48,6 +49,7 @@ class GoalStrip(Gtk.Revealer):
 
         self._goal: GoalState | None = None
         self._native_goal: dict | None = None
+        self._brief: ProductBrief | None = None
         self._destroyed = False
 
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -78,6 +80,11 @@ class GoalStrip(Gtk.Revealer):
         self._progress.add_css_class("helios-goal-progress")
         self._progress.add_css_class("caption")
         box.append(self._progress)
+
+        self._brief_badge = Gtk.Label()
+        self._brief_badge.add_css_class("caption")
+        self._brief_badge.set_visible(False)
+        box.append(self._brief_badge)
 
         self._native_usage = Gtk.Label()
         self._native_usage.add_css_class("caption")
@@ -154,6 +161,45 @@ class GoalStrip(Gtk.Revealer):
         self._complete_btn.set_sensitive(goal.status != session_goals.GOAL_COMPLETE)
         self.set_reveal_child(True)
 
+    def set_brief(self, brief: ProductBrief | None) -> None:
+        """Display compact ProductBrief stop/reference/stage badge on the strip."""
+
+        if self._destroyed:
+            return
+        self._brief = brief
+        if brief is None or not brief.has_material_content():
+            self._brief_badge.set_label("")
+            self._brief_badge.set_tooltip_text(None)
+            self._brief_badge.remove_css_class("warning")
+            self._brief_badge.set_visible(False)
+            return
+        parts: list[str] = []
+        stops = brief.active_stops()
+        if stops:
+            parts.append(f"Stop held ({len(stops)})")
+            self._brief_badge.add_css_class("warning")
+        else:
+            self._brief_badge.remove_css_class("warning")
+        open_corr = brief.open_corrections()
+        if open_corr:
+            parts.append(f"{len(open_corr)} open")
+        if brief.reference_artifacts:
+            parts.append(f"{len(brief.reference_artifacts)} ref")
+        stage = brief.overall_readiness_stage().replace("_", " ")
+        if brief.criteria or brief.delivery_evidence:
+            parts.append(stage)
+        if not parts:
+            self._brief_badge.set_visible(False)
+            return
+        self._brief_badge.set_label(" · ".join(parts))
+        tip_lines = [f"Brief r{brief.revision} · stage: {stage}"]
+        for s in stops:
+            tip_lines.append(f"Stop [{s.scope}]: {s.reason}")
+        if brief.open_corrections():
+            tip_lines.append(f"Unresolved corrections: {len(brief.open_corrections())}")
+        self._brief_badge.set_tooltip_text("\n".join(tip_lines))
+        self._brief_badge.set_visible(True)
+
     def clear_goal(self) -> None:
         self.set_goal(None)
 
@@ -210,6 +256,9 @@ def present_goal_dialog(
     parent: Gtk.Widget,
     existing: GoalState | None,
     on_save: Callable[[GoalState], None],
+    *,
+    brief: ProductBrief | None = None,
+    on_save_brief: Callable[[dict], None] | None = None,
 ) -> None:
     dialog = Adw.AlertDialog.new(
         "Set a goal",
@@ -377,6 +426,53 @@ def present_goal_dialog(
     add_btn.connect("clicked", lambda *_: _add_item_row())
     box.append(add_btn)
 
+    # Compact collapsible ProductBrief & guardrails section (H5)
+    brief_expander = Gtk.Expander(label="Product brief & guardrails")
+    brief_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+    brief_box.set_margin_top(6)
+
+    target_entry = Gtk.Entry()
+    target_entry.set_placeholder_text("Delivery target (e.g. normal desktop launcher on Linux Wayland)")
+    target_entry.set_text(brief.delivery_target if brief is not None else "")
+    brief_box.append(target_entry)
+
+    rejected_entry = Gtk.Entry()
+    rejected_entry.set_placeholder_text("Rejected approaches, separated by ;")
+    rejected_entry.set_text(
+        "; ".join(brief.rejected_approaches) if brief is not None else ""
+    )
+    brief_box.append(rejected_entry)
+
+    stop_rows: list[tuple[Gtk.CheckButton, ExplicitStop]] = []
+    if brief is not None and brief.explicit_stops:
+        for st in brief.explicit_stops:
+            st_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            st_chk = Gtk.CheckButton(label=f"[{st.scope}] {st.reason}")
+            st_chk.set_active(st.active)
+            st_row.append(st_chk)
+            brief_box.append(st_row)
+            stop_rows.append((st_chk, st))
+
+    new_stop_entry = Gtk.Entry()
+    new_stop_entry.set_placeholder_text("Add explicit user stop (optional)…")
+    brief_box.append(new_stop_entry)
+
+    if brief is not None and (brief.reference_artifacts or brief.criteria):
+        meta_summary = (
+            f"Revision {brief.revision} · Readiness: "
+            f"{brief.overall_readiness_stage().replace('_', ' ')} · "
+            f"Reference artifacts: {len(brief.reference_artifacts)}"
+        )
+        meta_lbl = Gtk.Label(label=meta_summary, xalign=0, wrap=True)
+        meta_lbl.add_css_class("caption")
+        meta_lbl.add_css_class("dim-label")
+        brief_box.append(meta_lbl)
+        if brief.active_stops() or brief.reference_artifacts:
+            brief_expander.set_expanded(True)
+
+    brief_expander.set_child(brief_box)
+    box.append(brief_expander)
+
     def _collect_items() -> list[GoalPlanItem]:
         collected: list[GoalPlanItem] = []
         for check, entry, orig_status, orig_text in item_rows:
@@ -439,6 +535,41 @@ def present_goal_dialog(
             updated_at=existing.updated_at if existing is not None else "",
         )
         on_save(saved)
+        if on_save_brief is not None:
+            kept_stops: list[ExplicitStop] = [
+                ExplicitStop(
+                    stop_id=st.stop_id,
+                    scope=st.scope,
+                    reason=st.reason,
+                    owner=st.owner,
+                    clearance_condition=st.clearance_condition,
+                    active=chk.get_active(),
+                    recorded_at=st.recorded_at,
+                )
+                for chk, st in stop_rows
+            ]
+            added_stop = new_stop_entry.get_text().strip()
+            if added_stop:
+                kept_stops.append(
+                    ExplicitStop(
+                        stop_id=f"stop-{len(kept_stops) + 1}",
+                        scope="work",
+                        reason=added_stop,
+                        active=True,
+                    )
+                )
+            rejected_list = [
+                part.strip()
+                for part in rejected_entry.get_text().split(";")
+                if part.strip()
+            ]
+            on_save_brief(
+                {
+                    "delivery_target": target_entry.get_text().strip(),
+                    "rejected_approaches": rejected_list,
+                    "explicit_stops": kept_stops,
+                }
+            )
 
     dialog.connect("response", _on_response)
     dialog.present(parent)

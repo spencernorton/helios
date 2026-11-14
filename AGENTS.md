@@ -18,3 +18,5 @@ preserve earlier entries.
 Prefer short GIFs of real app interactions to static feature screenshots in the
 public presentation. Keep demos fictional and staged provider content explicit;
 offer still fallbacks and link the complete narrated walkthrough.
+
+Preserve each Work's revisioned `ProductBrief` (outcome, open criteria, reference artifacts, rejected approaches, explicit user stops, and delivery evidence) across turns and handoffs; never clear an active user stop or self-certify `user_accepted` from model output.

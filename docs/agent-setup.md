@@ -632,7 +632,7 @@ When the Claude CLI supplies `permission_suggestions` with a tool request, the a
 | `HELIOS_TANDEM_BINARY`, `TANDEM_STATE_DIR` | Optional Missions-pane integration with an external engine; inert unless used |
 | `CLAUDE_HOME` | Claude Code's home (default `~/.claude`); read once at import |
 | `XDG_DATA_HOME` | Parent of the `helios/` snapshot files (default `~/.local/share`) |
-| `XDG_CONFIG_HOME` | Parent of the optional `helios/system-prompt.d/` directory (default `~/.config`): every `*.md` file there, in name order, is appended to the instructions of every Claude, GPT and OpenRouter session; read once at startup |
+| `XDG_CONFIG_HOME` | Parent of the optional `helios/system-prompt.d/` directory (default `~/.config`): every `*.md` file there, in name order, is appended to the instructions of every Claude, GPT and OpenRouter session; refreshed dynamically when preparing prompts |
 | `TERMINAL` | First choice of terminal emulator for the Settings sign-in button |
 | `ANTHROPIC_API_KEY`, `CODEX_API_KEY` | Force per-token billing detection (8.4) |
 | `INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_SECRET`, `INFISICAL_API_URL`, `NORVI_TRACKER_API_TOKEN` | Optional integrations, inert unless set. They are forwarded to some CLI children (9.4) and, when unset, adopted from `systemctl --user show-environment` at startup (logged as `adopted workload identity from the systemd user environment: <names>`) |

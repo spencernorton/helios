@@ -114,6 +114,9 @@ def present_handoff_dialog(
         ),
         ("Claude", "anthropic"),
         ("GPT", "openai"),
+        ("Muse", "muse"),
+        ("Kimi", "kimi"),
+        ("Google", "google"),
         ("OpenRouter", "openrouter"),
     ]
     seen = set()

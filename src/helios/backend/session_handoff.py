@@ -112,12 +112,58 @@ def transcript_tail(
     return out[-turns:]
 
 
+def _resolve_session_brief(
+    session: Session,
+    source_provider: str,
+    *,
+    work_store=None,
+    work_id: str = "",
+) -> tuple[str, dict | None]:
+    """Return (work_id, handoff_summary_dict) when the session has a ProductBrief."""
+    store = work_store
+    opened_locally = False
+    try:
+        if store is None:
+            from helios.backend.work_store import WorkStore
+            from helios.paths import state_dir
+
+            db_path = state_dir() / "works" / "works.db"
+            if not db_path.is_file():
+                return "", None
+            store = WorkStore(db_path)
+            opened_locally = True
+        resolved_work_id = work_id or store.work_id_for_native_session(
+            source_provider, session.session_id
+        )
+        if not resolved_work_id:
+            return "", None
+        brief = store.get_product_brief(resolved_work_id)
+        if not brief.has_material_content():
+            return resolved_work_id, None
+        artifact_paths: dict[str, str] = {}
+        for ref in brief.reference_artifacts:
+            art = store.get_artifact(resolved_work_id, ref.artifact_id)
+            if art is not None and art.path.is_file():
+                artifact_paths[ref.artifact_id] = str(art.path)
+        return resolved_work_id, brief.to_handoff_summary(artifact_paths=artifact_paths)
+    except Exception:
+        return "", None
+    finally:
+        if opened_locally and store is not None:
+            try:
+                store.close()
+            except Exception:
+                pass
+
+
 def build_payload(
     session: Session,
     title: str,
     *,
     include_tail: bool = True,
     recipient_provider: str = "",
+    work_store=None,
+    work_id: str = "",
 ) -> dict:
     """The entry's `data` blob: resume coordinates + optional conversation
     tail. Everything a cold session needs to decide whether to pick this up."""
@@ -151,7 +197,9 @@ def build_payload(
         "reply_key": reply_key,
         "reply_tags": contact_tags(recipient_provider, source_provider, is_reply=True),
         "instructions": (
-            "Recipient agent: use transcript_tail and resume coordinates to orient. "
+            "Recipient agent: read product_brief (when present) ahead of transcript_tail "
+            "and preserve outcome, explicit_stops, unresolved_corrections, and "
+            "reference_artifacts. "
             f"If a response is useful, write it to scratchpad key {reply_key} "
             "with the supplied reply_tags."
         ),
@@ -165,6 +213,17 @@ def build_payload(
         ).isoformat(),
         "transcript_path": str(session.path),
     }
+    resolved_work_id, brief_summary = _resolve_session_brief(
+        session,
+        source_provider,
+        work_store=work_store,
+        work_id=work_id,
+    )
+    if resolved_work_id:
+        payload["work_id"] = resolved_work_id
+    if brief_summary is not None:
+        payload["intent_revision"] = brief_summary["intent_revision"]
+        payload["product_brief"] = brief_summary
     if include_tail:
         payload["transcript_tail"] = transcript_tail(session.path)
     return payload
@@ -196,7 +255,14 @@ def _resume_command(session: Session) -> str | None:
         # subcommand. What AGENTS.md retires is Helios's own automatic
         # `codex exec` driver fallback, not the command a human types.
         return f"codex exec resume {session.session_id}"
-    if resolution.provider == model_catalog.PROVIDER_OPENROUTER:
+    if resolution.provider == model_catalog.PROVIDER_MUSE:
+        return f"muse resume {session.session_id}"
+    if resolution.provider == model_catalog.PROVIDER_KIMI:
+        return f"kimi --session {session.session_id}"
+    if resolution.provider in {
+        model_catalog.PROVIDER_GOOGLE,
+        model_catalog.PROVIDER_OPENROUTER,
+    }:
         return None
     raise ValueError(f"no resume command for provider {resolution.provider!r}")
 
