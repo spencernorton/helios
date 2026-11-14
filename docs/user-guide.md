@@ -371,7 +371,7 @@ rewritten whole on every change, so edit it only while Helios is closed.
 | Behavior → Notify when a tandem mission is gated | `notify_on_mission_gate` | `true` (default) · `false` |
 | Behavior → Title Generation Backend | `title_backend` | `first_message` (default, no model) · `ollama` · `builtin` · `claude`; unknown values make no model call |
 | Behavior → Built-in Model | `builtin_title_model` | `qwen2.5-0.5b` (default) · `llama-3.2-1b` · `phi-3-mini`; requires installed `llama-cli` |
-| Behavior → Ollama server URL | `ollama_url` | default `http://localhost:11434` |
+| Behavior → Ollama server URL | `ollama_url` | default `http://localhost:11434`; URLs ending in `/v1` use OpenAI-compatible `/v1/models` and `/v1/chat/completions` |
 | Behavior → Title model | `ollama_title_model` | default `qwen2.5-coder:14b` |
 | Behavior → Show other machines' sessions | `show_pool_sessions` | `true` · `false` (default) |
 | Providers → Models in the picker | `openrouter_picker_models` | list of model ids; empty = whole catalog |
