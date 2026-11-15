@@ -7,6 +7,8 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
 
+from helios.backend import model_catalog
+from helios.backend.composite_transcript import compact_model_chip
 from helios.backend.process.streaming import stable_markdown_prefix
 from helios.backend.tool_diff import EDIT_TOOLS, edit_diff, edit_path
 from helios.backend.transcript import (
@@ -38,6 +40,15 @@ _QUESTION_RESULT_LABELS = {
     QUESTION_DISMISSED_MESSAGE: "↳ dismissed",
 }
 
+_TURN_ASSISTANT_NAMES = {
+    model_catalog.PROVIDER_OPENAI: "GPT",
+    model_catalog.PROVIDER_OPENROUTER: "OpenRouter",
+    model_catalog.PROVIDER_GOOGLE: "Google",
+    model_catalog.PROVIDER_MUSE: "Muse",
+    model_catalog.PROVIDER_KIMI: "Kimi",
+    model_catalog.PROVIDER_ANTHROPIC: "Claude",
+}
+
 
 def _message_copy_text(turn: Turn) -> str:
     """Text the bubble's Copy button puts on the clipboard: the final answer,
@@ -53,7 +64,13 @@ def _copy_to_clipboard(text: str) -> None:
 
 
 def _bubble_header(
-    label_text: str, role: str, ts_text: str, copy_text, *, inert: bool = False
+    label_text: str,
+    role: str,
+    ts_text: str,
+    copy_text,
+    *,
+    inert: bool = False,
+    model_chip_text: str = "",
 ) -> Gtk.Box:
     """The one header shape the live and the resting bubble both use.
 
@@ -76,6 +93,14 @@ def _bubble_header(
     label.add_css_class("caption-heading")
     label.add_css_class(f"helios-role-{role}")
     box.append(label)
+
+    if model_chip_text and role == "assistant":
+        chip = Gtk.Label(label=model_chip_text, xalign=0)
+        chip.add_css_class("caption")
+        chip.add_css_class("helios-chip")
+        chip.add_css_class("helios-turn-model-chip")
+        chip.set_valign(Gtk.Align.CENTER)
+        box.append(chip)
 
     if ts_text:
         ts = Gtk.Label(label=ts_text, xalign=0)
@@ -235,7 +260,13 @@ class MessageBubble(Gtk.Box):
         )
         self._body.append(self._footer)
 
-    def attach_tool_result(self, tr: ToolResult, timestamp: str = "") -> bool:
+    def attach_tool_result(
+        self,
+        tr: ToolResult,
+        timestamp: str = "",
+        *,
+        session_id: str = "",
+    ) -> bool:
         """Land a tool_result on the card that made the call.
 
         The CLI delivers a tool_result in its own user-role record, one or more
@@ -246,6 +277,12 @@ class MessageBubble(Gtk.Box):
         row of its own.
         """
         if self._destroyed or not tr.tool_use_id:
+            return False
+        if (
+            session_id
+            and self._turn.session_id
+            and self._turn.session_id != session_id
+        ):
             return False
         if not any(tu.id == tr.tool_use_id for tu in self._turn.tool_uses):
             return False
@@ -336,10 +373,20 @@ class MessageBubble(Gtk.Box):
 
     def _base_header(self, turn: Turn) -> Gtk.Widget:
         dt = turn.dt
+        assistant_speaker = (
+            _TURN_ASSISTANT_NAMES.get(turn.provider, self._assistant_label)
+            if turn.provider
+            else self._assistant_label
+        )
+        chip_text = (
+            compact_model_chip(turn.model)
+            if turn.role == "assistant" and turn.model
+            else ""
+        )
         return _bubble_header(
             {
                 "user": "You",
-                "assistant": self._assistant_label,
+                "assistant": assistant_speaker,
                 "system": "System",
             }.get(turn.role, turn.role.title()),
             turn.role,
@@ -348,6 +395,7 @@ class MessageBubble(Gtk.Box):
             # A tool-only turn has nothing to copy, but the button still has
             # to hold the row open at the same height as a prose turn's.
             inert=not _message_copy_text(turn),
+            model_chip_text=chip_text,
         )
 
 
@@ -525,7 +573,7 @@ class StreamingBubble(Gtk.Box):
     Markdown by then, that swap is visually inert.
     """
 
-    def __init__(self, *, assistant_label: str = "Claude") -> None:
+    def __init__(self, *, assistant_label: str = "Claude", model: str = "") -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self._destroyed = False
         self.add_css_class("helios-bubble")
@@ -544,7 +592,14 @@ class StreamingBubble(Gtk.Box):
         # exists to prevent. Height parity does not need it, so it does not
         # exist.
         self.append(
-            _bubble_header(assistant_label, "assistant", "", lambda: "", inert=True)
+            _bubble_header(
+                assistant_label,
+                "assistant",
+                "",
+                lambda: "",
+                inert=True,
+                model_chip_text=compact_model_chip(model) if model else "",
+            )
         )
 
         self._body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)

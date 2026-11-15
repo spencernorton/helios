@@ -858,6 +858,11 @@ class CodexAppServerDriver(CodexCliDriver):
                 wire_prompt_text=preparation.prepared.text,
                 provider_request_key=attempt_id,
                 native_binding_id=self.session_id,
+                pending_capsule=(
+                    preparation.prepared.pending_capsule.to_record()
+                    if preparation.prepared.pending_capsule is not None
+                    else None
+                ),
             )
         ):
             self._finish_predispatch_attempt()
@@ -2065,7 +2070,9 @@ class CodexAppServerDriver(CodexCliDriver):
                 effort=self._effort,
                 workflow_mode=self._workflow_mode,
             )
-            params["input"].extend(codex_inputs(text))  # @path images
+            params["input"].extend(
+                codex_inputs(text, carryover=prepared.carryover_images)
+            )  # @path + continuity carryover images
         except Exception as exc:
             self.emit("error", f"Could not prepare Codex turn: {exc}")
             return MessageDelivery("rejected")
@@ -2081,6 +2088,11 @@ class CodexAppServerDriver(CodexCliDriver):
                 wire_prompt_text=prompt,
                 provider_request_key=attempt_id,
                 native_binding_id=self.session_id,
+                pending_capsule=(
+                    prepared.pending_capsule.to_record()
+                    if prepared.pending_capsule is not None
+                    else None
+                ),
             )
         ):
             self._finish_execution_with_evidence(

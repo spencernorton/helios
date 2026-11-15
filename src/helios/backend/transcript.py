@@ -21,11 +21,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator, NamedTuple
 
+from helios.backend.continuity_capsule import strip_continuity_capsule
 from helios.backend.session_goals import strip_goal_envelope
 from helios.backend.work_context import strip_work_envelope
 
@@ -37,6 +39,15 @@ from helios.backend.work_context import strip_work_envelope
 # matches on them to render a neutral info row instead of a scary "tool error".
 QUESTION_ANSWERED_MESSAGE = "User answered in the follow-up message."
 QUESTION_DISMISSED_MESSAGE = "User dismissed the question without answering."
+
+_VERSION_PROVIDERS: dict[str, str] = {
+    "helios-codex": "openai",
+    "helios-openrouter": "openrouter",
+    "helios-gemini": "google",
+    "helios-muse": "muse",
+    "helios-kimi": "kimi",
+}
+_CLAUDE_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 
 
 @dataclass(slots=True)
@@ -255,6 +266,9 @@ class Turn:
         "uuid",
         "is_sidechain",
         "is_meta",
+        "model",
+        "provider",
+        "session_id",
     )
 
     def __init__(
@@ -273,6 +287,9 @@ class Turn:
         thinking_parts: list[str] | None = None,
         commentary_parts: list[str] | None = None,
         reasoning_summary_parts: list[str] | None = None,
+        model: str = "",
+        provider: str = "",
+        session_id: str = "",
     ) -> None:
         self.role = role
         self.content = list(content) if content else []
@@ -283,6 +300,9 @@ class Turn:
         self.uuid = uuid
         self.is_sidechain = is_sidechain
         self.is_meta = is_meta
+        self.model = model
+        self.provider = provider
+        self.session_id = session_id
         #: Images the speaker attached (user) or emitted (assistant).
         self.images: list[ImageRef] = []
         # Deterministic fold of any legacy per-lane kwargs: collapsed detail
@@ -676,7 +696,9 @@ def strip_injected_context(text: str) -> str:
     # changes during migration.
     for _ in range(4):
         previous = cleaned
-        cleaned = strip_work_envelope(strip_goal_envelope(cleaned))
+        cleaned = strip_continuity_capsule(
+            strip_work_envelope(strip_goal_envelope(cleaned))
+        )
         if cleaned == previous:
             break
     return cleaned
@@ -706,12 +728,23 @@ def turn_from_record(obj: dict[str, Any]) -> Turn | None:
     if not msg and rec_type != "system":
         return None
 
+    session_id = str(obj.get("sessionId") or "")
+    version = str(obj.get("version") or "")
+    provider = _VERSION_PROVIDERS.get(
+        version,
+        "anthropic" if version and _CLAUDE_VERSION_RE.match(version) else "",
+    )
+    raw_model = msg.get("model") if isinstance(msg, dict) else None
+    model = str(raw_model or obj.get("model") or "")
+
     if rec_type == "system" and obj.get("subtype") == "fork_boundary":
         boundary = Turn(
             role="system",
             timestamp=obj.get("timestamp") or "",
             uuid=obj.get("uuid") or "",
             is_meta=True,
+            provider=provider,
+            session_id=session_id,
         )
         boundary.add(
             "text",
@@ -751,6 +784,8 @@ def turn_from_record(obj: dict[str, Any]) -> Turn | None:
             timestamp=obj.get("timestamp") or "",
             uuid=obj.get("uuid") or "",
             is_meta=True,
+            provider=provider,
+            session_id=session_id,
         )
         # Deliberately not "everything above this line": a compaction may
         # preserve a trailing segment, so that phrasing would be false.
@@ -767,6 +802,9 @@ def turn_from_record(obj: dict[str, Any]) -> Turn | None:
         uuid=obj.get("uuid") or "",
         is_sidechain=bool(obj.get("isSidechain")),
         is_meta=bool(obj.get("isMeta") or obj.get("isCompactSummary")),
+        model=model,
+        provider=provider,
+        session_id=session_id,
     )
 
     content = msg.get("content")

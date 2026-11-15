@@ -27,7 +27,9 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, GLib, GObject, Gtk  # noqa: E402
 
-from helios.backend import session_archiver, session_providers
+from dataclasses import dataclass
+
+from helios.backend import session_archiver, session_providers, work_store
 from helios.backend.project_names import store as name_store
 from helios.backend.projects import (
     REMOVED_BY_ARCHIVE,
@@ -92,6 +94,15 @@ def _pending_title(text: str) -> str:
     if len(title) > 80:
         title = title[:77] + "..."
     return title
+
+
+@dataclass(slots=True)
+class _CoalescedWorkInfo:
+    work_id: str
+    member_session_ids: tuple[str, ...]
+    member_sessions: tuple[Session, ...]
+    model_count: int
+    tooltip: str
 
 
 class SessionList(Gtk.Box):
@@ -296,6 +307,7 @@ class SessionList(Gtk.Box):
         )
         # session_id -> row, for live updates when a title arrives.
         self._rows_by_id: dict[str, _SessionRow] = {}
+        self._coalesced_by_rep_id: dict[str, _CoalescedWorkInfo] = {}
         # session_id -> "Reading foo.py"; survives a re-render.
         self._live_activity: dict[str, str] = {}
         # Sessions with a background question waiting on the user (a "needs you"
@@ -830,6 +842,119 @@ class SessionList(Gtk.Box):
             self.remove_tick_callback(self._scroll_tick)
             self._scroll_tick = None
 
+    def _load_continuity_groups(self) -> dict[str, tuple[object, tuple]]:
+        injected = getattr(self, "_work_store", None)
+        if injected is not None:
+            try:
+                return injected.continuity_work_groups()
+            except Exception:
+                return {}
+        db_path = work_store.default_work_db_path()
+        if db_path is None or not db_path.exists():
+            return {}
+        store = None
+        try:
+            store = work_store.WorkStore(db_path)
+            return store.continuity_work_groups()
+        except Exception:
+            return {}
+        finally:
+            if store is not None:
+                try:
+                    store.close()
+                except Exception:
+                    pass
+
+    def _coalesce_continuity_sessions(
+        self,
+        sessions: list[Session],
+    ) -> tuple[list[Session], dict[str, _CoalescedWorkInfo]]:
+        """Group multi-leg continuity Works into one unified sidebar row."""
+        groups = self._load_continuity_groups()
+        if not groups:
+            return sessions, {}
+
+        sid_to_work: dict[str, str] = {}
+        for wid, (_work, legs) in groups.items():
+            if len(legs) < 2:
+                continue
+            for leg in legs:
+                if leg.native_session_id:
+                    sid_to_work[leg.native_session_id] = wid
+
+        if not sid_to_work:
+            return sessions, {}
+
+        members_by_work: dict[str, list[Session]] = {}
+        passthrough: list[Session] = []
+        for s in sessions:
+            wid = "" if s.project.read_only else sid_to_work.get(s.session_id, "")
+            if wid:
+                members_by_work.setdefault(wid, []).append(s)
+            else:
+                passthrough.append(s)
+
+        coalesced_meta: dict[str, _CoalescedWorkInfo] = {}
+        for wid, members in members_by_work.items():
+            _work, legs = groups[wid]
+            leg_order = {
+                leg.native_session_id: leg.leg_seq
+                for leg in legs
+                if leg.native_session_id
+            }
+            ordered_members = sorted(
+                members,
+                key=lambda item: (leg_order.get(item.session_id, 9999), item.mtime),
+            )
+            lead_src = ordered_members[0]
+            tail_src = ordered_members[-1]
+            # Prefer a custom/cached title on any leg, falling back to the initial leg's title.
+            chosen_title = ""
+            for cand in ordered_members:
+                cached = self._title_store.get(cand.session_id)
+                if cached:
+                    chosen_title = cached
+                    break
+            if not chosen_title:
+                chosen_title = lead_src.title or lead_src.ensure_title()
+            rep = Session(
+                project=tail_src.project,
+                session_id=tail_src.session_id,
+                path=tail_src.path,
+                mtime=max(m.mtime for m in ordered_members),
+                size=sum(m.size for m in ordered_members),
+                title=chosen_title,
+                first_message_loaded=bool(chosen_title),
+                pending=all(getattr(m, "pending", False) for m in ordered_members),
+            )
+            distinct_models = list(
+                dict.fromkeys(
+                    (leg.provider, leg.model or leg.provider)
+                    for leg in legs
+                    if leg.provider
+                )
+            )
+            model_count = max(len(distinct_models), 2 if len(legs) > 1 else 1)
+            chain = " → ".join(
+                (leg.model or leg.provider) for leg in legs if (leg.model or leg.provider)
+            )
+            member_sids = tuple(
+                dict.fromkeys(
+                    [m.session_id for m in ordered_members]
+                    + [leg.native_session_id for leg in legs if leg.native_session_id]
+                )
+            )
+            coalesced_meta[rep.session_id] = _CoalescedWorkInfo(
+                work_id=wid,
+                member_session_ids=member_sids,
+                member_sessions=tuple(ordered_members),
+                model_count=model_count,
+                tooltip=f"Unified multi-model conversation: {chain}" if chain else "Unified multi-model conversation",
+            )
+            passthrough.append(rep)
+
+        return passthrough, coalesced_meta
+
     def _render_inner(self, prior_selected_id: str, preserve_selection: bool) -> None:
         # A one-render PAINT HINT, not a cache: it is written only into a
         # freshly built row's initial chip, never consulted for routing, and
@@ -867,6 +992,9 @@ class SessionList(Gtk.Box):
             if pending_id not in discovered_by_id and self._matches_filter(pending)
         )
 
+        sessions, coalesced_meta = self._coalesce_continuity_sessions(sessions)
+        self._coalesced_by_rep_id = coalesced_meta
+
         if not sessions:
             self._rows_by_id.clear()
             self._subtitle.set_label("no sessions")
@@ -893,7 +1021,12 @@ class SessionList(Gtk.Box):
                     state=STATE_IDLE, last_response_at=0.0
                 )
             else:
-                statuses[s.session_id] = status_for(s, active_ids)
+                st = status_for(s, active_ids)
+                cinfo = coalesced_meta.get(s.session_id)
+                if cinfo is not None and st.state != STATE_WORKING:
+                    if any(msid in active_ids for msid in cinfo.member_session_ids):
+                        st = SessionStatus(state=STATE_WORKING, last_response_at=s.mtime)
+                statuses[s.session_id] = st
 
         # Sort by (state-priority, last_response_at desc) — see _STATE_SORT_RANK.
         sessions.sort(
@@ -920,6 +1053,7 @@ class SessionList(Gtk.Box):
             if cached:
                 s.title = cached
                 s.first_message_loaded = True
+            cinfo = coalesced_meta.get(s.session_id)
             row = _SessionRow(
                 s,
                 statuses[s.session_id],
@@ -929,11 +1063,21 @@ class SessionList(Gtk.Box):
                 on_stop=lambda sess: self.emit("session-stop-requested", sess.session_id),
                 show_host_chip=show_host_chips,
                 provider=prior_providers.get(s.session_id),
+                continuity_model_count=(cinfo.model_count if cinfo is not None else 0),
+                continuity_tooltip=(cinfo.tooltip if cinfo is not None else ""),
             )
             live = self._live_activity.get(s.session_id)
+            if not live and cinfo is not None:
+                for msid in cinfo.member_session_ids:
+                    if msid in self._live_activity:
+                        live = self._live_activity[msid]
+                        break
             if live:
                 row.set_live_activity(live)
             self._rows_by_id[s.session_id] = row
+            if cinfo is not None:
+                for msid in cinfo.member_session_ids:
+                    self._rows_by_id.setdefault(msid, row)
             self._listbox.append(row)
             if s.session_id == self._confirming_id:
                 row.reveal_confirm(animate=False)
@@ -1107,6 +1251,7 @@ class SessionList(Gtk.Box):
             (sid, row.session)
             for sid, row in self._rows_by_id.items()
             if sid != PENDING_STAGED_ID
+            and sid == row.session.session_id
             and (include_pool or not row.session.project.read_only)
         ]
         rows = [
@@ -1388,6 +1533,60 @@ class SessionList(Gtk.Box):
         # appending to its transcript, so unlinking it only resurrects the row
         # as "Session <id>" on the next write. Refuse those; Helios-owned
         # drivers are stopped through sessions-deleting first.
+        coalesced_map = getattr(self, "_coalesced_by_rep_id", None)
+        if isinstance(coalesced_map, dict) and coalesced_map:
+            expanded: list[Session] = []
+            seen_sids: set[str] = set()
+            local_by_id = {
+                ls.session_id: ls for ls in getattr(self, "_local_sessions", ())
+            }
+            for item in sessions:
+                cinfo = coalesced_map.get(item.session_id)
+                if cinfo is None:
+                    if item.session_id not in seen_sids:
+                        seen_sids.add(item.session_id)
+                        expanded.append(item)
+                    continue
+                exclusive_ids: set[str] | None = None
+                store = getattr(self, "_work_store", None)
+                close_after = False
+                if store is None:
+                    db_path = work_store.default_work_db_path()
+                    if db_path is not None and db_path.exists():
+                        try:
+                            store = work_store.WorkStore(db_path)
+                            close_after = True
+                        except Exception:
+                            store = None
+                if store is not None:
+                    try:
+                        exclusive_ids = {
+                            nid
+                            for _prov, nid in store.exclusive_native_sessions_for_work(
+                                cinfo.work_id
+                            )
+                        }
+                    except Exception:
+                        exclusive_ids = None
+                    finally:
+                        if close_after:
+                            try:
+                                store.close()
+                            except Exception:
+                                pass
+                for msid in cinfo.member_session_ids:
+                    if exclusive_ids is not None and msid not in exclusive_ids:
+                        continue
+                    cand = local_by_id.get(msid)
+                    if cand is None:
+                        for ms in cinfo.member_sessions:
+                            if ms.session_id == msid:
+                                cand = ms
+                                break
+                    if cand is not None and cand.session_id not in seen_sids:
+                        seen_sids.add(cand.session_id)
+                        expanded.append(cand)
+            sessions = expanded
         selected = self._listbox.get_selected_row()
         viewed_id = getattr(getattr(selected, "session", None), "session_id", "")
         external = discover_active_session_ids() - self._live_session_ids
@@ -1492,6 +1691,8 @@ class _SessionRow(Gtk.ListBoxRow):
         on_confirm_changed=None,
         show_host_chip: bool = True,
         provider=None,
+        continuity_model_count: int = 0,
+        continuity_tooltip: str = "",
     ) -> None:
         super().__init__()
         self.session = session
@@ -1542,6 +1743,13 @@ class _SessionRow(Gtk.ListBoxRow):
         # Provider chip: which backend produced this session (GPT vs Claude).
         # Resolved off the GTK thread by SessionList._tick_status; None here
         # renders as "…" rather than asserting an unestablished owner.
+        if continuity_model_count > 1:
+            legs_chip = _chip(
+                f"{continuity_model_count} models",
+                tooltip=continuity_tooltip or "Multi-model conversation",
+            )
+            legs_chip.add_css_class("helios-session-legs-chip")
+            title_row.append(legs_chip)
         self._provider_lbl = _provider_chip(provider)
         title_row.append(self._provider_lbl)
 

@@ -848,7 +848,10 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
             "message": {
                 "role": "user",
                 # @path image attachments ride as real image blocks too.
-                "content": [{"type": "text", "text": prepared.text}, *anthropic_blocks(text)],
+                "content": [
+                    {"type": "text", "text": prepared.text},
+                    *anthropic_blocks(text, carryover=prepared.carryover_images),
+                ],
             },
         }
         line = (json.dumps(payload) + "\n").encode("utf-8")
@@ -862,6 +865,11 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
                 wire_prompt_text=prepared.text,
                 provider_request_key=attempt_id,
                 native_binding_id=self._confirmed_execution_native_id(),
+                pending_capsule=(
+                    prepared.pending_capsule.to_record()
+                    if prepared.pending_capsule is not None
+                    else None
+                ),
             )
         ):
             self._finish_execution_with_evidence(
@@ -2796,6 +2804,7 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
                             wire_prompt_text=dispatch.wire_prompt_text,
                             provider_request_key=dispatch.provider_request_key,
                             native_binding_id=self._session_id,
+                            pending_capsule=dispatch.pending_capsule,
                         )
                     )
                 ):

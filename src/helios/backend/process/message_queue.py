@@ -26,7 +26,7 @@ and nothing auto-sends after an interrupt.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from helios.log import get_logger
@@ -50,6 +50,37 @@ class RequiredPromptContextError(RuntimeError):
         super().__init__(self.user_message)
 
 
+@dataclass(frozen=True, slots=True)
+class CarryoverImage:
+    """Immutable, magic-verified image bytes carried across a model switch."""
+
+    media_type: str
+    data: bytes
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class PendingCapsuleDelivery:
+    """Durable ContinuityCapsule commit metadata bound to an execution attempt."""
+
+    through_seq: int
+    provider: str
+    model: str = ""
+    handoff_from_leg_seq: int | None = None
+    manifest: dict[str, object] = field(default_factory=dict)
+
+    def to_record(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "through_seq": int(self.through_seq),
+            "provider": str(self.provider),
+            "model": str(self.model),
+            "manifest": dict(self.manifest),
+        }
+        if self.handoff_from_leg_seq is not None:
+            payload["handoff_from_leg_seq"] = int(self.handoff_from_leg_seq)
+        return payload
+
+
 @dataclass(slots=True)
 class PreparedPrompt:
     """Wire text plus a commit hook for context with delivery semantics.
@@ -63,6 +94,8 @@ class PreparedPrompt:
     text: str
     on_sent: Callable[[], None] | None = None
     diagnostics: object | None = None
+    carryover_images: tuple[CarryoverImage, ...] = ()
+    pending_capsule: PendingCapsuleDelivery | None = None
 
     def mark_sent(self) -> None:
         callback = self.on_sent
@@ -90,6 +123,7 @@ class ExecutionDispatchEvidence:
     wire_prompt_text: str
     provider_request_key: str = ""
     native_binding_id: str = ""
+    pending_capsule: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)

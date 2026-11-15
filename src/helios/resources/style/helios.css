@@ -1746,3 +1746,54 @@ paned > separator:hover {
 .helios-effort-max {
     color: @accent_color;
 }
+
+/* ── Per-turn model chip & inline model-switch divider ─────────────── */
+
+.helios-turn-model-chip {
+    font-size: 0.75em;
+    font-weight: 500;
+    padding: 1px 7px;
+}
+
+.helios-session-legs-chip {
+    font-size: 0.72em;
+    font-weight: 600;
+    padding: 1px 6px;
+}
+
+.helios-handoff-divider {
+    margin-left: 8px;
+    margin-right: 8px;
+}
+
+.helios-handoff-rule {
+    opacity: 0.45;
+}
+
+.helios-handoff-pill {
+    padding: 3px 10px;
+    border-radius: 999px;
+    background-color: alpha(@view_fg_color, 0.055);
+    border: 1px solid alpha(@view_fg_color, 0.10);
+    color: alpha(@view_fg_color, 0.82);
+}
+
+.helios-handoff-inspect-btn {
+    padding: 1px 6px;
+    min-height: 20px;
+    border-radius: 999px;
+    font-size: 0.76em;
+    opacity: 0.78;
+}
+
+.helios-handoff-inspect-btn:hover {
+    opacity: 1;
+}
+
+.helios-handoff-details {
+    padding: 8px 12px;
+    border-radius: 10px;
+    background-color: @card_bg_color;
+    border: 1px solid @borders;
+}
+

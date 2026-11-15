@@ -13,7 +13,14 @@ from typing import Any
 from helios.backend import attachments, codex_context, model_catalog, session_goals
 from helios.backend.product_brief import BriefCriterion
 from helios.backend.execution_plan import ExecutionPlan
-from helios.backend.process.message_queue import PreparedPrompt
+from helios.backend.continuity_capsule import (
+    compile_continuity_capsule,
+    extract_media_paths,
+    extract_turn_telemetry,
+    redact_cli_credentials,
+    wrap_continuity_prompt,
+)
+from helios.backend.process.message_queue import PendingCapsuleDelivery, PreparedPrompt
 from helios.backend.session_goals import GoalState
 from helios.backend.sensitive_text import scrub_sensitive
 from helios.backend.work_context import (
@@ -270,6 +277,259 @@ class WorkCoordinator:
             return work_id
         return ""
 
+    def enable_continuity(self, work_id: str) -> Work:
+        return self.store.enable_continuity(work_id)
+
+    def activate_model_binding(
+        self,
+        work_id: str,
+        provider: str,
+        *,
+        model: str = "",
+        force_fresh: bool = False,
+    ):
+        return self.store.activate_model_binding(
+            work_id,
+            provider,
+            model=model,
+            force_fresh=force_fresh,
+        )
+
+    def ensure_initial_work_leg(
+        self,
+        work_id: str,
+        *,
+        provider: str,
+        model: str = "",
+        native_session_id: str = "",
+        transcript_path: str = "",
+        started_turn_index: int = 0,
+    ):
+        return self.store.ensure_initial_work_leg(
+            work_id,
+            provider=provider,
+            model=model,
+            native_session_id=native_session_id,
+            transcript_path=transcript_path,
+            started_turn_index=started_turn_index,
+        )
+
+    def append_work_leg(
+        self,
+        work_id: str,
+        *,
+        provider: str,
+        model: str = "",
+        native_session_id: str = "",
+        transcript_path: str = "",
+        started_turn_index: int = 0,
+        handoff_from_leg_seq: int | None = None,
+        capsule_manifest: dict[str, Any] | None = None,
+    ):
+        return self.store.append_work_leg(
+            work_id,
+            provider=provider,
+            model=model,
+            native_session_id=native_session_id,
+            transcript_path=transcript_path,
+            started_turn_index=started_turn_index,
+            handoff_from_leg_seq=handoff_from_leg_seq,
+            capsule_manifest=capsule_manifest,
+        )
+
+    def bind_work_leg_session(
+        self,
+        work_id: str,
+        *,
+        provider: str,
+        model: str = "",
+        native_session_id: str = "",
+        transcript_path: str = "",
+    ):
+        if not work_id or not native_session_id:
+            return None
+        return self.store.append_work_leg(
+            work_id,
+            provider=provider,
+            model=model,
+            native_session_id=native_session_id,
+            transcript_path=transcript_path,
+        )
+
+    def list_work_legs(self, work_id: str):
+        return self.store.list_work_legs(work_id)
+
+    def preview_continuity_manifest(
+        self,
+        work_id: str,
+        provider: str,
+        *,
+        model: str = "",
+        goal: GoalState | None = None,
+    ) -> dict[str, Any]:
+        """Compile a non-mutating capsule manifest preview for UI inspection."""
+        if not work_id:
+            return {}
+        try:
+            participant = self.participant(work_id, provider)
+            if participant is None:
+                self.bind_participant(work_id, provider, model=model)
+            snap = self.store.snapshot_continuity_context(
+                work_id,
+                provider,
+                model=model,
+            )
+            safe_goal = _safe_goal(goal)
+            resolved_model = (
+                str(model or "").strip()
+                or (snap.binding.model if snap.binding is not None else "")
+                or str(snap.participant.metadata.get("model", "") or "")
+            )
+            from_provider = snap.legs[-1].provider if snap.legs else ""
+            from_model = snap.legs[-1].model if snap.legs else ""
+            compiled = compile_continuity_capsule(
+                work=snap.work,
+                goal=safe_goal,
+                all_events=snap.events,
+                baseline_acked_seq=snap.baseline_acked_seq,
+                through_seq=snap.through_seq,
+                target_participant_id=snap.participant.participant_id,
+                target_generation=snap.participant.generation,
+                target_binding_id=(snap.binding.binding_id if snap.binding is not None else ""),
+                to_provider=provider,
+                to_model=resolved_model,
+                from_provider=from_provider,
+                from_model=from_model,
+                prior_legs=snap.legs,
+            )
+            return dict(compiled.manifest)
+        except Exception:
+            return {}
+
+    def seed_continuity_from_transcript_if_empty(
+        self,
+        work_id: str,
+        *,
+        provider: str,
+        model: str = "",
+        native_session_id: str = "",
+        transcript_path: str = "",
+    ) -> int:
+        """Backfill ledger events from an existing transcript file when switching
+        a historical or externally-driven session that has no Work events yet."""
+        if not work_id or not provider or not transcript_path:
+            return 0
+        from pathlib import Path
+        from helios.backend.transcript import parse_transcript
+
+        path = Path(transcript_path)
+        if not path.is_file() or path.is_symlink():
+            return 0
+        existing = self.store.list_events(work_id)
+        if any(
+            ev.event_type in {"user.message", "participant.contribution"}
+            for ev in existing
+        ):
+            return 0
+        participant = self.participant(work_id, provider)
+        if participant is None:
+            participant = self.bind_participant(
+                work_id,
+                provider,
+                native_id=native_session_id,
+                model=model,
+            )
+        try:
+            turns = parse_transcript(path)
+        except Exception:
+            return 0
+        relevant = [
+            t for t in turns if t.role in {"user", "assistant"} and not t.is_meta
+        ]
+        if not relevant:
+            return 0
+        seeded = 0
+        last_seq = 0
+        for turn in relevant[-60:]:
+            raw_str = str(turn.text or "")
+            text, redacted, truncated = _bounded_text(raw_str)
+            if turn.role == "user":
+                image_paths = list(extract_media_paths(raw_str))
+                for img in getattr(turn, "images", None) or ():
+                    ipath = str(getattr(img, "path", "") or "")
+                    if ipath:
+                        for verified in extract_media_paths(f"@{ipath}"):
+                            if verified not in image_paths:
+                                image_paths.append(verified)
+                if not text and not image_paths:
+                    continue
+                payload: dict[str, Any] = {
+                    "text": text,
+                    "redacted": redacted,
+                    "truncated": truncated,
+                    "raw_chars": len(raw_str.strip()),
+                }
+                if model:
+                    payload["model"] = model
+                if image_paths:
+                    payload["image_paths"] = image_paths
+                ev = self.store.append_event(
+                    work_id,
+                    "user.message",
+                    payload,
+                    provider=provider,
+                    emitting_participant_id=participant.participant_id,
+                    expected_participant_generation=participant.generation,
+                )
+                last_seq = ev.seq
+                seeded += 1
+            else:
+                telemetry = extract_turn_telemetry(turn)
+                tools = [
+                    str(getattr(tool, "name", "") or "")
+                    for tool in (getattr(turn, "tool_uses", None) or [])
+                    if getattr(tool, "name", "")
+                ]
+                if not text and not tools and not telemetry["touched_files"] and not telemetry["commands"]:
+                    continue
+                resolved_turn_model = telemetry["model"] or getattr(turn, "model", "") or model
+                payload = {
+                    "text": text,
+                    "tools": tools,
+                    "redacted": redacted,
+                    "truncated": truncated,
+                    "raw_chars": telemetry["raw_chars"],
+                }
+                if resolved_turn_model:
+                    payload["model"] = resolved_turn_model
+                if telemetry["touched_files"]:
+                    payload["touched_files"] = telemetry["touched_files"]
+                if telemetry["commands"]:
+                    payload["commands"] = telemetry["commands"]
+                if telemetry["reasoning_summary"]:
+                    payload["reasoning_summary"] = telemetry["reasoning_summary"]
+                ev = self.store.append_event(
+                    work_id,
+                    "participant.contribution",
+                    payload,
+                    provider=provider,
+                    emitting_participant_id=participant.participant_id,
+                    expected_participant_generation=participant.generation,
+                )
+                last_seq = ev.seq
+                seeded += 1
+        if seeded and last_seq > 0 and participant.native_id:
+            try:
+                self.store.acknowledge_continuity_prompt(
+                    participant.participant_id,
+                    through_seq=last_seq,
+                    expected_generation=participant.generation,
+                    model=model,
+                )
+            except Exception:
+                pass
+        return seeded
+
     def prepare_prompt(
         self,
         *,
@@ -277,6 +537,7 @@ class WorkCoordinator:
         provider: str,
         text: str,
         goal: GoalState | None,
+        model: str = "",
         include_goal_envelope: bool = True,
         include_goal_supplement: bool = False,
     ) -> str | PreparedPrompt:
@@ -291,7 +552,22 @@ class WorkCoordinator:
             )
         participant = self.participant(work_id, provider)
         if participant is None:
-            self.bind_participant(work_id, provider)
+            self.bind_participant(work_id, provider, model=model)
+        existing_work = self.store.get_work(work_id)
+        if (
+            existing_work is not None
+            and existing_work.mode == "single"
+            and existing_work.continuity_enabled
+        ):
+            return self._prepare_continuity_prompt(
+                work_id=work_id,
+                provider=provider,
+                model=model,
+                text=text,
+                goal=goal,
+                include_goal_envelope=include_goal_envelope,
+                include_goal_supplement=include_goal_supplement,
+            )
         snapshot = self.store.snapshot_collaboration_prompt(
             work_id,
             provider,
@@ -366,12 +642,133 @@ class WorkCoordinator:
 
         return PreparedPrompt(wire_text, acknowledge, diagnostics=diagnostics)
 
+    def _prepare_continuity_prompt(
+        self,
+        *,
+        work_id: str,
+        provider: str,
+        model: str,
+        text: str,
+        goal: GoalState | None,
+        include_goal_envelope: bool,
+        include_goal_supplement: bool,
+    ) -> str | PreparedPrompt:
+        snap = self.store.snapshot_continuity_context(
+            work_id,
+            provider,
+            model=model,
+        )
+        safe_goal = _safe_goal(goal)
+        resolved_model = (
+            str(model or "").strip()
+            or (snap.binding.model if snap.binding is not None else "")
+            or str(snap.participant.metadata.get("model", "") or "")
+        )
+        from_provider = ""
+        from_model = ""
+        handoff_from_leg_seq: int | None = None
+        if snap.legs:
+            tail_leg = snap.legs[-1]
+            from_provider = tail_leg.provider
+            from_model = tail_leg.model
+            handoff_from_leg_seq = tail_leg.leg_seq
+
+        brief = self.store.get_product_brief(work_id)
+        brief_artifact_paths: dict[str, str] = {}
+        for ref in brief.reference_artifacts:
+            art = self.store.get_artifact(work_id, ref.artifact_id)
+            if art is not None and art.path.is_file():
+                brief_artifact_paths[ref.artifact_id] = str(art.path)
+        essential_intent = brief.render_essential_context(artifact_paths=brief_artifact_paths)
+
+        compiled = compile_continuity_capsule(
+            work=snap.work,
+            goal=safe_goal,
+            all_events=snap.events,
+            baseline_acked_seq=snap.baseline_acked_seq,
+            through_seq=snap.through_seq,
+            target_participant_id=snap.participant.participant_id,
+            target_generation=snap.participant.generation,
+            target_binding_id=(snap.binding.binding_id if snap.binding is not None else ""),
+            to_provider=provider,
+            to_model=resolved_model,
+            from_provider=from_provider,
+            from_model=from_model,
+            prior_legs=snap.legs,
+            product_brief_context=essential_intent,
+            brief_artifact_paths=tuple(brief_artifact_paths.values()),
+        )
+        if not compiled.has_unseen_context:
+            return _wrap_goal_context(
+                text,
+                safe_goal,
+                include_envelope=include_goal_envelope,
+                include_supplement=include_goal_supplement,
+            )
+
+        wire_text = wrap_continuity_prompt(text, compiled.capsule_text)
+        wire_text = _wrap_goal_context(
+            wire_text,
+            safe_goal,
+            include_envelope=include_goal_envelope,
+            include_supplement=include_goal_supplement,
+        )
+        through_seq = compiled.through_seq
+        manifest = dict(compiled.manifest)
+
+        # Continuity cursors commit strictly inside WorkStore.record_execution_acceptance
+        # via pending_capsule on the ExecutionDispatchEvidence, never via early stdin/wire
+        # PreparedPrompt.on_sent hooks before provider acceptance is confirmed.
+        pending = PendingCapsuleDelivery(
+            through_seq=through_seq,
+            provider=provider,
+            model=resolved_model,
+            handoff_from_leg_seq=handoff_from_leg_seq,
+            manifest=manifest,
+        )
+        att_report = attachments.resolve_for_provider(
+            provider,
+            text,
+            store=self.store,
+            work_id=work_id,
+        )
+        diagnostics = PromptContextDiagnostics(
+            work_id=work_id,
+            provider=provider,
+            brief_revision=brief.revision,
+            instruction_digest=codex_context.instruction_prompt_digest(provider),
+            attachment_dispositions=tuple(
+                (item.reference, item.disposition) for item in att_report.items
+            ),
+            omitted_update_count=int(manifest.get("omitted_delta_events", 0)),
+        )
+        return PreparedPrompt(
+            wire_text,
+            None,
+            diagnostics=diagnostics,
+            carryover_images=compiled.carryover_images,
+            pending_capsule=pending,
+        )
+
     def record_user_message(self, driver: Any, text: str) -> WorkEvent | None:
-        bounded, redacted, truncated = _bounded_text(text)
+        raw_str = str(text or "")
+        bounded, redacted, truncated = _bounded_text(raw_str)
+        model_name = str(getattr(driver, "model", "") or getattr(driver, "_model", "") or "")
+        payload: dict[str, Any] = {
+            "text": bounded,
+            "redacted": redacted,
+            "truncated": truncated,
+            "raw_chars": len(raw_str.strip()),
+        }
+        if model_name:
+            payload["model"] = model_name
+        media_paths = extract_media_paths(raw_str)
+        if media_paths:
+            payload["image_paths"] = media_paths
         event = self._record_driver_event(
             driver,
             "user.message",
-            {"text": bounded, "redacted": redacted, "truncated": truncated},
+            payload,
         )
         work_id = str(getattr(driver, "_helios_work_id", "") or "")
         if work_id:
@@ -402,8 +799,8 @@ class WorkCoordinator:
         """
 
         work = self.store.get_work(work_id)
-        if work is None or work.mode != "single":
-            raise ValueError("context degradation requires a verified single Work")
+        if work is None or work.mode != "single" or work.continuity_enabled:
+            raise ValueError("context degradation requires a verified non-continuity single Work")
         return self.store.append_control_event(
             work_id,
             "context.degraded",
@@ -417,9 +814,8 @@ class WorkCoordinator:
     def record_turn(self, driver: Any, turn: Any) -> WorkEvent | None:
         if getattr(turn, "role", "") != "assistant":
             return None
-        text, redacted, truncated = _bounded_text(
-            getattr(turn, "text", "") or ""
-        )
+        raw_turn_text = str(getattr(turn, "text", "") or "")
+        text, redacted, truncated = _bounded_text(raw_turn_text)
         tools = [
             str(getattr(tool, "name", "") or "")
             for tool in (getattr(turn, "tool_uses", None) or [])
@@ -427,15 +823,30 @@ class WorkCoordinator:
         ]
         if not text and not tools:
             return None
+        telemetry = extract_turn_telemetry(turn)
+        resolved_model = (
+            telemetry["model"]
+            or str(getattr(driver, "model", "") or getattr(driver, "_model", "") or "")
+        )
+        payload: dict[str, Any] = {
+            "text": text,
+            "tools": tools,
+            "redacted": redacted,
+            "truncated": truncated,
+            "raw_chars": telemetry["raw_chars"],
+        }
+        if resolved_model:
+            payload["model"] = resolved_model
+        if telemetry["touched_files"]:
+            payload["touched_files"] = telemetry["touched_files"]
+        if telemetry["commands"]:
+            payload["commands"] = telemetry["commands"]
+        if telemetry["reasoning_summary"]:
+            payload["reasoning_summary"] = telemetry["reasoning_summary"]
         return self._record_driver_event(
             driver,
             "participant.contribution",
-            {
-                "text": text,
-                "tools": tools,
-                "redacted": redacted,
-                "truncated": truncated,
-            },
+            payload,
         )
 
     def record_execution_plan(
@@ -709,11 +1120,13 @@ class WorkCoordinator:
         *,
         wire_prompt_text: str,
         provider_request_key: str,
+        pending_capsule: dict[str, Any] | None = None,
     ) -> ExecutionAttempt:
         return self.store.record_execution_dispatch(
             attempt_id,
             wire_prompt_text=wire_prompt_text,
             provider_request_key=provider_request_key,
+            pending_capsule=pending_capsule,
         )
 
     def record_execution_acceptance(
@@ -923,7 +1336,10 @@ def _event_text(event: WorkEvent) -> str:
 
 
 def _bounded_text(value: Any) -> tuple[str, bool, bool]:
-    text, redacted = scrub_sensitive(value)
+    raw_str = str(value or '')
+    pre = redact_cli_credentials(raw_str)
+    text, redacted = scrub_sensitive(pre)
+    redacted = bool(redacted or pre != raw_str)
     text = text.strip()
     if len(text) <= _MAX_LEDGER_TEXT:
         return text, redacted, False

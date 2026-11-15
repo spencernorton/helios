@@ -570,7 +570,12 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         command_id = uuid7()
         if not self._record_execution_dispatch(ExecutionDispatchEvidence(
                 wire_prompt_text=prepared.text, provider_request_key=self.execution_attempt_id,
-                native_binding_id=self._confirmed_execution_native_id() or self._session_id)):
+                native_binding_id=self._confirmed_execution_native_id() or self._session_id,
+                pending_capsule=(
+                    prepared.pending_capsule.to_record()
+                    if prepared.pending_capsule is not None
+                    else None
+                ))):
             released = self._finish_execution_with_evidence(ExecutionTerminalEvidence(
                 evidence_type="local_abort", status="aborted",
                 reason_code="local_abort", queue_disposition="restored"))
@@ -599,7 +604,10 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         params: dict[str, Any] = {
             "commandId": command_id,
             "sessionId": self._session_id,
-            "input": [{"type": "text", "text": prepared.text}, *muse_inputs(text)],
+            "input": [
+                {"type": "text", "text": prepared.text},
+                *muse_inputs(text, carryover=prepared.carryover_images),
+            ],
         }
         if self._effort:
             params["reasoningEffort"] = self._effort

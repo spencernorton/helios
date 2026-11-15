@@ -234,10 +234,12 @@ class GoalWorkMixin:
             getattr(drv, "_helios_participant_provider", "")
             or self._driver_provider(drv)
         )
+        driver_model = str(getattr(drv, "model", "") or getattr(drv, "_model", "") or "")
         try:
             return coordinator.prepare_prompt(
                 work_id=work_id,
                 provider=provider,
+                model=driver_model,
                 text=text,
                 goal=goal,
                 include_goal_envelope=include_goal_envelope,
@@ -249,10 +251,13 @@ class GoalWorkMixin:
                 work = coordinator.store.get_work(work_id)
             except Exception:
                 work = None
-            # A tandem packet is part of the accepted provider contract. Work
-            # absence or an unreadable record is equally unverifiable; never
-            # send a raw/goal-only prompt and silently erase peer context.
-            if work is None or getattr(work, "mode", "") != "single":
+            # Both Tandem packets and Continuity capsules are required prompt
+            # context. Never degrade to a blind goal-only prompt after switching.
+            if (
+                work is None
+                or getattr(work, "mode", "") != "single"
+                or bool(getattr(work, "continuity_enabled", False))
+            ):
                 raise RequiredPromptContextError() from exc
             try:
                 evidence = coordinator.record_context_degradation(

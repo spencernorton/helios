@@ -490,7 +490,12 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
             return MessageDelivery("rejected")
         if not self._record_execution_dispatch(ExecutionDispatchEvidence(
                 wire_prompt_text=prepared.text, provider_request_key=self.execution_attempt_id,
-                native_binding_id=self._session_id)):
+                native_binding_id=self._session_id,
+                pending_capsule=(
+                    prepared.pending_capsule.to_record()
+                    if prepared.pending_capsule is not None
+                    else None
+                ))):
             released = self._finish_execution_with_evidence(ExecutionTerminalEvidence(
                 evidence_type="local_abort", status="aborted", reason_code="local_abort",
                 queue_disposition="restored"))
@@ -511,8 +516,13 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
         self._tool_images = {}
         self._agents = {}
         self._turn_usage = {}
-        params = {"sessionId": self._session_id,
-                  "prompt": [{"type": "text", "text": prepared.text}, *kimi_blocks(text)]}
+        params = {
+            "sessionId": self._session_id,
+            "prompt": [
+                {"type": "text", "text": prepared.text},
+                *kimi_blocks(text, carryover=prepared.carryover_images),
+            ],
+        }
         if not self._send("session/prompt", params):
             self.end_input()
             self.emit("error", "Kimi delivery is uncertain. This Work remains blocked until provider-backed recovery confirms the outcome.")

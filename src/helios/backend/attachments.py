@@ -5,15 +5,32 @@ pasted, dropped and screenshotted images, so queueing, drafts and recovery stay
 plain text. Each driver turns the image references into its provider's native
 image input at the wire; the text keeps the path so the agent can also act on
 the file.
+
+Cross-provider continuity capsules also supply pre-validated ``CarryoverImage``
+bytes read once with ``O_NOFOLLOW`` + magic-byte sniffing so target legs encode
+directly from memory (or an immutable ``0400`` content-addressed snapshot for
+Codex App Server) without TOCTOU re-reads.
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
 import re
+import tempfile
+import time
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal
 
+from helios.backend.product_brief import REFERENCE_ROLES, ReferenceArtifactRef
 from helios.log import get_logger
+from helios.paths import state_dir
+
+if TYPE_CHECKING:
+    from helios.backend.work_store import WorkStore
 
 _log = get_logger("attachments")
 
@@ -27,6 +44,9 @@ IMAGE_TYPES = {
 # the Anthropic per-image cap; a larger image stays a text @path the
 # agent can open with its own tools. Downscale here if that proves common.
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
+_CONTINUITY_MEDIA_TTL_SECONDS = 7 * 24 * 3600
+_CONTINUITY_MEDIA_MAX_FILES = 200
 
 _MENTION = re.compile(r'@"((?:[^"\\]|\\.)*)"|@([^\s"]+)')
 
@@ -47,54 +67,183 @@ def mentioned_images(text: str) -> list[tuple[str, str]]:
     return found
 
 
-def _b64(path: str) -> str | None:
+def _read_raw_checked(path: str) -> bytes | None:
     try:
         if os.path.getsize(path) > MAX_IMAGE_BYTES:
             _log.info("image over %d bytes stays a text reference: %s", MAX_IMAGE_BYTES, path)
             return None
         with open(path, "rb") as fh:
-            return base64.b64encode(fh.read()).decode("ascii")
+            data = fh.read(MAX_IMAGE_BYTES + 1)
+        if not data or len(data) > MAX_IMAGE_BYTES:
+            return None
+        return data
     except OSError:
         return None
 
 
-def anthropic_blocks(text: str) -> list[dict]:
-    """Claude stream-json user content blocks."""
-    blocks = []
-    for path, media in mentioned_images(text):
-        data = _b64(path)
-        if data:
-            blocks.append({"type": "image", "source": {"type": "base64", "media_type": media, "data": data}})
-    return blocks
+def _b64(path: str) -> str | None:
+    raw = _read_raw_checked(path)
+    if raw is None:
+        return None
+    return base64.b64encode(raw).decode("ascii")
 
 
-def codex_inputs(text: str) -> list[dict]:
-    """Codex App Server ``turn/start`` input items (Codex reads the file)."""
-    return [
-        {"type": "localImage", "path": path}
-        for path, _ in mentioned_images(text)
-        if os.path.getsize(path) <= MAX_IMAGE_BYTES
-    ]
-
-
-def muse_inputs(text: str) -> list[dict]:
-    """MSP ``turn/start`` input items (shape probed against ``muse serve``)."""
-    items = []
-    for path, media in mentioned_images(text):
-        data = _b64(path)
-        if data:
-            items.append({"type": "image", "mediaType": media, "base64Data": data})
+def _iter_carryover(
+    carryover: Sequence[Any],
+    seen_hashes: set[str],
+) -> list[tuple[bytes, str, str, str]]:
+    items: list[tuple[bytes, str, str, str]] = []
+    for entry in carryover or ():
+        data = getattr(entry, "data", b"")
+        media = str(getattr(entry, "media_type", "") or "")
+        digest = str(getattr(entry, "sha256", "") or "")
+        ext = str(getattr(entry, "ext", "") or "")
+        if (
+            not isinstance(data, (bytes, bytearray))
+            or not data
+            or len(data) > MAX_IMAGE_BYTES
+            or media not in IMAGE_TYPES.values()
+        ):
+            continue
+        raw = bytes(data)
+        if not digest:
+            digest = hashlib.sha256(raw).hexdigest()
+        if digest in seen_hashes:
+            continue
+        seen_hashes.add(digest)
+        if not ext or ext not in IMAGE_TYPES:
+            ext = next((k for k, v in IMAGE_TYPES.items() if v == media), ".png")
+        items.append((raw, media, digest, ext))
     return items
 
 
-def kimi_blocks(text: str) -> list[dict]:
+def _prune_continuity_media_dir(media_dir: Path) -> None:
+    try:
+        entries = []
+        now = time.time()
+        for child in media_dir.iterdir():
+            if child.name.startswith("."):
+                continue
+            try:
+                st = child.lstat()
+            except OSError:
+                continue
+            if now - st.st_mtime > _CONTINUITY_MEDIA_TTL_SECONDS:
+                try:
+                    os.chmod(child, 0o600)
+                    child.unlink()
+                except OSError:
+                    pass
+                continue
+            entries.append((st.st_mtime, child))
+        if len(entries) > _CONTINUITY_MEDIA_MAX_FILES:
+            entries.sort(key=lambda pair: pair[0])
+            for _mtime, victim in entries[: len(entries) - _CONTINUITY_MEDIA_MAX_FILES]:
+                try:
+                    os.chmod(victim, 0o600)
+                    victim.unlink()
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+
+def stage_codex_carryover_snapshot(data: bytes, sha256_hex: str, ext: str) -> str | None:
+    """Write an immutable 0400 content-addressed image snapshot for Codex."""
+    safe_hash = re.sub(r"[^0-9a-f]", "", (sha256_hex or "").lower())
+    if len(safe_hash) != 64:
+        safe_hash = hashlib.sha256(data).hexdigest()
+    safe_ext = ext if ext in IMAGE_TYPES else ".png"
+    media_dir = state_dir() / "continuity-media"
+    try:
+        media_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(media_dir, 0o700)
+        dest = media_dir / f"{safe_hash}{safe_ext}"
+        if dest.exists() and not dest.is_symlink():
+            return str(dest)
+        fd, tmp_name = tempfile.mkstemp(prefix=".img-", suffix=safe_ext, dir=media_dir)
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+            os.chmod(tmp_path, 0o400)
+            os.replace(tmp_path, dest)
+        except Exception:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+        _prune_continuity_media_dir(media_dir)
+        return str(dest)
+    except OSError as exc:
+        _log.warning("could not stage continuity image snapshot: %s", exc)
+        return None
+
+
+def anthropic_blocks(text: str, *, carryover: Sequence[Any] = ()) -> list[dict]:
+    """Claude stream-json user content blocks."""
+    blocks = []
+    seen_hashes: set[str] = set()
+    for path, media in mentioned_images(text):
+        raw = _read_raw_checked(path)
+        if raw is not None:
+            seen_hashes.add(hashlib.sha256(raw).hexdigest())
+            data = base64.b64encode(raw).decode("ascii")
+            blocks.append({"type": "image", "source": {"type": "base64", "media_type": media, "data": data}})
+    for raw, media, _digest, _ext in _iter_carryover(carryover, seen_hashes):
+        data = base64.b64encode(raw).decode("ascii")
+        blocks.append({"type": "image", "source": {"type": "base64", "media_type": media, "data": data}})
+    return blocks
+
+
+def codex_inputs(text: str, *, carryover: Sequence[Any] = ()) -> list[dict]:
+    """Codex App Server ``turn/start`` input items (Codex reads the file)."""
+    items: list[dict] = []
+    seen_hashes: set[str] = set()
+    for path, _ in mentioned_images(text):
+        raw = _read_raw_checked(path)
+        if raw is not None:
+            seen_hashes.add(hashlib.sha256(raw).hexdigest())
+            items.append({"type": "localImage", "path": path})
+    for raw, _media, digest, ext in _iter_carryover(carryover, seen_hashes):
+        staged = stage_codex_carryover_snapshot(raw, digest, ext)
+        if staged:
+            items.append({"type": "localImage", "path": staged})
+    return items
+
+
+def muse_inputs(text: str, *, carryover: Sequence[Any] = ()) -> list[dict]:
+    """MSP ``turn/start`` input items (shape probed against ``muse serve``)."""
+    items = []
+    seen_hashes: set[str] = set()
+    for path, media in mentioned_images(text):
+        raw = _read_raw_checked(path)
+        if raw is not None:
+            seen_hashes.add(hashlib.sha256(raw).hexdigest())
+            data = base64.b64encode(raw).decode("ascii")
+            items.append({"type": "image", "mediaType": media, "base64Data": data})
+    for raw, media, _digest, _ext in _iter_carryover(carryover, seen_hashes):
+        data = base64.b64encode(raw).decode("ascii")
+        items.append({"type": "image", "mediaType": media, "base64Data": data})
+    return items
+
+
+def kimi_blocks(text: str, *, carryover: Sequence[Any] = ()) -> list[dict]:
     """ACP image and explicitly mentioned text-resource content blocks."""
     blocks = []
-    images = {path for path, _media in mentioned_images(text)}
-    for path, media in mentioned_images(text):
-        data = _b64(path)
-        if data:
+    seen_hashes: set[str] = set()
+    mentioned = mentioned_images(text)
+    images = {path for path, _media in mentioned}
+    for path, media in mentioned:
+        raw = _read_raw_checked(path)
+        if raw is not None:
+            seen_hashes.add(hashlib.sha256(raw).hexdigest())
+            data = base64.b64encode(raw).decode("ascii")
             blocks.append({"type": "image", "data": data, "mimeType": media})
+    for raw, media, _digest, _ext in _iter_carryover(carryover, seen_hashes):
+        data = base64.b64encode(raw).decode("ascii")
+        blocks.append({"type": "image", "data": data, "mimeType": media})
     seen: set[str] = set()
     for quoted, bare in _MENTION.findall(text or ""):
         path = re.sub(r"\\(.)", r"\1", quoted) if quoted else bare.rstrip(".,;:!?)]}'")
@@ -104,8 +253,9 @@ def kimi_blocks(text: str) -> list[dict]:
         try:
             if os.path.getsize(path) > 1024 * 1024:
                 continue
-            raw = open(path, "rb").read()
-            content = raw.decode("utf-8")
+            with open(path, "rb") as fh:
+                raw_text = fh.read()
+            content = raw_text.decode("utf-8")
         except (OSError, UnicodeDecodeError):
             continue
         blocks.append({"type": "resource", "resource": {
@@ -114,24 +264,45 @@ def kimi_blocks(text: str) -> list[dict]:
     return blocks
 
 
-def openai_parts(text: str) -> list[dict]:
+def openai_parts(text: str, *, carryover: Sequence[Any] = ()) -> list[dict]:
     """OpenAI-compatible ``image_url`` content parts (OpenRouter)."""
     parts = []
+    seen_hashes: set[str] = set()
     for path, media in mentioned_images(text):
-        data = _b64(path)
-        if data:
+        raw = _read_raw_checked(path)
+        if raw is not None:
+            seen_hashes.add(hashlib.sha256(raw).hexdigest())
+            data = base64.b64encode(raw).decode("ascii")
             parts.append({"type": "image_url", "image_url": {"url": f"data:{media};base64,{data}"}})
+    for raw, media, _digest, _ext in _iter_carryover(carryover, seen_hashes):
+        data = base64.b64encode(raw).decode("ascii")
+        parts.append({"type": "image_url", "image_url": {"url": f"data:{media};base64,{data}"}})
     return parts
 
 
-from dataclasses import dataclass
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+openrouter_parts = openai_parts
 
-from helios.backend.product_brief import REFERENCE_ROLES, ReferenceArtifactRef
 
-if TYPE_CHECKING:
-    from helios.backend.work_store import WorkStore
+def google_wire_text(text: str, *, carryover: Sequence[Any] = ()) -> str:
+    """Stage verified carryover images to immutable 0400 paths for Google."""
+    if not carryover:
+        return text
+    seen_hashes: set[str] = set()
+    for path, _ in mentioned_images(text):
+        raw = _read_raw_checked(path)
+        if raw is not None:
+            seen_hashes.add(hashlib.sha256(raw).hexdigest())
+    staged_refs: list[str] = []
+    for raw, _media, digest, ext in _iter_carryover(carryover, seen_hashes):
+        staged = stage_codex_carryover_snapshot(raw, digest, ext)
+        if not staged:
+            raise OSError("could not stage carried-over image attachment for Google")
+        staged_refs.append(f"@{staged}")
+    if not staged_refs:
+        return text
+    refs_line = "[Carried-over image attachments: " + " ".join(staged_refs) + "]"
+    return f"{text}\n\n{refs_line}" if text else refs_line
+
 
 AttachmentDisposition = Literal[
     "image_prepared",

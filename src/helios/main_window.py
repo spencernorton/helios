@@ -4,7 +4,8 @@ import json
 import os
 import threading
 import time
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import NamedTuple
 
 import gi
@@ -66,6 +67,11 @@ from helios.backend.process.driver_manager import (
 )
 from helios.backend.claude_binary import ClaudeBinaryNotFound
 from helios.backend.composer_state import DraftBook, draft_key
+from helios.backend.composite_transcript import (
+    HandoffBoundary,
+    build_composite_transcript,
+    human_model_label,
+)
 from helios.backend.conversation_perms import store as conversation_perms_store
 from helios.backend.latest_worker import LatestTaskRunner
 from helios.backend import browser_target, transcript_fork, worktrees
@@ -275,6 +281,20 @@ class ContextFillRequest(NamedTuple):
     session: Session
     sid: str
     model: str
+
+
+@dataclass
+class _PendingModelSwitch:
+    """Mid-turn model/provider switch queued to apply on turn completion."""
+
+    work_id: str
+    from_provider: str
+    from_model: str
+    to_provider: str
+    to_model: str
+    source_driver: object = None
+    queued_items: list[tuple[int, str]] = field(default_factory=list)
+    stop_requested: bool = False
 
 
 class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
@@ -532,6 +552,8 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         self._staged_permission_mode = ""
         self._staged_effort_key = ""
         self._staged_workflow_mode = ""
+        self._pending_model_switch: _PendingModelSwitch | None = None
+        self._pending_switch_qid_seq = -1
         # Default to the latest Fable with 1M context. The `fable` alias tracks
         # the newest Fable automatically, so this stays current as models ship.
         self._model = self._ui_state.get("model", DEFAULT_MODEL) or DEFAULT_MODEL
@@ -2867,7 +2889,8 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         settings): persist, remember per provider, reflect everywhere."""
         if not quiet:
             self._pending_session_provider_adoption = ""
-        old_provider = model_catalog.provider_for(self._model)
+        old_model = str(getattr(self, "_model", "") or "")
+        old_provider = model_catalog.provider_for(old_model)
         self._model = alias
         self._ui_state.set("model", alias)  # sticky across restarts
         provider = model_catalog.provider_for(alias)
@@ -2883,6 +2906,21 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         if provider != old_provider:
             self._refresh_openrouter_credits()
         if quiet:
+            return
+        if MainWindow._should_switch_conversation_in_place(
+            self,
+            old_provider=old_provider,
+            old_model=old_model,
+            new_provider=provider,
+            new_model=alias,
+        ):
+            MainWindow._switch_conversation_model_in_place(
+                self,
+                old_provider=old_provider,
+                old_model=old_model,
+                new_provider=provider,
+                new_model=alias,
+            )
             return
         if provider != old_provider:
             lead = model_catalog.PROVIDER_LABELS.get(provider, "Claude")
@@ -3144,6 +3182,846 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         except Exception as exc:
             _log.warning("could not read running attempts for %s: %s", work_id, exc)
             return False
+
+    def _work_id_has_continuity(self, work_id: str) -> bool:
+        if not work_id:
+            return False
+        coordinator = getattr(self, "_work_coordinator", None)
+        store = getattr(coordinator, "store", None)
+        if store is None:
+            return False
+        try:
+            work = store.get_work(work_id)
+            return bool(work is not None and getattr(work, "continuity_enabled", False))
+        except Exception:
+            return False
+
+    def _target_work_has_continuity(self, target) -> bool:
+        if target is None:
+            return False
+        return MainWindow._work_id_has_continuity(
+            self,
+            str(getattr(target, "work_id", "") or ""),
+        )
+
+    def _should_switch_conversation_in_place(
+        self,
+        *,
+        old_provider: str,
+        old_model: str,
+        new_provider: str,
+        new_model: str,
+    ) -> bool:
+        if new_provider == old_provider and new_model == old_model:
+            return getattr(self, "_pending_model_switch", None) is not None
+        coordinator = getattr(self, "_work_coordinator", None)
+        main_stack = getattr(self, "_main_stack", None)
+        transcript = getattr(self, "_transcript", None)
+        target = getattr(self, "_next_chat", None)
+        if (
+            coordinator is None
+            or main_stack is None
+            or transcript is None
+            or target is None
+            or getattr(target, "project", None) is None
+            or bool(getattr(target.project, "read_only", False))
+        ):
+            return False
+        if main_stack.get_visible_child_name() != "transcript":
+            return False
+        has_turns_fn = getattr(transcript, "has_visible_turns", None)
+        had_conversation = (
+            bool(getattr(target, "resume_id", ""))
+            or bool(self._driver is not None and self._driver.is_running)
+            or bool(callable(has_turns_fn) and has_turns_fn())
+            or getattr(self, "_pending_model_switch", None) is not None
+        )
+        if not had_conversation:
+            return False
+        work_id = str(getattr(target, "work_id", "") or self._current_work_id() or "")
+        if work_id:
+            try:
+                work = coordinator.store.get_work(work_id)
+                if work is not None and getattr(work, "mode", "single") == "tandem":
+                    return False
+            except Exception:
+                pass
+        return True
+
+    def _outgoing_leg_identity(
+        self,
+        *,
+        old_provider: str,
+        old_model: str,
+    ) -> tuple[str, str, str]:
+        """Resolve (outgoing_model, outgoing_session_id, outgoing_transcript_path)."""
+        target = getattr(self, "_next_chat", None)
+        coordinator = getattr(self, "_work_coordinator", None)
+        drv = getattr(self, "_driver", None)
+        resolved_model = old_model
+        session_id = ""
+        if drv is not None and self._driver_provider(drv) == old_provider:
+            resolved_model = str(
+                getattr(drv, "_helios_requested_model", "")
+                or getattr(drv, "model", "")
+                or old_model
+            )
+            session_id = str(getattr(drv, "session_id", "") or "")
+        if not session_id and target is not None and target.resume_id:
+            res = MainWindow._target_resume_resolution(self, target)
+            if res.known and res.provider == old_provider:
+                session_id = str(target.resume_id)
+        if not session_id and coordinator is not None and target is not None and target.work_id:
+            try:
+                session_id = str(coordinator.resume_id(target.work_id, old_provider) or "")
+            except Exception:
+                session_id = ""
+        transcript_path = ""
+        if session_id and target is not None and target.project is not None:
+            transcript_path = str(target.project.path / f"{session_id}.jsonl")
+        return resolved_model, session_id, transcript_path
+
+    def _ensure_work_for_outgoing_leg(
+        self,
+        *,
+        old_provider: str,
+        old_model: str,
+        old_session_id: str,
+    ) -> str:
+        target = getattr(self, "_next_chat", None)
+        coordinator = getattr(self, "_work_coordinator", None)
+        if target is None or target.project is None or coordinator is None:
+            return ""
+        drv = getattr(self, "_driver", None)
+        work_id = str(
+            getattr(target, "work_id", "")
+            or getattr(drv, "_helios_work_id", "")
+            or getattr(drv, "_helios_work_id_hint", "")
+            or ""
+        )
+        try:
+            if not work_id and old_session_id:
+                work = coordinator.resolve_native_work(
+                    old_provider,
+                    old_session_id,
+                    cwd=target.project.cwd,
+                    model=old_model,
+                )
+                work_id = work.work_id
+            elif not work_id:
+                work = coordinator.ensure_work(
+                    work_id="",
+                    cwd=target.project.cwd,
+                    lead_provider=old_provider,
+                    objective=(self._pending_goal.objective if self._pending_goal else ""),
+                )
+                work_id = work.work_id
+                coordinator.bind_participant(
+                    work_id,
+                    old_provider,
+                    native_id=old_session_id,
+                    model=old_model,
+                )
+            else:
+                participant = coordinator.participant(work_id, old_provider)
+                if participant is None or (
+                    old_session_id and not participant.native_id
+                ):
+                    coordinator.bind_participant(
+                        work_id,
+                        old_provider,
+                        native_id=old_session_id,
+                        model=old_model,
+                    )
+            if old_session_id:
+                session_goals.rekey_goal(old_session_id, work_id)
+            if getattr(self, "_pending_goal", None) is not None:
+                goal = self._goal_with_current_metadata(self._pending_goal)
+                session_goals.set_goal(work_id, goal)
+                coordinator.record_goal(
+                    work_id=work_id,
+                    provider=old_provider,
+                    goal=goal,
+                )
+                self._pending_goal = None
+            self._next_chat = stage_work(target, work_id)
+            return work_id
+        except Exception as exc:
+            _log.warning("could not ensure Work for model switch: %s", exc)
+            return work_id
+
+    def _next_pending_switch_qid(self) -> int:
+        seq = int(getattr(self, "_pending_switch_qid_seq", -1)) - 1
+        if seq >= 0:
+            seq = -1
+        self._pending_switch_qid_seq = seq
+        return seq
+
+    def _make_pending_switch_remover(self):
+        def _remove(qid: int) -> None:
+            pending = getattr(self, "_pending_model_switch", None)
+            if pending is None:
+                return
+            before = len(pending.queued_items)
+            pending.queued_items = [
+                item for item in pending.queued_items if item[0] != qid
+            ]
+            if len(pending.queued_items) != before and not self._destroyed:
+                self._transcript.remove_queued(qid)
+
+        return _remove
+
+    def _queue_on_pending_model_switch(self, text: str) -> bool:
+        pending = getattr(self, "_pending_model_switch", None)
+        if pending is None:
+            return False
+        qid = MainWindow._next_pending_switch_qid(self)
+        pending.queued_items.append((qid, text))
+        self._transcript.append_queued(
+            qid,
+            text,
+            MainWindow._make_pending_switch_remover(self),
+        )
+        return True
+
+    def _drain_pending_model_switch_texts(self, *, remove_rows: bool = True) -> list[str]:
+        pending = getattr(self, "_pending_model_switch", None)
+        if pending is None or not pending.queued_items:
+            return []
+        items = list(pending.queued_items)
+        pending.queued_items.clear()
+        if remove_rows and not getattr(self, "_destroyed", False):
+            transcript = getattr(self, "_transcript", None)
+            if transcript is not None:
+                for qid, _text in items:
+                    transcript.remove_queued(qid)
+        return [text for _qid, text in items if text]
+
+    def _stash_or_clear_pending_model_switch(self, *, keep_for_work_id: str = "") -> None:
+        pending = getattr(self, "_pending_model_switch", None)
+        if pending is None:
+            return
+        if keep_for_work_id and pending.work_id == keep_for_work_id:
+            return
+        texts = MainWindow._drain_pending_model_switch_texts(self, remove_rows=True)
+        self._pending_model_switch = None
+        if texts and pending.work_id:
+            drafts = getattr(self, "_drafts", None)
+            if drafts is not None:
+                key = f"work:{pending.work_id}"
+                existing = drafts.take(key).strip()
+                combined = texts + ([existing] if existing else [])
+                drafts.stash(key, "\n\n".join(combined))
+
+    def _switch_conversation_model_in_place(
+        self,
+        *,
+        old_provider: str,
+        old_model: str,
+        new_provider: str,
+        new_model: str,
+    ) -> None:
+        outgoing_model, outgoing_sid, outgoing_path = MainWindow._outgoing_leg_identity(
+            self,
+            old_provider=old_provider,
+            old_model=old_model,
+        )
+        existing_pending = getattr(self, "_pending_model_switch", None)
+        if existing_pending is not None:
+            work_id = existing_pending.work_id
+        else:
+            work_id = MainWindow._ensure_work_for_outgoing_leg(
+                self,
+                old_provider=old_provider,
+                old_model=outgoing_model,
+                old_session_id=outgoing_sid,
+            )
+        if not work_id:
+            self._toast("Helios could not establish continuity for this conversation.")
+            return
+
+        drv = getattr(self, "_driver", None)
+        checkpoint_pending = MainWindow._checkpoint_dispatch_pending_for(self, drv)
+        busy_now = (
+            self._work_is_executing(work_id)
+            or bool(drv is not None and (drv.is_busy or getattr(drv, "is_initializing", False)))
+            or checkpoint_pending
+        )
+        if busy_now:
+            if existing_pending is not None:
+                if (
+                    new_provider == existing_pending.from_provider
+                    and new_model == existing_pending.from_model
+                ):
+                    texts = MainWindow._drain_pending_model_switch_texts(
+                        self,
+                        remove_rows=True,
+                    )
+                    src_drv = existing_pending.source_driver or drv
+                    self._pending_model_switch = None
+                    if src_drv is not None and hasattr(src_drv, "queue_user_text"):
+                        for text in texts:
+                            qid = src_drv.queue_user_text(text)
+                            self._transcript.append_queued(
+                                qid,
+                                text,
+                                self._make_queued_remover(src_drv),
+                            )
+                    self._toast(
+                        f"Staying on {human_model_label(new_provider, new_model)}."
+                    )
+                    return
+                existing_pending.to_provider = new_provider
+                existing_pending.to_model = new_model
+                self._toast(
+                    f"Switch to {human_model_label(new_provider, new_model)} queued — "
+                    "applies when this turn finishes."
+                )
+                return
+
+            drained_texts: list[str] = []
+            if drv is not None and hasattr(drv, "queued_messages"):
+                queued_rows = list(drv.queued_messages())
+                delivery = getattr(drv, "_pending_queue_delivery", None)
+                if (
+                    isinstance(delivery, tuple)
+                    and len(delivery) == 2
+                    and queued_rows[:1] == [delivery]
+                ):
+                    take_succ = getattr(
+                        drv,
+                        "take_queued_successors_after_pending_delivery",
+                        None,
+                    )
+                    if callable(take_succ):
+                        succ = take_succ()
+                        if succ:
+                            for qid, _t in queued_rows[1:]:
+                                self._transcript.remove_queued(qid)
+                            drained_texts.extend(succ)
+                else:
+                    take_all = getattr(drv, "take_queued", None)
+                    if callable(take_all):
+                        taken = take_all()
+                        if taken:
+                            for qid, _t in queued_rows:
+                                self._transcript.remove_queued(qid)
+                            drained_texts.extend(taken)
+
+            pending = _PendingModelSwitch(
+                work_id=work_id,
+                from_provider=old_provider,
+                from_model=outgoing_model,
+                to_provider=new_provider,
+                to_model=new_model,
+                source_driver=drv,
+            )
+            self._pending_model_switch = pending
+            for text in drained_texts:
+                MainWindow._queue_on_pending_model_switch(self, text)
+            self._toast(
+                f"Switch to {human_model_label(new_provider, new_model)} queued — "
+                "applies when this turn finishes."
+            )
+            return
+
+        MainWindow._execute_in_place_model_switch(
+            self,
+            work_id=work_id,
+            old_provider=old_provider,
+            old_model=outgoing_model,
+            outgoing_session_id=outgoing_sid,
+            outgoing_transcript_path=outgoing_path,
+            new_provider=new_provider,
+            new_model=new_model,
+            announce=True,
+        )
+
+    def _execute_in_place_model_switch(
+        self,
+        *,
+        work_id: str,
+        old_provider: str,
+        old_model: str,
+        outgoing_session_id: str = "",
+        outgoing_transcript_path: str = "",
+        new_provider: str,
+        new_model: str,
+        announce: bool = True,
+    ) -> bool:
+        coordinator = getattr(self, "_work_coordinator", None)
+        target = getattr(self, "_next_chat", None)
+        if coordinator is None or target is None or target.project is None:
+            return False
+
+        if not outgoing_session_id:
+            _om, outgoing_session_id, outgoing_transcript_path = (
+                MainWindow._outgoing_leg_identity(
+                    self,
+                    old_provider=old_provider,
+                    old_model=old_model,
+                )
+            )
+
+        try:
+            coordinator.enable_continuity(work_id)
+            if outgoing_session_id:
+                coordinator.ensure_initial_work_leg(
+                    work_id,
+                    provider=old_provider,
+                    model=old_model,
+                    native_session_id=outgoing_session_id,
+                    transcript_path=outgoing_transcript_path,
+                )
+                coordinator.seed_continuity_from_transcript_if_empty(
+                    work_id,
+                    provider=old_provider,
+                    model=old_model,
+                    native_session_id=outgoing_session_id,
+                    transcript_path=outgoing_transcript_path,
+                )
+            legs_before = coordinator.list_work_legs(work_id)
+            if len(legs_before) > 1:
+                coordinator.store.pop_unused_tail_leg(work_id)
+        except Exception as exc:
+            _log.warning("failed preparing continuity legs for %s: %s", work_id, exc)
+            self._toast("Could not switch models cleanly in this conversation.")
+            return False
+
+        prev_draft_key = getattr(self, "_draft_key", "")
+        new_draft_key = draft_key(target, work_id=work_id)
+        if new_draft_key and new_draft_key != prev_draft_key:
+            current_text = self._composer.current_text()
+            self._drafts.stash(new_draft_key, current_text)
+            if prev_draft_key:
+                self._drafts.stash(prev_draft_key, "")
+            self._draft_key = new_draft_key
+
+        def _count_existing_turns(tpath: str) -> int:
+            if not tpath:
+                return 0
+            try:
+                from pathlib import Path
+                p_obj = Path(tpath)
+                if p_obj.is_file():
+                    return len(parse_transcript(p_obj))
+            except Exception:
+                pass
+            return 0
+
+        drv = getattr(self, "_driver", None)
+        force_fresh = bool(
+            old_provider == new_provider == model_catalog.PROVIDER_GOOGLE
+            and new_model != old_model
+            and coordinator.store.active_or_matching_binding(
+                work_id,
+                new_provider,
+                new_model,
+            )
+            is None
+        )
+
+        # Same-provider live set_model path (Claude, Codex, Muse, OpenRouter).
+        if (
+            new_provider == old_provider
+            and not force_fresh
+            and drv is not None
+            and drv.is_accepting_input
+            and self._driver_matches_selected_provider(drv)
+            and self._driver_matches_target_binding(drv)
+            and callable(getattr(drv, "set_model", None))
+        ):
+            live_sid = str(getattr(drv, "session_id", "") or outgoing_session_id or "")
+            live_path = (
+                str(target.project.path / f"{live_sid}.jsonl")
+                if live_sid
+                else ""
+            )
+            label = human_model_label(new_provider, new_model)
+            outcomes: list[tuple[bool, str]] = []
+            dispatched_async = False
+
+            def _restore_rejected_live_model(detail_msg: str) -> None:
+                if getattr(self, "_destroyed", False):
+                    return
+                self._model = old_model
+                if isinstance(getattr(self, "_provider_models", None), dict):
+                    self._provider_models[old_provider] = old_model
+                ui_state = getattr(self, "_ui_state", None)
+                if ui_state is not None:
+                    ui_state.set("model", old_model)
+                toolbar = getattr(self, "_chat_toolbar", None)
+                if toolbar is not None:
+                    toolbar.set_model(old_model)
+                    toolbar.set_context_model(old_model)
+                self._sync_effort_sensitivity()
+                sfx = f" ({detail_msg})" if detail_msg else ""
+                self._toast(f"Could not switch live session to {label}{sfx}.")
+
+            def _on_live_model_outcome(success: bool, detail: str) -> None:
+                outcomes.append((bool(success), str(detail or "")))
+                if not success:
+                    restart_req = bool(getattr(drv, "execution_restart_required", False))
+                    if restart_req:
+                        teardown = getattr(self, "_teardown_driver", None)
+                        if callable(teardown):
+                            teardown(drv)
+                        if (
+                            dispatched_async
+                            and not getattr(self, "_destroyed", False)
+                            and MainWindow._current_work_id(self) == work_id
+                        ):
+                            MainWindow._execute_in_place_model_switch(
+                                self,
+                                work_id=work_id,
+                                old_provider=old_provider,
+                                old_model=old_model,
+                                outgoing_session_id=live_sid,
+                                new_provider=new_provider,
+                                new_model=new_model,
+                                announce=announce,
+                            )
+                        return
+                    _restore_rejected_live_model(str(detail or ""))
+                    return
+
+                drv._helios_requested_model = new_model
+                try:
+                    coordinator.activate_model_binding(
+                        work_id,
+                        new_provider,
+                        model=new_model,
+                        force_fresh=False,
+                    )
+                    if live_sid:
+                        coordinator.append_work_leg(
+                            work_id,
+                            provider=new_provider,
+                            model=new_model,
+                            native_session_id=live_sid,
+                            transcript_path=live_path,
+                            started_turn_index=_count_existing_turns(live_path),
+                            capsule_manifest={
+                                "schema": 1,
+                                "mode": "same_session",
+                                "from_provider": old_provider,
+                                "from_model": old_model,
+                                "to_provider": new_provider,
+                                "to_model": new_model,
+                            },
+                        )
+                except Exception as exc:
+                    _log.warning("could not record same-session model leg: %s", exc)
+                if getattr(self, "_destroyed", False):
+                    return
+                if dispatched_async and not self._drv_is_current(drv):
+                    return
+                self._transcript.set_active_assistant(
+                    new_provider,
+                    new_model,
+                    session_id=live_sid,
+                    cwd=target.project.cwd,
+                )
+                now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                self._transcript.replace_or_append_handoff_divider(
+                    HandoffBoundary(
+                        leg_seq=len(coordinator.list_work_legs(work_id)),
+                        from_provider=old_provider,
+                        from_model=old_model,
+                        to_provider=new_provider,
+                        to_model=new_model,
+                        capsule_manifest={
+                            "schema": 1,
+                            "mode": "same_session",
+                            "objective": "Same native session retained; full history remains active.",
+                        },
+                        created_at=now_iso,
+                    )
+                )
+                if announce:
+                    self._toast(f"Model set to {label} — applied to the live chat.")
+                self._sync_effort_sensitivity()
+
+            try:
+                sync_ret = drv.set_model(new_model, _on_live_model_outcome)
+            except Exception as exc:
+                _log.exception("live model change failed")
+                _restore_rejected_live_model(str(exc))
+                return False
+
+            if outcomes:
+                ok_flag, _det = outcomes[0]
+                if ok_flag:
+                    return True
+                if not bool(getattr(drv, "execution_restart_required", False)):
+                    return False
+                drv = getattr(self, "_driver", None)
+            elif sync_ret is False:
+                _on_live_model_outcome(False, "")
+                if not bool(getattr(drv, "execution_restart_required", False)):
+                    return False
+                drv = getattr(self, "_driver", None)
+            else:
+                dispatched_async = True
+                return True
+
+        # Retire idle same-provider driver that cannot switch models in-place (e.g. Google/Kimi).
+        if (
+            new_provider == old_provider
+            and drv is not None
+            and drv.is_accepting_input
+            and not drv.is_busy
+        ):
+            try:
+                drv.end_input()
+            except Exception:
+                pass
+
+        try:
+            coordinator.select_lead(work_id, new_provider)
+            participant, _binding = coordinator.activate_model_binding(
+                work_id,
+                new_provider,
+                model=new_model,
+                force_fresh=force_fresh,
+            )
+        except Exception as exc:
+            _log.warning("could not activate target model binding: %s", exc)
+            self._toast("Could not activate the selected model for this conversation.")
+            return False
+
+        resumed_id = "" if force_fresh else str(participant.native_id or "")
+        if resumed_id:
+            resolution = MainWindow._resolve_resume_id(self, resumed_id, target.project)
+            if not resolution.known or resolution.provider != new_provider:
+                resumed_id = ""
+
+        # Bind an already-live idle driver for the target leg if one exists in DriverManager,
+        # without re-rendering or clearing the composite transcript.
+        rebound_driver = None
+        if not force_fresh:
+            candidate = self._driver_manager.driver_for_work_participant(
+                work_id,
+                new_provider,
+                generation=participant.generation,
+            )
+            if candidate is None and resumed_id:
+                candidate = self._driver_manager.driver_for_session(resumed_id)
+            if (
+                candidate is not None
+                and candidate.is_accepting_input
+                and self._driver_matches_selected_provider(candidate)
+                and MainWindow._driver_matches_project(candidate, target.project)
+            ):
+                if new_provider == model_catalog.PROVIDER_GOOGLE and (
+                    getattr(candidate, "_helios_requested_model", new_model) != new_model
+                ):
+                    try:
+                        candidate.end_input()
+                    except Exception:
+                        pass
+                else:
+                    tag_driver(candidate, participant)
+                    rebound_driver = candidate
+
+        self._bind_visible_driver(rebound_driver)
+        if rebound_driver is not None and MainWindow._driver_model_is_stale(self, rebound_driver):
+            if callable(getattr(rebound_driver, "set_model", None)):
+                self._try_live_model_change(new_model, human_model_label(new_provider, new_model))
+            else:
+                try:
+                    rebound_driver.end_input()
+                except Exception:
+                    pass
+                self._bind_visible_driver(None)
+        self._stop_following()
+
+        self._next_chat = switch_work_participant(
+            stage_work(target, work_id),
+            resumed_id,
+            new_provider if resumed_id else "",
+        )
+
+        goal = session_goals.get_goal(work_id)
+        preview_manifest = coordinator.preview_continuity_manifest(
+            work_id,
+            new_provider,
+            model=new_model,
+            goal=goal,
+        )
+        if resumed_id:
+            resumed_path = str(target.project.path / f"{resumed_id}.jsonl")
+            try:
+                coordinator.append_work_leg(
+                    work_id,
+                    provider=new_provider,
+                    model=new_model,
+                    native_session_id=resumed_id,
+                    transcript_path=resumed_path,
+                    started_turn_index=_count_existing_turns(resumed_path),
+                    capsule_manifest=preview_manifest,
+                )
+            except Exception as exc:
+                _log.warning("could not append resumed work leg: %s", exc)
+
+        self._transcript.set_active_assistant(
+            new_provider,
+            new_model,
+            session_id=resumed_id,
+            cwd=target.project.cwd,
+        )
+        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        divider = self._transcript.replace_or_append_handoff_divider(
+            HandoffBoundary(
+                leg_seq=len(coordinator.list_work_legs(work_id)) + (0 if resumed_id else 1),
+                from_provider=old_provider,
+                from_model=old_model,
+                to_provider=new_provider,
+                to_model=new_model,
+                capsule_manifest=preview_manifest,
+                created_at=now_iso,
+            )
+        )
+
+        self._sync_effort_sensitivity()
+        self._sync_execution_control()
+        MainWindow._refresh_capabilities(self)
+        if announce and divider is not None:
+            self._toast(
+                f"Switched to {human_model_label(new_provider, new_model)} — "
+                "essential context carries forward in this chat."
+            )
+        return True
+
+    def _complete_pending_model_switch_if_ready(
+        self,
+        drv,
+        *,
+        allow_auto_send: bool,
+    ) -> bool:
+        pending = getattr(self, "_pending_model_switch", None)
+        if pending is None or getattr(self, "_destroyed", False):
+            return False
+        drv_work_id = str(
+            getattr(drv, "_helios_work_id", "")
+            or getattr(drv, "_helios_work_id_hint", "")
+            or ""
+        )
+        if (
+            pending.source_driver is not None
+            and drv is not pending.source_driver
+            and drv_work_id != pending.work_id
+        ):
+            return False
+        if self._work_is_executing(pending.work_id):
+            return False
+        effective_auto_send = bool(allow_auto_send and not pending.stop_requested)
+        queued_texts = MainWindow._drain_pending_model_switch_texts(
+            self,
+            remove_rows=True,
+        )
+        self._pending_model_switch = None
+        if not self._drv_is_current(drv) and MainWindow._current_work_id(self) != pending.work_id:
+            if queued_texts:
+                drafts = getattr(self, "_drafts", None)
+                if drafts is not None:
+                    key = f"work:{pending.work_id}"
+                    existing = drafts.take(key).strip()
+                    drafts.stash(key, "\n\n".join(queued_texts + ([existing] if existing else [])))
+            return False
+
+        switched = MainWindow._execute_in_place_model_switch(
+            self,
+            work_id=pending.work_id,
+            old_provider=pending.from_provider,
+            old_model=pending.from_model,
+            outgoing_session_id=str(getattr(drv, "session_id", "") or ""),
+            new_provider=pending.to_provider,
+            new_model=pending.to_model,
+            announce=True,
+        )
+        if not queued_texts:
+            return switched
+        if not switched or not effective_auto_send:
+            existing = self._composer.current_text().strip()
+            combined = queued_texts + ([existing] if existing else [])
+            self._composer.set_text("\n\n".join(combined))
+            return switched
+
+        first_text, rest_texts = queued_texts[0], queued_texts[1:]
+        self._on_composer_send(self._composer, first_text)
+        new_drv = getattr(self, "_driver", None)
+        if rest_texts:
+            if new_drv is not None and hasattr(new_drv, "queue_user_text"):
+                for item_text in rest_texts:
+                    qid = new_drv.queue_user_text(item_text)
+                    self._transcript.append_queued(
+                        qid,
+                        item_text,
+                        self._make_queued_remover(new_drv),
+                    )
+            else:
+                existing = self._composer.current_text().strip()
+                self._composer.set_text(
+                    "\n\n".join(rest_texts + ([existing] if existing else []))
+                )
+        return True
+
+    def _stamp_turn_provenance(self, drv, turn) -> None:
+        if not isinstance(turn, Turn):
+            return
+        if drv is not None:
+            if not getattr(turn, "session_id", ""):
+                turn.session_id = str(getattr(drv, "session_id", "") or "")
+            if not getattr(turn, "provider", ""):
+                prov_fn = getattr(self, "_driver_provider", None)
+                turn.provider = (
+                    prov_fn(drv)
+                    if callable(prov_fn)
+                    else str(
+                        getattr(drv, "provider", "")
+                        or getattr(drv, "_helios_participant_provider", "")
+                        or ""
+                    )
+                )
+            if not getattr(turn, "model", "") and getattr(turn, "role", "") == "assistant":
+                turn.model = str(
+                    getattr(drv, "_helios_requested_model", "")
+                    or getattr(drv, "model", "")
+                    or getattr(self, "_model", "")
+                    or ""
+                )
+        else:
+            if not getattr(turn, "provider", ""):
+                sel_fn = getattr(self, "_selected_provider", None)
+                if callable(sel_fn):
+                    turn.provider = sel_fn()
+            if not getattr(turn, "model", "") and getattr(turn, "role", "") == "assistant":
+                turn.model = str(getattr(self, "_model", "") or "")
+
+    def _refresh_visible_handoff_manifest(self, drv) -> None:
+        if getattr(self, "_destroyed", False):
+            return
+        is_cur_fn = getattr(self, "_drv_is_current", None)
+        if callable(is_cur_fn):
+            if not is_cur_fn(drv):
+                return
+        elif getattr(self, "_driver", None) is not drv:
+            return
+        coordinator = getattr(self, "_work_coordinator", None)
+        transcript = getattr(self, "_transcript", None)
+        update_fn = getattr(transcript, "update_latest_handoff_manifest", None)
+        if coordinator is None or not callable(update_fn):
+            return
+        work_id = str(getattr(drv, "_helios_work_id", "") or "")
+        if not work_id or not MainWindow._work_id_has_continuity(self, work_id):
+            return
+        try:
+            legs = coordinator.list_work_legs(work_id)
+            if legs and legs[-1].capsule_manifest:
+                update_fn(legs[-1].capsule_manifest)
+        except Exception:
+            pass
 
     def _stage_fresh_chat_for_provider_switch(self) -> bool:
         """Switch native participants while preserving one logical Work.
@@ -4015,18 +4893,48 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             )
             or ""
         )
+        same_continuity_work = False
         if (
             self._driver is not None
-            and driver_session_id == session.session_id
             and provider_resolution.known
-            and self._driver_provider(self._driver)
-            == provider_resolution.provider
+            and not session.project.read_only
+            and MainWindow._work_id_has_continuity(
+                self,
+                str(getattr(self._driver, "_helios_work_id", "") or ""),
+            )
+        ):
+            coord_guard = getattr(self, "_work_coordinator", None)
+            if coord_guard is not None:
+                try:
+                    mapped_wid = coord_guard.store.work_id_for_native_session(
+                        provider_resolution.provider,
+                        session.session_id,
+                    )
+                    same_continuity_work = bool(
+                        mapped_wid
+                        and mapped_wid == str(getattr(self._driver, "_helios_work_id", "") or "")
+                    )
+                except Exception:
+                    same_continuity_work = False
+        if (
+            self._driver is not None
+            and (driver_session_id == session.session_id or same_continuity_work)
+            and provider_resolution.known
+            and (
+                same_continuity_work
+                or self._driver_provider(self._driver) == provider_resolution.provider
+            )
             and self._driver_matches_selected_provider(self._driver)
             and MainWindow._driver_matches_project(
                 self._driver,
                 session.project,
             )
         ):
+            if same_continuity_work:
+                self._draft_key = draft_key(
+                    session,
+                    work_id=str(getattr(self._driver, "_helios_work_id", "") or ""),
+                )
             # MIGRATE, do not duplicate: the composer keeps its text here, and
             # `take()` is a non-destructive get, so leaving the copy under the
             # old key lets the next New chat in that cwd resurrect it. A blank
@@ -4068,6 +4976,8 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             else None
         )
         work_id = ""
+        continuity_legs = []
+        active_session = session
         if not session.project.read_only and session_provider:
             self._adopt_session_provider(session_provider)
             coordinator = getattr(self, "_work_coordinator", None)
@@ -4084,19 +4994,59 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                         ),
                     )
                     work_id = work.work_id
+                    if getattr(work, "continuity_enabled", False):
+                        continuity_legs = coordinator.list_work_legs(work_id)
                 except Exception as exc:
                     _log.warning(
                         "could not attach session %s to Work: %s",
                         session.session_id,
                         exc,
                     )
+        MainWindow._stash_or_clear_pending_model_switch(self, keep_for_work_id=work_id)
+        if continuity_legs:
+            cont_draft_key = draft_key(session, work_id=work_id)
+            if cont_draft_key != self._draft_key:
+                migrated = self._drafts.take(cont_draft_key) or self._composer.current_text()
+                self._draft_key = cont_draft_key
+                self._composer.set_text(migrated)
+            tail_leg = continuity_legs[-1]
+            if tail_leg.model:
+                self._apply_model_choice(tail_leg.model, quiet=True)
+            elif tail_leg.provider:
+                self._adopt_session_provider(tail_leg.provider)
+            session_provider = tail_leg.provider or session_provider
+            if tail_leg.native_session_id and tail_leg.native_session_id != session.session_id:
+                active_session = MainWindow._session_for_native_binding(
+                    session.project,
+                    tail_leg.native_session_id,
+                )
+            live_for_tail = None
+            if coordinator is not None:
+                part = coordinator.participant(work_id, session_provider)
+                live_for_tail = self._driver_manager.driver_for_work_participant(
+                    work_id,
+                    session_provider,
+                    generation=(part.generation if part is not None else None),
+                )
+            if live_for_tail is None and tail_leg.native_session_id:
+                live_for_tail = self._driver_manager.driver_for_session(
+                    tail_leg.native_session_id
+                )
+            if (
+                live_for_tail is not None
+                and self._driver_provider(live_for_tail) == session_provider
+                and MainWindow._driver_matches_project(live_for_tail, session.project)
+            ):
+                live = live_for_tail
+            else:
+                live = None
         # Concurrent sessions: switching away does NOT stop the previous
         # driver — it stays live in `_drivers`, finishing its turn / ready for
         # more. We just re-point the visible UI. If the session we're switching
         # TO has a live driver, bind it (and reflect its busy state); otherwise
         # unbind and stage a resume for the next send.
         route = route_session_selection(
-            session,
+            active_session,
             live,
             live_matches_provider=(
                 live is not None and self._driver_matches_selected_provider(live)
@@ -4123,7 +5073,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             # No in-process driver — live-follow the file so an externally
             # driven (or remote-synced) session updates as it's written.
             if route.follow_transcript:
-                self._start_following(session)
+                self._start_following(active_session)
 
         # The selected session now defines the "current cwd": reflect its
         # permission mode and point the context editor at its project. Remote
@@ -4148,10 +5098,25 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         )
         # Show this session's ACTUAL current context fill immediately (read from
         # its transcript tail), rather than 0% until the next turn runs.
-        self._load_context_fill_async(session)
-        self._transcript.set_session(session)
+        self._load_context_fill_async(active_session)
+        set_composite = getattr(self._transcript, "set_composite_session", None)
+        if (
+            continuity_legs
+            and callable(set_composite)
+            and (
+                len(continuity_legs) > 1
+                or any(leg.handoff_from_leg_seq for leg in continuity_legs)
+            )
+        ):
+            composite = build_composite_transcript(
+                continuity_legs,
+                cwd=session.project.cwd,
+            )
+            set_composite(active_session, composite)
+        else:
+            self._transcript.set_session(active_session)
         self._refresh_goal_strip()
-        self._plan.set_session(session)
+        self._plan.set_session(active_session)
         MainWindow._refresh_execution_plan(self)
         if live is not None:
             MainWindow._sync_visible_agent_activity(self, live)
@@ -4198,6 +5163,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         resume_id: str = "",
     ) -> None:
         """Stage a native chat, optionally as a participant in existing Work."""
+        MainWindow._stash_or_clear_pending_model_switch(self, keep_for_work_id=work_id)
         if project is not None and project.read_only:
             # Can't start a live chat against another machine's directory.
             self._toast("Remote pool session is view-only.")
@@ -4584,6 +5550,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             attempt_id,
             wire_prompt_text=evidence.wire_prompt_text,
             provider_request_key=evidence.provider_request_key,
+            pending_capsule=evidence.pending_capsule,
         )
 
     def _record_execution_acceptance_for_driver(
@@ -4608,6 +5575,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             accepted_turn_id=evidence.accepted_turn_id,
             provider_request_key=evidence.provider_request_key,
         )
+        MainWindow._refresh_visible_handoff_manifest(self, _drv)
 
     def _verify_execution_native_binding(
         self,
@@ -4734,6 +5702,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             stop_acknowledgement=evidence.stop_acknowledgement,
             queue_disposition=evidence.queue_disposition,
         )
+        MainWindow._refresh_visible_handoff_manifest(self, _drv)
 
     def _ensure_driver(self) -> bool:
         """Spawn a driver if one isn't already running. Returns True if ready."""
@@ -4887,7 +5856,12 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         # that participant's own transcript authoritative before any live bind
         # or spawn, otherwise new Claude turns would be appended into the GPT
         # history and mislabeled as GPT.
-        if viewed_provider and viewed_provider != self._selected_provider():
+        continuity_active = MainWindow._target_work_has_continuity(self, target)
+        if (
+            not continuity_active
+            and viewed_provider
+            and viewed_provider != self._selected_provider()
+        ):
             selected_resume = str(target.resume_id or "")
             if selected_resume:
                 selected_resolution = MainWindow._target_resume_resolution(
@@ -4931,6 +5905,12 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             ),
         )
         if work_live is not None:
+            if continuity_active:
+                if current_participant is not None:
+                    tag_driver(work_live, current_participant)
+                self._bind_visible_driver(work_live)
+                self._stop_following()
+                return True
             work_live_session_id = str(
                 getattr(work_live, "session_id", "")
                 or (
@@ -4969,6 +5949,10 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             ):
                 if current_participant is not None:
                     tag_driver(live, current_participant)
+                if continuity_active:
+                    self._bind_visible_driver(live)
+                    self._stop_following()
+                    return True
                 if self._sessions.reveal_session(target.resume_id):
                     return True
                 MainWindow._show_native_execution_binding(
@@ -5745,6 +6729,13 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 "Execution settings are still applying — your message was kept."
             )
             return
+        pending_switch = getattr(self, "_pending_model_switch", None)
+        if pending_switch is not None and (
+            (drv is not None and drv is pending_switch.source_driver)
+            or pending_switch.work_id == MainWindow._current_work_id(self)
+        ):
+            MainWindow._queue_on_pending_model_switch(self, text)
+            return
         # Mid-turn submit → queue on the driver (visible as a "Queued" row;
         # auto-sent, one per turn, as results land). Never blocks typing.
         checkpoint_pending = MainWindow._checkpoint_dispatch_pending_for(self, drv)
@@ -6011,6 +7002,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         user_turn = Turn(role="user")
         user_turn.text_parts.append(text)
         user_turn.images.extend(ImageRef(media, path=path) for path, media in mentioned_images(text))
+        MainWindow._stamp_turn_provenance(self, drv, user_turn)
         self._transcript.append_turn(user_turn)
         self._plan.append_turn(user_turn)
         self._composer.set_busy(True)
@@ -6081,6 +7073,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         user_turn = Turn(role="user")
         user_turn.text_parts.append(text)
         user_turn.images.extend(ImageRef(media, path=path) for path, media in mentioned_images(text))
+        MainWindow._stamp_turn_provenance(self, getattr(self, "_driver", None), user_turn)
         self._transcript.append_turn(user_turn)
         self._plan.append_turn(user_turn)
 
@@ -6540,6 +7533,12 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         return len(texts)
 
     def _on_composer_stop(self, *_) -> None:
+        if getattr(self, "_pending_model_switch", None) is not None:
+            self._pending_model_switch.stop_requested = True
+        pending_switch_texts = MainWindow._drain_pending_model_switch_texts(
+            self,
+            remove_rows=True,
+        )
         if self._driver is not None:
             drv = self._driver
             checkpoint = MainWindow._take_checkpoint_dispatch(self, drv)
@@ -6548,16 +7547,33 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 if checkpoint is None
                 else None
             )
+            leading = (
+                *((checkpoint.text,) if checkpoint is not None else ()),
+                *pending_switch_texts,
+            )
             if staged is None:
                 self._drain_queue_to_composer(
                     drv,
-                    leading_texts=(
-                        (checkpoint.text,) if checkpoint is not None else ()
-                    ),
+                    leading_texts=leading,
+                )
+            elif pending_switch_texts:
+                existing = self._composer.current_text().strip()
+                self._composer.set_text(
+                    "\n\n".join(pending_switch_texts + ([existing] if existing else []))
                 )
             self._return_native_locally_buffered_user(drv)
             drv.stop()
             self._clear_busy_ui()
+            MainWindow._complete_pending_model_switch_if_ready(
+                self,
+                drv,
+                allow_auto_send=False,
+            )
+        elif pending_switch_texts:
+            existing = self._composer.current_text().strip()
+            self._composer.set_text(
+                "\n\n".join(pending_switch_texts + ([existing] if existing else []))
+            )
 
     def _on_emergency_stop_all(self, *_) -> None:
         """Operator kill switch for every provider session in this app."""
@@ -6568,9 +7584,24 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             self._toast("No live sessions to stop.")
             return
         has_codex = any(isinstance(drv, CodexAppServerDriver) for drv in drivers)
+        pending_sw = getattr(self, "_pending_model_switch", None)
+        if pending_sw is not None:
+            pending_sw.stop_requested = True
         for drv in drivers:
             checkpoint = MainWindow._take_checkpoint_dispatch(self, drv)
-            leading = (checkpoint.text,) if checkpoint is not None else ()
+            sw_texts: list[str] = []
+            if pending_sw is not None and (
+                drv is pending_sw.source_driver
+                or str(getattr(drv, "_helios_work_id", "") or "") == pending_sw.work_id
+            ):
+                sw_texts = MainWindow._drain_pending_model_switch_texts(
+                    self,
+                    remove_rows=True,
+                )
+            leading = (
+                *((checkpoint.text,) if checkpoint is not None else ()),
+                *sw_texts,
+            )
             MainWindow._recover_driver_for_cancellation(
                 self,
                 drv,
@@ -6780,7 +7811,35 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         user isn't currently viewing. Explicit user stop → interrupt=True."""
         drv = self._driver_manager.driver_for_session(session_id)
         if drv is None:
+            coordinator = getattr(self, "_work_coordinator", None)
+            if coordinator is not None:
+                res = session_providers.resolve_provider(
+                    session_id,
+                    conversation_store=getattr(self, "_conversation_perms", None),
+                )
+                if res.known:
+                    wid = coordinator.store.work_id_for_native_session(
+                        res.provider,
+                        session_id,
+                    )
+                    if wid and MainWindow._work_id_has_continuity(self, wid):
+                        for cand in self._driver_manager.drivers_for_shutdown():
+                            if str(getattr(cand, "_helios_work_id", "") or "") == wid:
+                                drv = cand
+                                break
+        if drv is None:
             return
+        pending_sw = getattr(self, "_pending_model_switch", None)
+        sw_texts: list[str] = []
+        if pending_sw is not None and (
+            drv is pending_sw.source_driver
+            or str(getattr(drv, "_helios_work_id", "") or "") == pending_sw.work_id
+        ):
+            pending_sw.stop_requested = True
+            sw_texts = MainWindow._drain_pending_model_switch_texts(
+                self,
+                remove_rows=True,
+            )
         checkpoint = MainWindow._take_checkpoint_dispatch(self, drv)
         if self._drv_is_current(drv):
             staged = (
@@ -6792,8 +7851,14 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 self._drain_queue_to_composer(
                     drv,
                     leading_texts=(
-                        (checkpoint.text,) if checkpoint is not None else ()
+                        *((checkpoint.text,) if checkpoint is not None else ()),
+                        *sw_texts,
                     ),
+                )
+            elif sw_texts:
+                existing = self._composer.current_text().strip()
+                self._composer.set_text(
+                    "\n\n".join(sw_texts + ([existing] if existing else []))
                 )
             self._return_native_locally_buffered_user(drv)
         else:
@@ -6809,11 +7874,19 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 else None
             )
             if preserved is None:
-                # Startup/Goal-local GPT FIRST is definitely unsent; Claude
-                # identity FIRST is provisional. Both precede their queue.
                 self._return_native_locally_buffered_user(drv)
                 self._return_identity_pending_user(drv)
-                preserved = MainWindow._preserve_driver_queue(self, drv)
+                preserved = MainWindow._preserve_driver_queue(
+                    self,
+                    drv,
+                    leading_texts=tuple(sw_texts),
+                )
+            elif sw_texts:
+                preserved += MainWindow._preserve_driver_queue(
+                    self,
+                    drv,
+                    leading_texts=tuple(sw_texts),
+                )
             if preserved:
                 self._toast(
                     f"Preserved {preserved} queued "
@@ -6822,6 +7895,11 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         self._driver_manager.stop_driver(drv)
         if self._drv_is_current(drv):
             self._clear_busy_ui()
+            MainWindow._complete_pending_model_switch_if_ready(
+                self,
+                drv,
+                allow_auto_send=False,
+            )
 
     def _clear_busy_ui(self) -> None:
         """Return the composer + toolbar to the idle state and clear the
@@ -7045,6 +8123,21 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                     )
                     tag_driver(drv, participant)
                     session_goals.rekey_goal(session_id, work_id)
+                if session_id and MainWindow._work_id_has_continuity(self, work_id):
+                    proj_path = ""
+                    if cwd:
+                        proj_path = str(
+                            _projects.PROJECTS_DIR
+                            / _projects.encode_project_dirname(cwd)
+                            / f"{session_id}.jsonl"
+                        )
+                    coordinator.bind_work_leg_session(
+                        work_id,
+                        provider=provider,
+                        model=model or str(getattr(drv, "model", "") or ""),
+                        native_session_id=session_id,
+                        transcript_path=proj_path,
+                    )
             except Exception as exc:
                 _log.warning(
                     "could not bind native session %s to Work: %s",
@@ -7132,6 +8225,15 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 session_id,
                 provider,
             )
+            if MainWindow._work_id_has_continuity(self, work_id):
+                set_active = getattr(self._transcript, "set_active_assistant", None)
+                if callable(set_active):
+                    set_active(
+                        provider,
+                        model or self._model,
+                        session_id=session_id,
+                        cwd=cwd,
+                    )
         # Cache this session's authoritative tool + MCP inventory so the
         # Settings → Tools view can show the real set (best-effort). Durable —
         # runs even during close. OpenRouter is skipped: the snapshot backs the
@@ -7240,6 +8342,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         self._activity.set_activity(state, detail)
 
     def _on_turn_appended(self, drv, turn) -> None:
+        MainWindow._stamp_turn_provenance(self, drv, turn)
         coordinator = getattr(self, "_work_coordinator", None)
         already_recorded = False
         consume_recorded = getattr(drv, "_consume_recorded_contribution", None)
@@ -7310,7 +8413,13 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         # has timestamps/title content the status probe can use. Belt-and-
         # braces in case the 400ms delay in session-started missed. Local
         # rescan only: no CIFS walk at the end of every turn.
+        MainWindow._refresh_visible_handoff_manifest(self, drv)
         self._sessions.reload(preserve_selection=True, rescan_pool=False)
+        MainWindow._complete_pending_model_switch_if_ready(
+            self,
+            drv,
+            allow_auto_send=True,
+        )
         self._composer.grab_input_focus()
 
     def _on_budget_exhausted(self, drv, details: dict) -> None:
@@ -8021,6 +9130,27 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         if target is None or not source_id or target.project.read_only:
             self._toast("Open a saved conversation to fork it.")
             return
+        work_id = str(getattr(target, "work_id", "") or "")
+        if work_id and MainWindow._work_id_has_continuity(self, work_id):
+            coordinator = getattr(self, "_work_coordinator", None)
+            if coordinator is not None:
+                for leg in reversed(coordinator.list_work_legs(work_id)):
+                    if not leg.native_session_id:
+                        continue
+                    cand_sess = MainWindow._session_for_native_binding(
+                        target.project,
+                        leg.native_session_id,
+                    )
+                    try:
+                        if (
+                            cand_sess.path.is_file()
+                            and message_uuid
+                            and message_uuid in cand_sess.path.read_text(encoding="utf-8", errors="replace")
+                        ):
+                            source_id = leg.native_session_id
+                            break
+                    except OSError:
+                        continue
         session = MainWindow._session_for_native_binding(target.project, source_id)
         provider = session_providers.resolve_provider(
             source_id, session.path, conversation_store=self._conversation_perms,
@@ -8959,6 +10089,11 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         self._composer.set_busy(False)
         self._chat_toolbar.set_busy(False)
         self._activity.clear()
+        MainWindow._complete_pending_model_switch_if_ready(
+            self,
+            drv,
+            allow_auto_send=False,
+        )
 
     def _on_codex_hook_notice(self, drv, notice) -> None:
         if not self._destroyed and self._drv_is_current(drv):
@@ -9118,6 +10253,11 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         if code != 0:
             name = getattr(drv, "display_name", "claude")
             self._toast(f"{name} exited with code {code}")
+        MainWindow._complete_pending_model_switch_if_ready(
+            self,
+            drv,
+            allow_auto_send=False,
+        )
 
     def _teardown_driver(self, driver: ClaudeCliDriver | None = None) -> None:
         """Hard stop: disconnect handlers AND kill the subprocess. Used when a
@@ -9381,7 +10521,27 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             or getattr(self._next_chat, "resume_id", "")
             or ""
         )
-        points = checkpoints.load(session_id) if session_id else []
+        work_id = str(
+            getattr(drv, "_helios_work_id", "")
+            or getattr(getattr(self, "_next_chat", None), "work_id", "")
+            or ""
+        )
+        if work_id and MainWindow._work_id_has_continuity(self, work_id):
+            coordinator = getattr(self, "_work_coordinator", None)
+            leg_sids: list[str] = []
+            if coordinator is not None:
+                for leg in coordinator.list_work_legs(work_id):
+                    if leg.native_session_id and leg.native_session_id not in leg_sids:
+                        leg_sids.append(leg.native_session_id)
+            if session_id and session_id not in leg_sids:
+                leg_sids.append(session_id)
+            merged_points = []
+            for sid in leg_sids:
+                merged_points.extend(checkpoints.load(sid))
+            merged_points.sort(key=lambda p: p.created_at)
+            points = merged_points
+        else:
+            points = checkpoints.load(session_id) if session_id else []
         if before is not None:
             # A checkpoint is taken as the message is sent; allow clock skew.
             earlier = [p for p in points if p.created_at <= before + 5]
