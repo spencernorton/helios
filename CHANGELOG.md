@@ -4,6 +4,11 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.115.6 — 2026-11-14
+
+- Work items now maintain a revisioned `ProductBrief` (durable outcome, open acceptance criteria, reference-image dispositions, rejected approaches, explicit user stops, and criterion delivery evidence) across turns, model changes, and structured handoffs for all six providers.
+- Local title generation (`title_backend="ollama"`) now supports OpenAI-compatible `/v1` inference servers (`/v1/chat/completions`, `/v1/models`, and `/v1/catalog` lists), strips `<think>` blocks from small reasoning models, and supports optional `0600` `~/.helios/title-auth.json` or `HELIOS_TITLE_API_KEY` authentication (`Authorization: Bearer` or a custom header) scrubbed from child agent environments.
+
 ## 0.115.5 — 2026-11-11
 
 - OpenAI reasoning defaults now persist non-Ultra levels (`effort_openai`) across fresh GPT conversations instead of dropping new chats to a model's `low` catalog default, while keeping `ultra` scoped to a single staged session.

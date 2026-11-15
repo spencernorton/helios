@@ -34,6 +34,9 @@ Root for the log, the Work database, per-conversation permissions,
 checkpoints, goals and OpenRouter session history (default ~/.helios).
 ui-state.json, openrouter.key, the caches, backups/ and session-archive/
 stay under ~/.helios regardless; override HOME to relocate everything.
+.TP
+.B HELIOS_TITLE_API_KEY
+Optional API key for an authenticated local OpenAI-compatible title server (scrubbed from child agent environments; HELIOS_TITLE_API_KEY_HEADER overrides the Authorization bearer header).
 .SH FILES
 .TP
 .I ~/.helios/
