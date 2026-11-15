@@ -9,15 +9,12 @@ belongs to, and takes it back on the way in.
 from __future__ import annotations
 
 
-def draft_key(target) -> str:
-    """Stable per-conversation draft slot.
+def draft_key(target, *, work_id: str = "") -> str:
+    """Stable per-conversation draft slot, preferring durable Work identity."""
 
-    Accepts anything with `.session_id` / `.project.cwd` — a `Session` for a
-    row selection, a `ChatTarget` (no `session_id`) for a fresh chat. Fresh
-    chats key on cwd so two unstarted chats in different folders keep
-    separate drafts.
-    """
-
+    wid = str(work_id or getattr(target, "work_id", "") or "").strip()
+    if wid:
+        return f"work:{wid}"
     sid = str(getattr(target, "session_id", "") or "")
     if sid:
         return sid
@@ -45,5 +42,12 @@ class DraftBook:
         elif key:
             self._d.pop(key, None)
 
-    def take(self, key: str) -> str:
-        return self._d.get(key, "")
+    def take(self, key: str, *, fallback_key: str = "") -> str:
+        if key in self._d:
+            return self._d[key]
+        if fallback_key and fallback_key in self._d:
+            val = self._d.pop(fallback_key)
+            if key:
+                self._d[key] = val
+            return val
+        return ""

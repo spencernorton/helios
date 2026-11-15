@@ -32,6 +32,7 @@ from gi.repository import GLib, GObject  # noqa: E402
 
 from helios.backend.effort_policy import EffortPolicyMixin
 from helios.backend import browser_tools, model_catalog
+from helios.backend.attachments import openai_parts
 from helios.backend.openrouter import chat as or_chat
 from helios.backend.openrouter import key as or_key
 from helios.backend.openrouter.gateway import CancellationToken
@@ -629,10 +630,14 @@ class OpenRouterDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object)
         worker_gate = threading.Event()
         release_worker = [False]
 
+        turn_image_parts = tuple(
+            openai_parts(text, carryover=prepared.carryover_images)
+        )
+
         def gated_turn() -> None:
             worker_gate.wait()
             if release_worker[0]:
-                self._run_turn(prepared.text)
+                self._run_turn(prepared.text, image_parts=turn_image_parts)
 
         def local_abort(message: str) -> MessageDelivery:
             release_worker[0] = False
@@ -720,6 +725,11 @@ class OpenRouterDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object)
                 wire_prompt_text=content,
                 provider_request_key=attempt_id,
                 native_binding_id=self._confirmed_execution_native_id(),
+                pending_capsule=(
+                    prepared.pending_capsule.to_record()
+                    if prepared.pending_capsule is not None
+                    else None
+                ),
             )
         ):
             self._history = history_before
@@ -842,6 +852,59 @@ class OpenRouterDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object)
         self._notify(callback, True)
         return True
 
+    def set_model(
+        self,
+        model: str,
+        callback: Callable[[bool, str], None] | None = None,
+    ) -> bool:
+        """Switch the active OpenRouter model in-place for subsequent turns."""
+        candidate = str(model or "").removeprefix("openrouter:").strip()
+        if not candidate or "/" not in candidate:
+            self._notify(callback, False, f"invalid OpenRouter model: {model!r}")
+            return False
+        if self._busy:
+            self._notify(callback, False, "OpenRouter turn is currently running")
+            return False
+        if candidate == self._model:
+            self._notify(callback, True)
+            return True
+        new_route = or_routes.route_for(candidate)
+        sanitized: list[dict] = []
+        changed_history = False
+        for msg in self._history:
+            if (
+                isinstance(msg, dict)
+                and msg.get("role") == "assistant"
+                and ("reasoning_details" in msg or "reasoning" in msg)
+            ):
+                cleaned_msg = {
+                    k: v
+                    for k, v in msg.items()
+                    if k not in {"reasoning_details", "reasoning"}
+                }
+                sanitized.append(cleaned_msg)
+                changed_history = True
+            else:
+                sanitized.append(msg)
+        if changed_history:
+            self._history = sanitized
+            if self._session_id:
+                try:
+                    HistoryLog(self._session_id).save_strict(self._history)
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning("could not save sanitized OpenRouter history on model switch: %s", exc)
+        self._model = candidate
+        self._route = new_route
+        self._prompt_receipt = (0, 0)
+        if (
+            self._effort_key
+            and new_route is not None
+            and not new_route.supports_reasoning
+        ):
+            self._effort_key = ""
+        self._notify(callback, True)
+        return True
+
     def end_input(self) -> None:
         """Wind down without an interrupt marker."""
         self._closed = True
@@ -858,7 +921,7 @@ class OpenRouterDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object)
 
     # ── agent loop (worker thread) ───────────────────────────────────────
 
-    def _run_turn(self, _user_text: str) -> None:
+    def _run_turn(self, _user_text: str, *, image_parts: tuple[dict, ...] = ()) -> None:
         """Own progressive MCP discovery and cleanup entirely on the worker."""
         estate = None
         try:
@@ -890,7 +953,7 @@ class OpenRouterDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object)
                 for row in self._init_mcp_servers:
                     if row.get("status") == "failed":
                         GLib.idle_add(self.emit, "error", f"Estate tool configuration unavailable: {row.get('reason', 'unknown failure')}")
-            self._run_turn_with_tools(_user_text)
+            self._run_turn_with_tools(_user_text, image_parts=image_parts)
         finally:
             if estate is not None:
                 try:
@@ -901,7 +964,7 @@ class OpenRouterDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object)
             if self._estate is estate:
                 self._estate = None
 
-    def _run_turn_with_tools(self, _user_text: str) -> None:
+    def _run_turn_with_tools(self, _user_text: str, *, image_parts: tuple[dict, ...] = ()) -> None:
         """Stream → tool calls → execute → re-stream, then emit result."""
         started_at = time.monotonic()
         self._plan_turn_id = ""
@@ -1056,6 +1119,7 @@ class OpenRouterDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object)
                     ),
                     handoff=handoff_round,
                     on_response_accepted=response_accepted,
+                    image_parts=image_parts,
                 )
                 # Per-turn top-level usage is the prompt + output *resident in
                 # the window* right now, never a cumulative sum — the same
@@ -1494,6 +1558,7 @@ class OpenRouterDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object)
         round_context=(),
         handoff: bool = False,
         on_response_accepted: Callable[[str], None] | None = None,
+        image_parts: tuple[dict, ...] = (),
     ) -> tuple[list[str], list, str, or_chat.ChatUsage, tuple[dict, ...]]:
         """Compact, stream one model turn, and collect what it produced.
 
@@ -1504,9 +1569,13 @@ class OpenRouterDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object)
         """
         window = self._context_window()
         budget = _HISTORY_BUDGET
+        vision_tokens = len(image_parts) * 1600 if image_parts else 0
         context_tokens = (
-            math.ceil(estimate_tokens(round_context) * _PROMPT_ESTIMATE_MARGIN)
-            if round_context else 0
+            (
+                math.ceil(estimate_tokens(round_context) * _PROMPT_ESTIMATE_MARGIN)
+                if round_context else 0
+            )
+            + vision_tokens
         )
         schema_tokens = int(self._schema_tokens * _PROMPT_ESTIMATE_MARGIN)
         while True:
@@ -1534,9 +1603,23 @@ class OpenRouterDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object)
                 if on_response_accepted is not None:
                     on_response_accepted(response_id)
 
+            wire_history: list[dict] = self._history
+            if image_parts:
+                wire_history = [dict(m) for m in self._history]
+                for idx in range(len(wire_history) - 1, -1, -1):
+                    msg = wire_history[idx]
+                    if msg.get("role") == "user" and isinstance(msg.get("content"), str):
+                        wire_history[idx] = {
+                            **msg,
+                            "content": [
+                                {"type": "text", "text": msg["content"]},
+                                *image_parts,
+                            ],
+                        }
+                        break
             try:
                 for event in or_chat.stream_chat(
-                    [*self._history, *round_context] if round_context else self._history,
+                    [*wire_history, *round_context] if round_context else wire_history,
                     model=self._model,
                     api_key=api_key,
                     tools=self._turn_tools,

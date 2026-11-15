@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from helios.backend import projects, session_providers
+from helios.backend import projects, session_providers, work_store
 from helios.backend.claude_binary import (
     ClaudeBinaryNotFound,
     find_claude_binary,
@@ -73,6 +73,61 @@ class ArchiveReport:
 Summarizer = Callable[[Session], str]
 
 
+def _continuity_archival_groups(
+    sessions: list[Session],
+) -> tuple[list[list[Session]], set[str]]:
+    """Group continuity-enabled multi-leg Works so legs age and archive together."""
+    db_path = work_store.default_work_db_path()
+    if db_path is None or not db_path.exists():
+        return [[s] for s in sessions], set()
+    store = None
+    try:
+        store = work_store.WorkStore(db_path)
+        groups = store.continuity_work_groups()
+        if not groups:
+            return [[s] for s in sessions], set()
+        sid_to_work: dict[str, str] = {}
+        all_work_sids: dict[str, set[str]] = {}
+        non_exclusive: set[str] = set()
+        for wid, (_work, legs) in groups.items():
+            if len(legs) < 2:
+                continue
+            exclusive = {
+                nid for _prov, nid in store.exclusive_native_sessions_for_work(wid)
+            }
+            leg_sids = {leg.native_session_id for leg in legs if leg.native_session_id}
+            all_work_sids[wid] = leg_sids
+            for sid in leg_sids:
+                sid_to_work[sid] = wid
+                if sid not in exclusive:
+                    non_exclusive.add(sid)
+    except Exception:
+        return [[s] for s in sessions], set()
+    finally:
+        if store is not None:
+            try:
+                store.close()
+            except Exception:
+                pass
+
+    if not sid_to_work:
+        return [[s] for s in sessions], set()
+
+    by_work: dict[str, list[Session]] = {}
+    ordered_units: list[list[Session]] = []
+    seen_works: set[str] = set()
+    for s in sessions:
+        wid = sid_to_work.get(s.session_id, "")
+        if not wid:
+            ordered_units.append([s])
+            continue
+        by_work.setdefault(wid, []).append(s)
+        if wid not in seen_works:
+            seen_works.add(wid)
+            ordered_units.append(by_work[wid])
+    return ordered_units, non_exclusive
+
+
 def archive_old_sessions(
     *,
     now: float | None = None,
@@ -92,29 +147,61 @@ def archive_old_sessions(
     report = ArchiveReport()
     cutoff = now - RETENTION_SECONDS
     archived_count = 0
-    for session in projects.discover_local_sessions():
+    units, non_exclusive = _continuity_archival_groups(
+        projects.discover_local_sessions()
+    )
+    for group in units:
         if archived_count >= max_sessions:
             break
-        if session.session_id in live_ids:
-            report.skipped_live += 1
+        if any(s.session_id in live_ids for s in group):
+            report.skipped_live += sum(1 for s in group if s.session_id in live_ids)
             continue
-        if session.mtime >= cutoff:
+        if max(s.mtime for s in group) >= cutoff:
             continue
-        try:
-            memory_path = _write_memory_if_useful(session, summarizer(session))
-            dest = _move_session_to_archive(session)
-            session_providers.forget(session.session_id)
+        archivable = [s for s in group if s.session_id not in non_exclusive]
+        if not archivable:
+            continue
+        staged_moves: list[tuple[Session, Path, Path | None]] = []
+        group_failed = False
+        for session in archivable:
+            memory_path: Path | None = None
+            try:
+                memory_path = _write_memory_if_useful(session, summarizer(session))
+                dest = _move_session_to_archive(session)
+                staged_moves.append((session, dest, memory_path))
+            except Exception as e:
+                group_failed = True
+                if memory_path is not None:
+                    try:
+                        memory_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                _log.warning("failed to archive session %s; rolling back group: %s", session.session_id, e)
+                report.errors.append(f"{session.session_id}: {e}")
+                break
+        if group_failed:
+            for moved_session, moved_dest, moved_mem in reversed(staged_moves):
+                try:
+                    moved_session.path.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(moved_dest, moved_session.path)
+                except OSError as rb_exc:
+                    _log.warning("rollback of archived session %s failed: %s", moved_session.session_id, rb_exc)
+                if moved_mem is not None:
+                    try:
+                        moved_mem.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+            continue
+        for moved_session, moved_dest, moved_mem in staged_moves:
+            session_providers.forget(moved_session.session_id)
             report.archived.append(
                 ArchiveResult(
-                    session_id=session.session_id,
-                    archived_to=dest,
-                    memory_path=memory_path,
+                    session_id=moved_session.session_id,
+                    archived_to=moved_dest,
+                    memory_path=moved_mem,
                 )
             )
-            archived_count += 1
-        except Exception as e:
-            _log.warning("failed to archive session %s: %s", session.session_id, e)
-            report.errors.append(f"{session.session_id}: {e}")
+        archived_count += 1
     return report
 
 

@@ -22,6 +22,7 @@ from gi.repository import GLib, GObject
 
 from helios.backend.effort_policy import EffortPolicyMixin
 from helios.backend import model_catalog
+from helios.backend.attachments import google_wire_text
 from helios.backend import google_env
 from helios.backend.google_env import (
     GoogleBinaryNotFound, find_google_binary, google_subscription_env,
@@ -78,7 +79,7 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         GObject.Object.__init__(self)
         self._init_user_queue()
         self._cwd = cwd
-        self._model = model
+        self._model = str(model or "").removeprefix("google:")
         self._effort = effort
         m = re.search(r"-(low|medium|high|xhigh|max)\Z", self._model)
         if m:
@@ -226,7 +227,12 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
             try:
                 # Recheck routing before each turn, including queued turns.
                 google_subscription_env()
-                self._prepare_prompt_context(text)
+                pre_prepared = self._prepare_prompt_context(text)
+                if pre_prepared.carryover_images:
+                    google_wire_text(pre_prepared.text, carryover=pre_prepared.carryover_images)
+            except OSError:
+                self.emit("error", "Helios could not stage visual context for Google. The message was not sent.")
+                return MessageDelivery("rejected")
             except RequiredPromptContextError as exc:
                 self.emit("error", exc.user_message)
                 return MessageDelivery("rejected")
@@ -251,6 +257,10 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
             # Recheck routing before each turn, including queued turns.
             google_subscription_env()
             prepared = self._prepare_prompt_context(text)
+            wire_text = google_wire_text(prepared.text, carryover=prepared.carryover_images)
+        except OSError:
+            self.emit("error", "Helios could not stage visual context for Google. The message was not sent.")
+            return MessageDelivery("rejected")
         except RequiredPromptContextError as exc:
             self.emit("error", exc.user_message)
             return MessageDelivery("rejected")
@@ -265,8 +275,13 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
             return MessageDelivery("rejected")
         attempt_id = self.execution_attempt_id
         if not self._record_execution_dispatch(ExecutionDispatchEvidence(
-                wire_prompt_text=prepared.text, provider_request_key=attempt_id,
-                native_binding_id=self._confirmed_execution_native_id())):
+                wire_prompt_text=wire_text, provider_request_key=attempt_id,
+                native_binding_id=self._confirmed_execution_native_id(),
+                pending_capsule=(
+                    prepared.pending_capsule.to_record()
+                    if prepared.pending_capsule is not None
+                    else None
+                ))):
             released = self._finish_execution_with_evidence(ExecutionTerminalEvidence(
                 evidence_type="local_abort", status="aborted", reason_code="local_abort", queue_disposition="restored"))
             if released:
@@ -281,7 +296,7 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         self._prepared_prompt = prepared
         self._dispatch_step_floor = self._last_step_index
         self._streaming = StreamingAssistant(model=self._model)
-        line = (json.dumps({"event": "user", "message": {"content": prepared.text}}) + "\n").encode()
+        line = (json.dumps({"event": "user", "message": {"content": wire_text}}) + "\n").encode()
         try:
             # Unbuffered pipes may short-write; every byte must be confirmed.
             offset = 0
@@ -364,9 +379,13 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
                 self._protocol_failure("Google resumed a different conversation. The requested Work remains blocked.")
                 return False
             expected_perm = "always-proceed" if self._permission_mode == "bypassPermissions" else "request-review"
+            reported_model = str(info.get("model") or "").removeprefix("google:")
+            reported_match = re.search(r"-(low|medium|high|xhigh|max)\Z", reported_model)
+            if reported_match:
+                reported_model = reported_model[:reported_match.start()]
             if (
                 info.get("permission_mode") != expected_perm
-                or info.get("model") != self._model
+                or reported_model != self._model
                 or os.path.realpath(str(info.get("cwd", ""))) != os.path.realpath(self._cwd)
             ):
                 self._protocol_failure("Google reported an unexpected model, project, or approval policy. The session was stopped.")

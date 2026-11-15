@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 from collections.abc import Collection
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -48,7 +48,7 @@ from helios.backend.project_perms import canonical_cwd
 from helios.backend.sensitive_text import scrub_sensitive
 from helios.paths import state_dir
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 _CLAUDE_PROVIDER = "anthropic"
 
 # Per-provider concurrency ceilings for the durable admission ledger.
@@ -89,7 +89,12 @@ EXECUTION_ATTEMPT_AUDIT_EVENT_TYPES = frozenset(
     }
 )
 CONTROL_PLANE_AUDIT_EVENT_TYPES = frozenset(
-    {*EXECUTION_ATTEMPT_AUDIT_EVENT_TYPES, "context.degraded", "work.forked"}
+    {
+        *EXECUTION_ATTEMPT_AUDIT_EVENT_TYPES,
+        "context.degraded",
+        "work.forked",
+        "continuity.enabled",
+    }
 )
 _EXECUTION_ATTEMPT_EVENT_PREFIX = "execution.attempt."
 _EXECUTION_METADATA_FIELDS = {
@@ -224,6 +229,7 @@ class Work:
     metadata: dict[str, Any]
     created_at: str
     updated_at: str
+    continuity_enabled: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,6 +253,38 @@ class Participant:
 
 
 @dataclass(frozen=True, slots=True)
+class NativeBinding:
+    binding_id: str
+    participant_id: str
+    provider: str
+    native_kind: str
+    native_id: str
+    generation: int
+    status: str
+    created_at: str
+    retired_at: str
+    model: str = ""
+    acked_event_seq: int = 0
+    capsule_manifest: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkLeg:
+    work_id: str
+    leg_seq: int
+    participant_id: str
+    binding_id: str
+    provider: str
+    model: str
+    native_session_id: str
+    transcript_path: str
+    started_turn_index: int
+    handoff_from_leg_seq: int | None
+    capsule_manifest: dict[str, Any]
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class WorkEvent:
     event_id: str
     work_id: str
@@ -257,6 +295,21 @@ class WorkEvent:
     emitting_participant_id: str
     control_plane: bool
     created_at: str
+    emitting_generation: int = 0
+    emitting_binding_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuitySnapshot:
+    """Transactionally consistent Work/binding continuity view."""
+
+    work: Work
+    participant: Participant
+    binding: NativeBinding | None
+    baseline_acked_seq: int
+    through_seq: int
+    events: tuple[WorkEvent, ...]
+    legs: tuple[WorkLeg, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -315,13 +368,18 @@ class ExecutionAttempt:
     # construction valid; '' means the root was not identified.
     workspace_root: str = ""
     write_intent: bool = False
+    pending_capsule: dict[str, Any] = field(default_factory=dict)
+
+
+def default_work_db_path() -> Path:
+    return state_dir() / "work" / "work.db"
 
 
 class WorkStore:
     """Thread-safe SQLite store with immutable events and artifacts."""
 
     def __init__(self, path: Path | None = None) -> None:
-        self.path = path or state_dir() / "work" / "work.db"
+        self.path = path or default_work_db_path()
         self._root = self.path.parent
         self._root.mkdir(parents=True, exist_ok=True)
         _chmod(self._root, 0o700)
@@ -530,6 +588,7 @@ class WorkStore:
                 native_id,
                 generation=1,
                 created_at=now,
+                model=_text(model),
             )
             self._append_event_conn(
                 conn,
@@ -1090,6 +1149,7 @@ class WorkStore:
         *,
         wire_prompt_text: str,
         provider_request_key: str,
+        pending_capsule: dict[str, Any] | None = None,
     ) -> ExecutionAttempt:
         """Persist a metadata-only dispatch identity before provider I/O.
 
@@ -1099,6 +1159,7 @@ class WorkStore:
         updated before I/O, so any later transport ambiguity remains blocking.
         """
 
+        safe_capsule = _mapping(pending_capsule) if pending_capsule else {}
         return self._record_execution_recovery(
             attempt_id,
             event_type="execution.attempt.dispatch-prepared",
@@ -1108,6 +1169,7 @@ class WorkStore:
                 provider_request_key,
                 "provider request key",
             ),
+            pending_capsule=safe_capsule,
         )
 
     def record_execution_acceptance(
@@ -1178,6 +1240,7 @@ class WorkStore:
         accepted_turn_id: str = "",
         stop_acknowledgement: dict[str, Any] | None = None,
         queue_disposition: str = "",
+        pending_capsule: dict[str, Any] | None = None,
     ) -> ExecutionAttempt:
         attempt_id = _validate_id(attempt_id, "attempt_id")
         safe_ack = stop_acknowledgement or {}
@@ -1287,6 +1350,16 @@ class WorkStore:
                 else:
                     changed_payload[column] = supplied
 
+            if pending_capsule:
+                if current.pending_capsule and current.pending_capsule != pending_capsule:
+                    raise WorkStoreError(
+                        f"execution attempt pending capsule conflicts: {attempt_id}"
+                    )
+                if not current.pending_capsule:
+                    assignments.append("pending_capsule_json = ?")
+                    values.append(_json(pending_capsule))
+                    changed_payload["continuity_capsule_staged"] = True
+
             if safe_ack:
                 merged_ack, ack_changed = _merge_stop_acknowledgement(
                     current.stop_acknowledgement,
@@ -1346,6 +1419,14 @@ class WorkStore:
                 changed_payload,
                 created_at=now,
             )
+            updated_attempt = _execution_attempt(
+                conn.execute(
+                    "SELECT * FROM execution_attempts WHERE attempt_id = ?",
+                    (attempt_id,),
+                ).fetchone()
+            )
+            if event_type == "execution.attempt.accepted":
+                self._commit_pending_capsule_conn(conn, updated_attempt, created_at=now)
             row = conn.execute(
                 "SELECT * FROM execution_attempts WHERE attempt_id = ?",
                 (attempt_id,),
@@ -1550,6 +1631,14 @@ class WorkStore:
                 },
                 created_at=now,
             )
+            finished_attempt = _execution_attempt(
+                conn.execute(
+                    "SELECT * FROM execution_attempts WHERE attempt_id = ?",
+                    (attempt_id,),
+                ).fetchone()
+            )
+            if status == "completed" or bool(finished_attempt.accepted_turn_id):
+                self._commit_pending_capsule_conn(conn, finished_attempt, created_at=now)
             row = conn.execute(
                 "SELECT * FROM execution_attempts WHERE attempt_id = ?",
                 (attempt_id,),
@@ -1753,6 +1842,7 @@ class WorkStore:
                 native_kind, native_id = _native_identity(
                     native_session_id, native_thread_id
                 )
+                model_name = str(_mapping(metadata).get("model", "") or "")
                 self._activate_binding_conn(
                     conn,
                     participant_id,
@@ -1761,6 +1851,7 @@ class WorkStore:
                     native_id,
                     generation=1,
                     created_at=now,
+                    model=model_name,
                 )
             else:
                 current = _participant(row)
@@ -1823,6 +1914,7 @@ class WorkStore:
                     native_kind, native_id = _native_identity(
                         new_session, new_thread
                     )
+                    model_name = str(new_metadata.get("model", "") or "")
                     self._activate_binding_conn(
                         conn,
                         participant_id,
@@ -1831,6 +1923,7 @@ class WorkStore:
                         native_id,
                         generation=generation,
                         created_at=now,
+                        model=model_name,
                     )
             if event_type:
                 self._append_event_conn(
@@ -2867,6 +2960,658 @@ class WorkStore:
             summary=f"User {'accepted' if accepted else 'reopened'} {criterion_id}",
         )
 
+    def enable_continuity(self, work_id: str) -> Work:
+        """Enable single-Work cross-model continuity without activating Tandem."""
+        work_id = _validate_id(work_id, "work_id")
+        with self._transaction() as conn:
+            current = _work(self._work_row(conn, work_id))
+            if current.continuity_enabled:
+                return current
+            now = _now()
+            conn.execute(
+                "UPDATE works SET continuity_enabled = 1, updated_at = ? WHERE work_id = ?",
+                (now, work_id),
+            )
+            self._append_event_conn(
+                conn,
+                work_id,
+                "continuity.enabled",
+                {"mode": current.mode},
+                created_at=now,
+                allow_reserved_event_type=True,
+            )
+            return _work(self._work_row(conn, work_id))
+
+    def active_binding_for_work_provider(
+        self,
+        work_id: str,
+        provider: str,
+    ) -> NativeBinding | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT b.*
+                FROM native_bindings b
+                JOIN participants p ON p.participant_id = b.participant_id
+                WHERE p.work_id = ? AND b.provider = ? AND b.status = 'active'
+                ORDER BY b.generation DESC, b.created_at DESC
+                LIMIT 1
+                """,
+                (work_id, provider),
+            ).fetchone()
+        return _native_binding(row) if row is not None else None
+
+    def list_native_bindings_for_work(self, work_id: str) -> list[NativeBinding]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT b.*
+                FROM native_bindings b
+                JOIN participants p ON p.participant_id = b.participant_id
+                WHERE p.work_id = ?
+                ORDER BY b.created_at, b.binding_id
+                """,
+                (work_id,),
+            ).fetchall()
+        return [_native_binding(r) for r in rows]
+
+    def find_binding_for_model(
+        self,
+        work_id: str,
+        provider: str,
+        model: str,
+    ) -> NativeBinding | None:
+        model = _text(model)
+        with self._lock:
+            if model:
+                row = self._conn.execute(
+                    """
+                    SELECT b.*
+                    FROM native_bindings b
+                    JOIN participants p ON p.participant_id = b.participant_id
+                    WHERE p.work_id = ? AND b.provider = ? AND b.model = ?
+                      AND b.native_id <> ''
+                    ORDER BY CASE WHEN b.status = 'active' THEN 0 ELSE 1 END,
+                             b.generation DESC, b.created_at DESC
+                    LIMIT 1
+                    """,
+                    (work_id, provider, model),
+                ).fetchone()
+                if row is not None:
+                    return _native_binding(row)
+            return None
+
+    active_or_matching_binding = find_binding_for_model
+
+    def activate_model_binding(
+        self,
+        work_id: str,
+        provider: str,
+        *,
+        model: str = "",
+        force_fresh: bool = False,
+    ) -> tuple[Participant, NativeBinding | None]:
+        """Prepare participant and binding state when switching to (provider, model)."""
+        work_id = _validate_id(work_id, "work_id")
+        provider = _required_text(provider, "provider")
+        model = _text(model)
+        now = _now()
+        with self._transaction() as conn:
+            work = _work(self._work_row(conn, work_id))
+            prow = conn.execute(
+                "SELECT * FROM participants WHERE work_id = ? AND provider = ?",
+                (work_id, provider),
+            ).fetchone()
+            role = "lead" if provider == work.lead_provider else "partner"
+            if prow is None:
+                participant_id = _new_id("part")
+                meta = {"model": model} if model else {}
+                conn.execute(
+                    """
+                    INSERT INTO participants (
+                        participant_id, work_id, provider, native_session_id,
+                        native_thread_id, role, status, generation,
+                        last_event_seq, metadata_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, '', '', ?, 'active', 1, 0, ?, ?, ?)
+                    """,
+                    (participant_id, work_id, provider, role, _json(meta), now, now),
+                )
+                self._append_event_conn(
+                    conn,
+                    work_id,
+                    "participant.created",
+                    {
+                        "participant_id": participant_id,
+                        "provider": provider,
+                        "role": role,
+                        "native_session_id": "",
+                        "native_thread_id": "",
+                    },
+                    provider=provider,
+                    created_at=now,
+                )
+                participant = _participant(self._participant_row(conn, participant_id))
+                return participant, None
+
+            current = _participant(prow)
+            new_meta = dict(current.metadata)
+            if model:
+                new_meta["model"] = model
+
+            if force_fresh:
+                conn.execute(
+                    """
+                    UPDATE native_bindings
+                    SET status = 'retired', retired_at = ?
+                    WHERE participant_id = ? AND status = 'active'
+                    """,
+                    (now, current.participant_id),
+                )
+                next_gen = current.generation + 1 if current.native_id else current.generation
+                conn.execute(
+                    """
+                    UPDATE participants
+                    SET native_session_id = '', native_thread_id = '',
+                        role = ?, generation = ?, last_event_seq = 0,
+                        metadata_json = ?, updated_at = ?
+                    WHERE participant_id = ?
+                    """,
+                    (role, next_gen, _json(new_meta), now, current.participant_id),
+                )
+                return _participant(self._participant_row(conn, current.participant_id)), None
+
+            active_row = conn.execute(
+                """
+                SELECT * FROM native_bindings
+                WHERE participant_id = ? AND status = 'active'
+                ORDER BY generation DESC, created_at DESC
+                LIMIT 1
+                """,
+                (current.participant_id,),
+            ).fetchone()
+            if active_row is not None:
+                active = _native_binding(active_row)
+                if not model or not active.model or active.model == model:
+                    if model and active.model != model:
+                        conn.execute(
+                            "UPDATE native_bindings SET model = ? WHERE binding_id = ?",
+                            (model, active.binding_id),
+                        )
+                        active = _native_binding(
+                            conn.execute(
+                                "SELECT * FROM native_bindings WHERE binding_id = ?",
+                                (active.binding_id,),
+                            ).fetchone()
+                        )
+                    conn.execute(
+                        "UPDATE participants SET role = ?, metadata_json = ?, updated_at = ? WHERE participant_id = ?",
+                        (role, _json(new_meta), now, current.participant_id),
+                    )
+                    return _participant(self._participant_row(conn, current.participant_id)), active
+
+            if model:
+                matching_row = conn.execute(
+                    """
+                    SELECT * FROM native_bindings
+                    WHERE participant_id = ? AND provider = ? AND model = ?
+                      AND native_id <> ''
+                    ORDER BY generation DESC, created_at DESC
+                    LIMIT 1
+                    """,
+                    (current.participant_id, provider, model),
+                ).fetchone()
+                if matching_row is not None:
+                    matching = _native_binding(matching_row)
+                    next_gen = (
+                        current.generation + 1
+                        if matching.native_id != current.native_id
+                        else current.generation
+                    )
+                    new_session = "" if matching.native_kind == "thread" else matching.native_id
+                    new_thread = matching.native_id if matching.native_kind == "thread" else ""
+                    conn.execute(
+                        """
+                        UPDATE native_bindings
+                        SET status = 'retired', retired_at = ?
+                        WHERE participant_id = ? AND status = 'active'
+                          AND binding_id <> ?
+                        """,
+                        (now, current.participant_id, matching.binding_id),
+                    )
+                    conn.execute(
+                        """
+                        UPDATE native_bindings
+                        SET generation = ?, status = 'active', retired_at = ''
+                        WHERE binding_id = ?
+                        """,
+                        (next_gen, matching.binding_id),
+                    )
+                    conn.execute(
+                        """
+                        UPDATE participants
+                        SET native_session_id = ?, native_thread_id = ?,
+                            role = ?, generation = ?, metadata_json = ?, updated_at = ?
+                        WHERE participant_id = ?
+                        """,
+                        (
+                            new_session,
+                            new_thread,
+                            role,
+                            next_gen,
+                            _json(new_meta),
+                            now,
+                            current.participant_id,
+                        ),
+                    )
+                    refreshed_binding = _native_binding(
+                        conn.execute(
+                            "SELECT * FROM native_bindings WHERE binding_id = ?",
+                            (matching.binding_id,),
+                        ).fetchone()
+                    )
+                    return (
+                        _participant(self._participant_row(conn, current.participant_id)),
+                        refreshed_binding,
+                    )
+
+            conn.execute(
+                "UPDATE participants SET role = ?, metadata_json = ?, updated_at = ? WHERE participant_id = ?",
+                (role, _json(new_meta), now, current.participant_id),
+            )
+            binding_obj = _native_binding(active_row) if active_row is not None else None
+            return _participant(self._participant_row(conn, current.participant_id)), binding_obj
+
+    def snapshot_continuity_context(
+        self,
+        work_id: str,
+        provider: str,
+        *,
+        model: str = "",
+    ) -> ContinuitySnapshot:
+        """Read a consistent Work continuity view for (work_id, provider, model)."""
+        work_id = _validate_id(work_id, "work_id")
+        provider = _required_text(provider, "provider")
+        _text(model)
+        with self._transaction() as conn:
+            work = _work(self._work_row(conn, work_id))
+            prow = conn.execute(
+                "SELECT * FROM participants WHERE work_id = ? AND provider = ?",
+                (work_id, provider),
+            ).fetchone()
+            if prow is None:
+                raise ParticipantNotFoundError(
+                    f"participant not found for Work/provider: {work_id}/{provider}"
+                )
+            participant = _participant(prow)
+            binding: NativeBinding | None = None
+            if participant.native_id:
+                brow = conn.execute(
+                    """
+                    SELECT * FROM native_bindings
+                    WHERE participant_id = ? AND provider = ? AND native_id = ?
+                    LIMIT 1
+                    """,
+                    (participant.participant_id, provider, participant.native_id),
+                ).fetchone()
+                if brow is not None:
+                    binding = _native_binding(brow)
+            baseline = binding.acked_event_seq if binding is not None else 0
+            latest = self._latest_seq(conn, work_id)
+            event_rows = conn.execute(
+                "SELECT * FROM events WHERE work_id = ? ORDER BY seq",
+                (work_id,),
+            ).fetchall()
+            leg_rows = conn.execute(
+                "SELECT * FROM work_legs WHERE work_id = ? ORDER BY leg_seq",
+                (work_id,),
+            ).fetchall()
+        return ContinuitySnapshot(
+            work=work,
+            participant=participant,
+            binding=binding,
+            baseline_acked_seq=baseline,
+            through_seq=latest,
+            events=tuple(_event(r) for r in event_rows),
+            legs=tuple(_work_leg(r) for r in leg_rows),
+        )
+
+    def acknowledge_continuity_prompt(
+        self,
+        participant_id: str,
+        *,
+        through_seq: int,
+        expected_generation: int,
+        model: str = "",
+        handoff_from_leg_seq: int | None = None,
+        manifest: dict[str, Any] | None = None,
+    ) -> NativeBinding | None:
+        """Commit continuity ACK directly when no execution-attempt receipt is used."""
+        participant_id = _validate_id(participant_id, "participant_id")
+        if through_seq < 0:
+            raise ValueError("through_seq must be non-negative")
+        with self._transaction() as conn:
+            participant = _participant(self._participant_row(conn, participant_id))
+            _check_participant_expectations(
+                participant,
+                expected_generation=expected_generation,
+            )
+            return self._apply_continuity_commit_conn(
+                conn,
+                work_id=participant.work_id,
+                participant=participant,
+                through_seq=through_seq,
+                model=_text(model),
+                handoff_from_leg_seq=handoff_from_leg_seq,
+                manifest=_mapping(manifest),
+                created_at=_now(),
+            )
+
+    def ensure_initial_work_leg(
+        self,
+        work_id: str,
+        *,
+        provider: str,
+        model: str = "",
+        native_session_id: str = "",
+        transcript_path: str = "",
+        started_turn_index: int = 0,
+    ) -> WorkLeg | None:
+        """Record Leg 1 for an existing conversation before its first model switch."""
+        work_id = _validate_id(work_id, "work_id")
+        provider = _required_text(provider, "provider")
+        native_session_id = _text(native_session_id)
+        if not native_session_id:
+            return None
+        with self._transaction() as conn:
+            self._work_row(conn, work_id)
+            existing = conn.execute(
+                "SELECT * FROM work_legs WHERE work_id = ? ORDER BY leg_seq LIMIT 1",
+                (work_id,),
+            ).fetchone()
+            if existing is not None:
+                return _work_leg(existing)
+            prow = conn.execute(
+                "SELECT * FROM participants WHERE work_id = ? AND provider = ?",
+                (work_id, provider),
+            ).fetchone()
+            if prow is None:
+                return None
+            participant = _participant(prow)
+            brow = conn.execute(
+                """
+                SELECT * FROM native_bindings
+                WHERE participant_id = ? AND provider = ? AND native_id = ?
+                LIMIT 1
+                """,
+                (participant.participant_id, provider, native_session_id),
+            ).fetchone()
+            binding_id = str(brow["binding_id"]) if brow is not None else ""
+            resolved_model = _text(model) or (
+                str(brow["model"]) if brow is not None and brow["model"] else ""
+            ) or str(participant.metadata.get("model", "") or "")
+            if brow is not None and resolved_model and not str(brow["model"] or ""):
+                conn.execute(
+                    "UPDATE native_bindings SET model = ? WHERE binding_id = ?",
+                    (resolved_model, binding_id),
+                )
+            now = _now()
+            conn.execute(
+                """
+                INSERT INTO work_legs (
+                    work_id, leg_seq, participant_id, binding_id, provider,
+                    model, native_session_id, transcript_path,
+                    started_turn_index, handoff_from_leg_seq,
+                    capsule_manifest_json, created_at
+                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, NULL, '{}', ?)
+                """,
+                (
+                    work_id,
+                    participant.participant_id,
+                    binding_id,
+                    provider,
+                    resolved_model,
+                    native_session_id,
+                    _text(transcript_path),
+                    max(0, int(started_turn_index)),
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM work_legs WHERE work_id = ? AND leg_seq = 1",
+                (work_id,),
+            ).fetchone()
+        return _work_leg(row)
+
+    def append_work_leg(
+        self,
+        work_id: str,
+        *,
+        provider: str,
+        model: str = "",
+        native_session_id: str = "",
+        transcript_path: str = "",
+        started_turn_index: int = 0,
+        handoff_from_leg_seq: int | None = None,
+        capsule_manifest: dict[str, Any] | None = None,
+    ) -> WorkLeg | None:
+        """Append or update the active tail leg for work_id."""
+        work_id = _validate_id(work_id, "work_id")
+        provider = _required_text(provider, "provider")
+        native_session_id = _text(native_session_id)
+        if not native_session_id:
+            return None
+        manifest = _mapping(capsule_manifest)
+        with self._transaction() as conn:
+            self._work_row(conn, work_id)
+            prow = conn.execute(
+                "SELECT * FROM participants WHERE work_id = ? AND provider = ?",
+                (work_id, provider),
+            ).fetchone()
+            if prow is None:
+                return None
+            participant = _participant(prow)
+            brow = conn.execute(
+                """
+                SELECT * FROM native_bindings
+                WHERE participant_id = ? AND provider = ? AND native_id = ?
+                LIMIT 1
+                """,
+                (participant.participant_id, provider, native_session_id),
+            ).fetchone()
+            binding_id = str(brow["binding_id"]) if brow is not None else ""
+            resolved_model = _text(model) or (
+                str(brow["model"]) if brow is not None and brow["model"] else ""
+            ) or str(participant.metadata.get("model", "") or "")
+            tail_row = conn.execute(
+                "SELECT * FROM work_legs WHERE work_id = ? ORDER BY leg_seq DESC LIMIT 1",
+                (work_id,),
+            ).fetchone()
+            if tail_row is not None:
+                tail = _work_leg(tail_row)
+                if (
+                    tail.provider == provider
+                    and tail.native_session_id == native_session_id
+                    and (not resolved_model or not tail.model or tail.model == resolved_model)
+                ):
+                    updates: list[str] = []
+                    vals: list[Any] = []
+                    if resolved_model and not tail.model:
+                        updates.append("model = ?")
+                        vals.append(resolved_model)
+                    if transcript_path and not tail.transcript_path:
+                        updates.append("transcript_path = ?")
+                        vals.append(_text(transcript_path))
+                    if manifest and manifest != tail.capsule_manifest:
+                        updates.append("capsule_manifest_json = ?")
+                        vals.append(_json(manifest))
+                    if updates:
+                        vals.extend([work_id, tail.leg_seq])
+                        conn.execute(
+                            f"UPDATE work_legs SET {', '.join(updates)} "
+                            "WHERE work_id = ? AND leg_seq = ?",
+                            vals,
+                        )
+                        tail_row = conn.execute(
+                            "SELECT * FROM work_legs WHERE work_id = ? AND leg_seq = ?",
+                            (work_id, tail.leg_seq),
+                        ).fetchone()
+                    return _work_leg(tail_row)
+                next_seq = tail.leg_seq + 1
+                from_seq = handoff_from_leg_seq if handoff_from_leg_seq is not None else tail.leg_seq
+            else:
+                next_seq = 1
+                from_seq = None
+            now = _now()
+            conn.execute(
+                """
+                INSERT INTO work_legs (
+                    work_id, leg_seq, participant_id, binding_id, provider,
+                    model, native_session_id, transcript_path,
+                    started_turn_index, handoff_from_leg_seq,
+                    capsule_manifest_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    work_id,
+                    next_seq,
+                    participant.participant_id,
+                    binding_id,
+                    provider,
+                    resolved_model,
+                    native_session_id,
+                    _text(transcript_path),
+                    max(0, int(started_turn_index)),
+                    from_seq,
+                    _json(manifest),
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM work_legs WHERE work_id = ? AND leg_seq = ?",
+                (work_id, next_seq),
+            ).fetchone()
+        return _work_leg(row)
+
+    def list_work_legs(self, work_id: str) -> list[WorkLeg]:
+        if not work_id:
+            return []
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM work_legs WHERE work_id = ? ORDER BY leg_seq",
+                (work_id,),
+            ).fetchall()
+        return [_work_leg(r) for r in rows]
+
+    def exclusive_native_sessions_for_work(
+        self,
+        work_id: str,
+    ) -> list[tuple[str, str]]:
+        """Return (provider, native_id) pairs owned exclusively by work_id."""
+        if not work_id:
+            return []
+        with self._lock:
+            candidates = self._conn.execute(
+                """
+                SELECT DISTINCT b.provider, b.native_id
+                FROM native_bindings b
+                JOIN participants p ON p.participant_id = b.participant_id
+                WHERE p.work_id = ? AND b.native_id <> ''
+                UNION
+                SELECT DISTINCT provider, native_session_id
+                FROM work_legs
+                WHERE work_id = ? AND native_session_id <> ''
+                UNION
+                SELECT DISTINCT provider,
+                    CASE WHEN native_thread_id <> '' THEN native_thread_id ELSE native_session_id END
+                FROM participants
+                WHERE work_id = ? AND (native_thread_id <> '' OR native_session_id <> '')
+                """,
+                (work_id, work_id, work_id),
+            ).fetchall()
+            exclusive: list[tuple[str, str]] = []
+            for row in candidates:
+                prov = str(row[0] or "")
+                nid = str(row[1] or "")
+                if not prov or not nid:
+                    continue
+                other = self._conn.execute(
+                    """
+                    SELECT 1 FROM native_bindings b
+                    JOIN participants p ON p.participant_id = b.participant_id
+                    WHERE b.provider = ? AND b.native_id = ? AND p.work_id <> ?
+                    UNION
+                    SELECT 1 FROM participants
+                    WHERE provider = ?
+                      AND (native_session_id = ? OR native_thread_id = ?)
+                      AND work_id <> ?
+                    LIMIT 1
+                    """,
+                    (prov, nid, work_id, prov, nid, nid, work_id),
+                ).fetchone()
+                if other is None:
+                    exclusive.append((prov, nid))
+        return exclusive
+
+    def continuity_work_groups(self) -> dict[str, tuple[Work, tuple[WorkLeg, ...]]]:
+        """Return continuity-enabled Works mapped to their ordered WorkLegs."""
+        with self._lock:
+            work_rows = self._conn.execute(
+                "SELECT * FROM works WHERE continuity_enabled = 1"
+            ).fetchall()
+            if not work_rows:
+                return {}
+            leg_rows = self._conn.execute(
+                """
+                SELECT l.* FROM work_legs l
+                JOIN works w ON w.work_id = l.work_id
+                WHERE w.continuity_enabled = 1
+                ORDER BY l.work_id, l.leg_seq
+                """
+            ).fetchall()
+        legs_by_work: dict[str, list[WorkLeg]] = {}
+        for lrow in leg_rows:
+            leg = _work_leg(lrow)
+            legs_by_work.setdefault(leg.work_id, []).append(leg)
+        result: dict[str, tuple[Work, tuple[WorkLeg, ...]]] = {}
+        for wrow in work_rows:
+            work = _work(wrow)
+            result[work.work_id] = (work, tuple(legs_by_work.get(work.work_id, ())))
+        return result
+
+    def pop_unused_tail_leg(self, work_id: str, *, leg_seq: int | None = None) -> bool:
+        """Remove an uncommitted tail leg (>1) if zero turns occurred since it was created."""
+        if not work_id:
+            return False
+        with self._transaction() as conn:
+            tail_row = conn.execute(
+                "SELECT * FROM work_legs WHERE work_id = ? ORDER BY leg_seq DESC LIMIT 1",
+                (work_id,),
+            ).fetchone()
+            if tail_row is None:
+                return False
+            tail = _work_leg(tail_row)
+            if tail.leg_seq <= 1:
+                return False
+            if leg_seq is not None and tail.leg_seq != leg_seq:
+                return False
+            turn_after = conn.execute(
+                """
+                SELECT 1 FROM events
+                WHERE work_id = ?
+                  AND event_type IN ('user.message', 'participant.contribution')
+                  AND created_at >= ?
+                LIMIT 1
+                """,
+                (work_id, tail.created_at),
+            ).fetchone()
+            if turn_after is not None:
+                return False
+            conn.execute(
+                "DELETE FROM work_legs WHERE work_id = ? AND leg_seq = ?",
+                (work_id, tail.leg_seq),
+            )
+            return True
+
     def publish_artifact(
         self,
         work_id: str,
@@ -2994,10 +3739,66 @@ class WorkStore:
                 time.sleep(delay)
         raise WorkStoreError(f"SQLite {operation} retry budget exhausted")
 
+    def _backup_before_migration(self) -> None:
+        """Create a WAL-consistent pre-migration backup before upgrading user_version."""
+        if str(self.path) == ":memory:" or not self.path.exists():
+            return
+        try:
+            if self.path.stat().st_size <= 0:
+                return
+            version = int(self._conn.execute("PRAGMA user_version").fetchone()[0])
+        except Exception:
+            return
+        if not (0 < version < SCHEMA_VERSION):
+            return
+        backup_dir = (
+            self.path.parent.parent / "backups"
+            if self.path.parent.name == "work"
+            else self.path.parent / "backups"
+        )
+        try:
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            _chmod(backup_dir, 0o700)
+            stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+            final_path = backup_dir / f"work-pre-v{version}-{stamp}.db"
+            if final_path.exists():
+                return
+            fd, temp_name = tempfile.mkstemp(
+                prefix=f".work-pre-v{version}-",
+                suffix=".db",
+                dir=backup_dir,
+            )
+            os.close(fd)
+            temp_path = Path(temp_name)
+            try:
+                dst = sqlite3.connect(temp_path)
+                try:
+                    self._conn.backup(dst, pages=512, sleep=0.005)
+                    check = dst.execute("PRAGMA quick_check").fetchone()
+                    if not check or str(check[0]).lower() != "ok":
+                        raise WorkStoreError("pre-migration backup failed quick_check")
+                finally:
+                    dst.close()
+                _chmod(temp_path, 0o600)
+                os.replace(temp_path, final_path)
+                _chmod(final_path, 0o600)
+            finally:
+                temp_path.unlink(missing_ok=True)
+            backups = sorted(
+                backup_dir.glob("work-pre-v*.db"),
+                key=lambda p: p.stat().st_mtime if p.exists() else 0.0,
+                reverse=True,
+            )
+            for stale in backups[5:]:
+                stale.unlink(missing_ok=True)
+        except OSError:
+            pass
+
     def _initialize_schema(self) -> None:
         """Inspect and migrate under the same serialized write transaction."""
 
         with self._lock:
+            self._backup_before_migration()
             self._retry_sqlite_busy(
                 self._initialize_schema_once,
                 operation="schema migration",
@@ -3048,6 +3849,11 @@ class WorkStore:
                     "ALTER TABLE works ADD COLUMN contract_start_seq "
                     "INTEGER NOT NULL DEFAULT 0 CHECK (contract_start_seq >= 0)"
                 )
+            if "continuity_enabled" not in work_columns:
+                conn.execute(
+                    "ALTER TABLE works ADD COLUMN continuity_enabled "
+                    "INTEGER NOT NULL DEFAULT 0 CHECK (continuity_enabled IN (0, 1))"
+                )
 
             for statement in (
                 """
@@ -3094,6 +3900,31 @@ class WorkStore:
                 """
                 CREATE INDEX IF NOT EXISTS native_bindings_participant
                     ON native_bindings(participant_id, status)
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS work_legs (
+                    work_id TEXT NOT NULL REFERENCES works(work_id),
+                    leg_seq INTEGER NOT NULL CHECK (leg_seq > 0),
+                    participant_id TEXT NOT NULL REFERENCES participants(participant_id),
+                    binding_id TEXT NOT NULL DEFAULT '',
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL DEFAULT '',
+                    native_session_id TEXT NOT NULL DEFAULT '',
+                    transcript_path TEXT NOT NULL DEFAULT '',
+                    started_turn_index INTEGER NOT NULL DEFAULT 0 CHECK (
+                        started_turn_index >= 0
+                    ),
+                    handoff_from_leg_seq INTEGER DEFAULT NULL CHECK (
+                        handoff_from_leg_seq IS NULL OR handoff_from_leg_seq > 0
+                    ),
+                    capsule_manifest_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (work_id, leg_seq)
+                )
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS work_legs_work_session
+                    ON work_legs(work_id, provider, native_session_id)
                 """,
                 """
                 CREATE TABLE IF NOT EXISTS execution_plans (
@@ -3258,6 +4089,10 @@ class WorkStore:
                 "write_intent": (
                     "ALTER TABLE execution_attempts ADD COLUMN write_intent "
                     "INTEGER NOT NULL DEFAULT 0 CHECK (write_intent IN (0, 1))"
+                ),
+                "pending_capsule_json": (
+                    "ALTER TABLE execution_attempts ADD COLUMN "
+                    "pending_capsule_json TEXT NOT NULL DEFAULT '{}'"
                 ),
             }
             for column, statement in attempt_migrations.items():
@@ -3608,6 +4443,35 @@ class WorkStore:
                 conn.execute(
                     "ALTER TABLE events ADD COLUMN control_plane INTEGER "
                     "NOT NULL DEFAULT 0 CHECK (control_plane IN (0, 1))"
+                )
+            if "emitting_generation" not in event_columns:
+                conn.execute(
+                    "ALTER TABLE events ADD COLUMN emitting_generation INTEGER "
+                    "NOT NULL DEFAULT 0 CHECK (emitting_generation >= 0)"
+                )
+            if "emitting_binding_id" not in event_columns:
+                conn.execute(
+                    "ALTER TABLE events ADD COLUMN emitting_binding_id TEXT "
+                    "NOT NULL DEFAULT ''"
+                )
+            binding_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(native_bindings)").fetchall()
+            }
+            if "model" not in binding_columns:
+                conn.execute(
+                    "ALTER TABLE native_bindings ADD COLUMN model TEXT "
+                    "NOT NULL DEFAULT ''"
+                )
+            if "acked_event_seq" not in binding_columns:
+                conn.execute(
+                    "ALTER TABLE native_bindings ADD COLUMN acked_event_seq "
+                    "INTEGER NOT NULL DEFAULT 0 CHECK (acked_event_seq >= 0)"
+                )
+            if "capsule_manifest_json" not in binding_columns:
+                conn.execute(
+                    "ALTER TABLE native_bindings ADD COLUMN capsule_manifest_json "
+                    "TEXT NOT NULL DEFAULT '{}'"
                 )
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             conn.execute("COMMIT")
@@ -3980,6 +4844,20 @@ class WorkStore:
             if provider and provider != participant.provider:
                 raise WorkStoreError("event provider does not match emitting participant")
             provider = participant.provider
+        emitting_generation = participant.generation if participant is not None else 0
+        emitting_binding_id = ""
+        active_binding_row: sqlite3.Row | None = None
+        if participant is not None and participant.native_id:
+            active_binding_row = conn.execute(
+                """
+                SELECT * FROM native_bindings
+                WHERE participant_id = ? AND provider = ? AND native_id = ?
+                LIMIT 1
+                """,
+                (participant.participant_id, participant.provider, participant.native_id),
+            ).fetchone()
+            if active_binding_row is not None:
+                emitting_binding_id = str(active_binding_row["binding_id"])
         latest_before = self._latest_seq(conn, work_id)
         seq = latest_before + 1
         event_id = _new_id("evt")
@@ -3988,8 +4866,9 @@ class WorkStore:
             """
             INSERT INTO events (
                 event_id, work_id, seq, event_type, payload_json, provider,
-                emitting_participant_id, control_plane, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                emitting_participant_id, control_plane, created_at,
+                emitting_generation, emitting_binding_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event_id,
@@ -4001,23 +4880,52 @@ class WorkStore:
                 emitting_participant_id,
                 int(allow_reserved_event_type),
                 created_at,
+                emitting_generation,
+                emitting_binding_id,
             ),
         )
         if (
             participant is not None
             and participant.last_event_seq == latest_before
         ):
-            # The actor can acknowledge its own direct user/model event only
-            # when no foreign event landed after its delivered cursor. If a
-            # sibling wrote concurrently, preserve the gap so the next prompt
-            # receives that contiguous delta (plus an at-least-once echo of
-            # this own event) instead of silently skipping peer work.
             conn.execute(
                 """
                 UPDATE participants SET last_event_seq = ?, updated_at = ?
                 WHERE participant_id = ? AND generation = ?
                 """,
                 (seq, created_at, participant.participant_id, participant.generation),
+            )
+        if active_binding_row is not None and participant is not None:
+            current_ack = int(_row_value(active_binding_row, "acked_event_seq", 0))
+            new_ack = self._compute_contiguous_binding_ack_conn(
+                conn,
+                work_id=work_id,
+                participant_id=participant.participant_id,
+                generation=participant.generation,
+                starting_seq=current_ack,
+            )
+            if new_ack > current_ack:
+                conn.execute(
+                    "UPDATE native_bindings SET acked_event_seq = ? WHERE binding_id = ?",
+                    (new_ack, str(active_binding_row["binding_id"])),
+                )
+        elif allow_reserved_event_type or event_type in {
+            "work.created",
+            "work.updated",
+            "participant.created",
+            "binding.attached",
+        }:
+            conn.execute(
+                """
+                UPDATE native_bindings
+                SET acked_event_seq = ?
+                WHERE status = 'active'
+                  AND acked_event_seq = ?
+                  AND participant_id IN (
+                      SELECT participant_id FROM participants WHERE work_id = ?
+                  )
+                """,
+                (seq, latest_before, work_id),
             )
         return WorkEvent(
             event_id=event_id,
@@ -4028,6 +4936,205 @@ class WorkStore:
             provider=provider,
             emitting_participant_id=emitting_participant_id,
             control_plane=allow_reserved_event_type,
+            created_at=created_at,
+            emitting_generation=emitting_generation,
+            emitting_binding_id=emitting_binding_id,
+        )
+
+    def _compute_contiguous_binding_ack_conn(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        work_id: str,
+        participant_id: str,
+        generation: int,
+        starting_seq: int,
+    ) -> int:
+        boundary = max(0, int(starting_seq))
+        rows = conn.execute(
+            """
+            SELECT seq, event_type, emitting_participant_id,
+                   emitting_generation, control_plane
+            FROM events
+            WHERE work_id = ? AND seq > ?
+            ORDER BY seq
+            """,
+            (work_id, boundary),
+        ).fetchall()
+        for row in rows:
+            seq = int(row["seq"])
+            etype = str(row["event_type"])
+            if bool(row["control_plane"]) or etype in {
+                "work.created",
+                "work.updated",
+                "participant.created",
+                "binding.attached",
+            }:
+                boundary = seq
+                continue
+            row_part = str(row["emitting_participant_id"] or "")
+            row_gen = int(_row_value(row, "emitting_generation", 0))
+            if row_part == participant_id and (row_gen == generation or (row_gen == 0 and generation == 1)):
+                boundary = seq
+                continue
+            break
+        return boundary
+
+    def _apply_continuity_commit_conn(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        work_id: str,
+        participant: Participant,
+        through_seq: int,
+        model: str,
+        handoff_from_leg_seq: int | None,
+        manifest: dict[str, Any],
+        created_at: str,
+    ) -> NativeBinding | None:
+        if not participant.native_id:
+            return None
+        brow = conn.execute(
+            """
+            SELECT * FROM native_bindings
+            WHERE participant_id = ? AND provider = ? AND native_id = ?
+            LIMIT 1
+            """,
+            (participant.participant_id, participant.provider, participant.native_id),
+        ).fetchone()
+        if brow is None:
+            return None
+        binding = _native_binding(brow)
+        base_seq = max(binding.acked_event_seq, max(0, int(through_seq)))
+        new_ack = self._compute_contiguous_binding_ack_conn(
+            conn,
+            work_id=work_id,
+            participant_id=participant.participant_id,
+            generation=participant.generation,
+            starting_seq=base_seq,
+        )
+        resolved_model = model or binding.model or str(participant.metadata.get("model", "") or "")
+        new_manifest = manifest if manifest else binding.capsule_manifest
+        conn.execute(
+            """
+            UPDATE native_bindings
+            SET acked_event_seq = ?, model = ?, capsule_manifest_json = ?
+            WHERE binding_id = ?
+            """,
+            (new_ack, resolved_model, _json(new_manifest), binding.binding_id),
+        )
+        work = _work(self._work_row(conn, work_id))
+        if work.continuity_enabled:
+            tail_row = conn.execute(
+                "SELECT * FROM work_legs WHERE work_id = ? ORDER BY leg_seq DESC LIMIT 1",
+                (work_id,),
+            ).fetchone()
+            if tail_row is not None:
+                tail = _work_leg(tail_row)
+                if (
+                    tail.provider == participant.provider
+                    and tail.native_session_id == participant.native_id
+                    and (not resolved_model or not tail.model or tail.model == resolved_model)
+                ):
+                    if manifest and manifest != tail.capsule_manifest:
+                        conn.execute(
+                            "UPDATE work_legs SET capsule_manifest_json = ?, model = ? "
+                            "WHERE work_id = ? AND leg_seq = ?",
+                            (_json(manifest), resolved_model or tail.model, work_id, tail.leg_seq),
+                        )
+                else:
+                    prior_same_session = conn.execute(
+                        """
+                        SELECT COUNT(*) FROM events
+                        WHERE work_id = ? AND emitting_participant_id = ?
+                          AND emitting_generation = ?
+                          AND event_type IN ('user.message', 'participant.contribution')
+                          AND seq <= ?
+                        """,
+                        (work_id, participant.participant_id, participant.generation, through_seq),
+                    ).fetchone()[0]
+                    conn.execute(
+                        """
+                        INSERT INTO work_legs (
+                            work_id, leg_seq, participant_id, binding_id, provider,
+                            model, native_session_id, transcript_path,
+                            started_turn_index, handoff_from_leg_seq,
+                            capsule_manifest_json, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)
+                        """,
+                        (
+                            work_id,
+                            tail.leg_seq + 1,
+                            participant.participant_id,
+                            binding.binding_id,
+                            participant.provider,
+                            resolved_model,
+                            participant.native_id,
+                            int(prior_same_session),
+                            handoff_from_leg_seq if handoff_from_leg_seq is not None else tail.leg_seq,
+                            _json(manifest),
+                            created_at,
+                        ),
+                    )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO work_legs (
+                        work_id, leg_seq, participant_id, binding_id, provider,
+                        model, native_session_id, transcript_path,
+                        started_turn_index, handoff_from_leg_seq,
+                        capsule_manifest_json, created_at
+                    ) VALUES (?, 1, ?, ?, ?, ?, ?, '', 0, NULL, ?, ?)
+                    """,
+                    (
+                        work_id,
+                        participant.participant_id,
+                        binding.binding_id,
+                        participant.provider,
+                        resolved_model,
+                        participant.native_id,
+                        _json(manifest),
+                        created_at,
+                    ),
+                )
+        refreshed = conn.execute(
+            "SELECT * FROM native_bindings WHERE binding_id = ?",
+            (binding.binding_id,),
+        ).fetchone()
+        return _native_binding(refreshed) if refreshed is not None else None
+
+    def _commit_pending_capsule_conn(
+        self,
+        conn: sqlite3.Connection,
+        attempt: ExecutionAttempt,
+        *,
+        created_at: str,
+    ) -> None:
+        if not attempt.pending_capsule:
+            return
+        prow = conn.execute(
+            "SELECT * FROM participants WHERE participant_id = ?",
+            (attempt.participant_id,),
+        ).fetchone()
+        if prow is None:
+            return
+        participant = _participant(prow)
+        if participant.generation != attempt.participant_generation:
+            return
+        through_seq = int(attempt.pending_capsule.get("through_seq", 0) or 0)
+        model = str(attempt.pending_capsule.get("model", "") or "")
+        raw_from = attempt.pending_capsule.get("handoff_from_leg_seq")
+        from_leg = int(raw_from) if isinstance(raw_from, int) and raw_from > 0 else None
+        manifest = attempt.pending_capsule.get("manifest")
+        safe_manifest = manifest if isinstance(manifest, dict) else {}
+        self._apply_continuity_commit_conn(
+            conn,
+            work_id=attempt.work_id,
+            participant=participant,
+            through_seq=through_seq,
+            model=model,
+            handoff_from_leg_seq=from_leg,
+            manifest=safe_manifest,
             created_at=created_at,
         )
 
@@ -4041,6 +5148,7 @@ class WorkStore:
         *,
         generation: int,
         created_at: str,
+        model: str = "",
     ) -> None:
         conn.execute(
             """
@@ -4053,9 +5161,10 @@ class WorkStore:
         )
         if not native_id:
             return
+        participant = _participant(self._participant_row(conn, participant_id))
         existing = conn.execute(
             """
-            SELECT participant_id FROM native_bindings
+            SELECT * FROM native_bindings
             WHERE provider = ? AND native_id = ?
             """,
             (provider, native_id),
@@ -4064,13 +5173,25 @@ class WorkStore:
             raise WorkStoreError(
                 f"native binding already belongs to another participant: {native_id}"
             )
+        prior_ack = int(_row_value(existing, "acked_event_seq", 0)) if existing is not None else 0
+        initial_ack = self._compute_contiguous_binding_ack_conn(
+            conn,
+            work_id=participant.work_id,
+            participant_id=participant_id,
+            generation=generation,
+            starting_seq=prior_ack,
+        )
+        resolved_model = _text(model) or (
+            str(_row_value(existing, "model", "")) if existing is not None else ""
+        ) or str(participant.metadata.get("model", "") or "")
         if existing is None:
             conn.execute(
                 """
                 INSERT INTO native_bindings (
                     binding_id, participant_id, provider, native_kind,
-                    native_id, generation, status, created_at, retired_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, '')
+                    native_id, generation, status, created_at, retired_at,
+                    model, acked_event_seq, capsule_manifest_json
+                ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, '', ?, ?, '{}')
                 """,
                 (
                     _new_id("bind"),
@@ -4080,16 +5201,42 @@ class WorkStore:
                     native_id,
                     generation,
                     created_at,
+                    resolved_model,
+                    initial_ack,
                 ),
             )
         else:
             conn.execute(
                 """
                 UPDATE native_bindings
-                SET native_kind = ?, generation = ?, status = 'active', retired_at = ''
+                SET native_kind = ?, generation = ?, status = 'active',
+                    retired_at = '', model = ?, acked_event_seq = ?
                 WHERE provider = ? AND native_id = ?
                 """,
-                (native_kind, generation, provider, native_id),
+                (
+                    native_kind,
+                    generation,
+                    resolved_model,
+                    max(prior_ack, initial_ack),
+                    provider,
+                    native_id,
+                ),
+            )
+        accepted_attempt = conn.execute(
+            """
+            SELECT * FROM execution_attempts
+            WHERE work_id = ? AND participant_id = ? AND participant_generation = ?
+              AND (accepted_turn_id <> '' OR status = 'completed')
+            ORDER BY started_at DESC, attempt_id DESC
+            LIMIT 1
+            """,
+            (participant.work_id, participant_id, generation),
+        ).fetchone()
+        if accepted_attempt is not None:
+            self._commit_pending_capsule_conn(
+                conn,
+                _execution_attempt(accepted_attempt),
+                created_at=created_at,
             )
 
 
@@ -4124,6 +5271,7 @@ def _work(row: sqlite3.Row) -> Work:
         metadata=_load_json(row["metadata_json"]),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
+        continuity_enabled=bool(_row_value(row, "continuity_enabled", 0)),
     )
 
 
@@ -4208,6 +5356,7 @@ def _execution_attempt(row: sqlite3.Row) -> ExecutionAttempt:
         updated_at=str(row["updated_at"]),
         workspace_root=str(_row_value(row, "workspace_root", "")),
         write_intent=bool(_row_value(row, "write_intent", 0)),
+        pending_capsule=_load_json(str(_row_value(row, "pending_capsule_json", "{}"))),
     )
 
 
@@ -4348,6 +5497,41 @@ def _execution_denial_message(owner: ExecutionAttempt, *, scope: str) -> str:
     )
 
 
+def _native_binding(row: sqlite3.Row) -> NativeBinding:
+    return NativeBinding(
+        binding_id=str(row["binding_id"]),
+        participant_id=str(row["participant_id"]),
+        provider=str(row["provider"]),
+        native_kind=str(row["native_kind"]),
+        native_id=str(row["native_id"]),
+        generation=int(row["generation"]),
+        status=str(row["status"]),
+        created_at=str(row["created_at"]),
+        retired_at=str(row["retired_at"]),
+        model=str(_row_value(row, "model", "")),
+        acked_event_seq=int(_row_value(row, "acked_event_seq", 0)),
+        capsule_manifest=_load_json(str(_row_value(row, "capsule_manifest_json", "{}"))),
+    )
+
+
+def _work_leg(row: sqlite3.Row) -> WorkLeg:
+    raw_from = _row_value(row, "handoff_from_leg_seq", None)
+    return WorkLeg(
+        work_id=str(row["work_id"]),
+        leg_seq=int(row["leg_seq"]),
+        participant_id=str(row["participant_id"]),
+        binding_id=str(row["binding_id"]),
+        provider=str(row["provider"]),
+        model=str(row["model"]),
+        native_session_id=str(row["native_session_id"]),
+        transcript_path=str(row["transcript_path"]),
+        started_turn_index=int(row["started_turn_index"]),
+        handoff_from_leg_seq=int(raw_from) if raw_from is not None else None,
+        capsule_manifest=_load_json(str(_row_value(row, "capsule_manifest_json", "{}"))),
+        created_at=str(row["created_at"]),
+    )
+
+
 def _event(row: sqlite3.Row) -> WorkEvent:
     return WorkEvent(
         event_id=str(row["event_id"]),
@@ -4359,6 +5543,8 @@ def _event(row: sqlite3.Row) -> WorkEvent:
         emitting_participant_id=str(row["emitting_participant_id"]),
         control_plane=bool(row["control_plane"]),
         created_at=str(row["created_at"]),
+        emitting_generation=int(_row_value(row, "emitting_generation", 0)),
+        emitting_binding_id=str(_row_value(row, "emitting_binding_id", "")),
     )
 
 

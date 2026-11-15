@@ -9,9 +9,15 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib, Gtk  # noqa: E402
 
 from helios.backend import model_catalog, session_providers
+from helios.backend.composite_transcript import (
+    CompositeItem,
+    CompositeTranscript,
+    HandoffBoundary,
+)
 from helios.backend.projects import Session
 from helios.backend.transcript import Turn, iter_transcript, read_transcript_since
-from helios.widgets.message_bubble import MessageBubble, StreamingBubble
+from helios.widgets._motion import FAST_MS  # noqa: E402
+from helios.widgets.message_bubble import MessageBubble, StreamingBubble  # noqa: E402
 
 
 INITIAL_TURN_LIMIT = 150
@@ -30,7 +36,7 @@ def _aligned_start(turns, start: int) -> int:
     """
     while 0 < start < len(turns):
         turn = turns[start]
-        if turn.role == "tool" and turn.tool_results and not turn.tool_uses:
+        if isinstance(turn, Turn) and turn.role == "tool" and turn.tool_results and not turn.tool_uses:
             start -= 1
             continue
         break
@@ -101,7 +107,11 @@ class TranscriptView(Gtk.Box):
         self._scroller.set_child(self._empty)
 
         self._session: Session | None = None
+        self._composite_items: tuple[CompositeItem, ...] | None = None
+        self._follow_path = None
         self._assistant_label = "Claude"
+        self._active_model = ""
+        self._active_session_id = ""
         self._render_token = 0
         # Count of finalized turns currently shown. NOT the follow cursor —
         # `_follow_offset` is. Kept as the render counter (append_turn,
@@ -330,6 +340,18 @@ class TranscriptView(Gtk.Box):
         if turn.tool_uses:
             self._drain_early_results(bubble)
 
+    def _live_call_key(self, session_id: str, tool_use_id: str):
+        sid = session_id or self._active_session_id
+        return (sid, tool_use_id) if sid else tool_use_id
+
+    def _matches_live_call(self, session_id: str, tool_use_id: str) -> bool:
+        if not tool_use_id or not self._live_call_ids:
+            return False
+        sid = session_id or self._active_session_id
+        if sid:
+            return (sid, tool_use_id) in self._live_call_ids or tool_use_id in self._live_call_ids
+        return tool_use_id in self._live_call_ids
+
     def _absorb_live_results(self, turn):
         """Pair a live results-only turn, holding what the streaming message owns.
 
@@ -339,11 +361,19 @@ class TranscriptView(Gtk.Box):
         turn = self._pair_tool_results(turn)
         if turn is None:
             return None
-        held = [tr for tr in turn.tool_results if tr.tool_use_id in self._live_call_ids]
+        held = [
+            tr
+            for tr in turn.tool_results
+            if self._matches_live_call(turn.session_id, tr.tool_use_id)
+        ]
         if not held:
             return turn
         self._early_results.extend((tr, turn) for tr in held)
-        rest = [tr for tr in turn.tool_results if tr.tool_use_id not in self._live_call_ids]
+        rest = [
+            tr
+            for tr in turn.tool_results
+            if not self._matches_live_call(turn.session_id, tr.tool_use_id)
+        ]
         if not rest:
             return None
         return Turn(
@@ -354,6 +384,9 @@ class TranscriptView(Gtk.Box):
             is_sidechain=turn.is_sidechain,
             is_meta=turn.is_meta,
             activity_content_index=turn.activity_content_index,
+            model=turn.model,
+            provider=turn.provider,
+            session_id=turn.session_id,
         )
 
     def _flush_early_results(self) -> None:
@@ -362,7 +395,14 @@ class TranscriptView(Gtk.Box):
         for tr, source in held:
             self._append_content(
                 MessageBubble(
-                    Turn(role=source.role, tool_results=[tr], timestamp=source.timestamp),
+                    Turn(
+                        role=source.role,
+                        tool_results=[tr],
+                        timestamp=source.timestamp,
+                        model=source.model,
+                        provider=source.provider,
+                        session_id=source.session_id,
+                    ),
                     assistant_label=self._assistant_label,
                 )
             )
@@ -375,14 +415,25 @@ class TranscriptView(Gtk.Box):
         held, self._early_results = self._early_results, []
         leftovers: list = []
         for tr, source in held:
-            if not bubble.attach_tool_result(tr, source.timestamp):
+            if not bubble.attach_tool_result(
+                tr,
+                source.timestamp,
+                session_id=source.session_id,
+            ):
                 leftovers.append((tr, source))
         for tr, source in leftovers:
             # One standalone row per orphan, in arrival order; the
             # id belonged to the live message but no card claimed it.
             self._append_content(
                 MessageBubble(
-                    Turn(role=source.role, tool_results=[tr], timestamp=source.timestamp),
+                    Turn(
+                        role=source.role,
+                        tool_results=[tr],
+                        timestamp=source.timestamp,
+                        model=source.model,
+                        provider=source.provider,
+                        session_id=source.session_id,
+                    ),
                     assistant_label=self._assistant_label,
                 )
             )
@@ -414,18 +465,32 @@ class TranscriptView(Gtk.Box):
             is_sidechain=turn.is_sidechain,
             is_meta=turn.is_meta,
             activity_content_index=turn.activity_content_index,
+            model=turn.model,
+            provider=turn.provider,
+            session_id=turn.session_id,
         )
 
     def _attach_tool_result(self, tr, turn, candidates=None) -> bool:
         if candidates is not None:
             for bubble in reversed(candidates):
-                if bubble.attach_tool_result(tr, turn.timestamp):
+                if isinstance(bubble, HandoffDividerRow):
+                    break
+                if isinstance(bubble, MessageBubble) and bubble.attach_tool_result(
+                    tr,
+                    turn.timestamp,
+                    session_id=turn.session_id,
+                ):
                     return True
             return False
         child = self._list.get_last_child()
         while child is not None:
+            if isinstance(child, HandoffDividerRow):
+                # Never attach a later leg's tool result across a model handoff.
+                break
             if isinstance(child, MessageBubble) and child.attach_tool_result(
-                tr, turn.timestamp
+                tr,
+                turn.timestamp,
+                session_id=turn.session_id,
             ):
                 return True
             child = child.get_prev_sibling()
@@ -534,7 +599,7 @@ class TranscriptView(Gtk.Box):
             return
         self._streaming_latest = streaming
         self._live_call_ids.update(
-            block.tool_use_id
+            self._live_call_key(self._active_session_id, block.tool_use_id)
             for block in getattr(streaming, "blocks", ()) or ()
             if getattr(block, "type", "") == "tool_use" and getattr(block, "tool_use_id", "")
         )
@@ -560,7 +625,8 @@ class TranscriptView(Gtk.Box):
             if not any(b.text or b.tool_use_name for b in streaming.blocks):
                 return False
             self._streaming_bubble = StreamingBubble(
-                assistant_label=self._assistant_label
+                assistant_label=self._assistant_label,
+                model=self._active_model,
             )
             self._append_content(self._streaming_bubble)
         self._streaming_bubble.update(streaming)
@@ -699,13 +765,121 @@ class TranscriptView(Gtk.Box):
             self._streaming_flush_id = 0
         self._streaming_latest = None
 
+    def set_active_assistant(
+        self,
+        provider: str,
+        model: str,
+        *,
+        session_id: str = "",
+        cwd: str = "",
+    ) -> None:
+        """Update the active speaker/model for subsequent turns in-place without
+        clearing existing conversation bubbles."""
+        if self._destroyed:
+            return
+        if provider:
+            self._assistant_label = _assistant_name(provider)
+        elif model:
+            self._assistant_label = _assistant_name(model_catalog.provider_for(model))
+        self._active_model = model
+        self._active_session_id = session_id
+        self._live_call_ids.clear()
+        if self._session is None and cwd:
+            self._banner.set_live(cwd=cwd, model=model)
+        elif self._session is not None and model:
+            self._banner.set_active_model(model, session_id=session_id)
+
+    def has_visible_turns(self) -> bool:
+        """True when at least one conversation bubble is currently rendered."""
+        if self._destroyed:
+            return False
+        if self._rendered_turns > 0 or self._streaming_bubble is not None:
+            return True
+        child = self._list.get_first_child()
+        while child is not None:
+            if isinstance(child, MessageBubble):
+                return True
+            child = child.get_next_sibling()
+        return False
+
+    def replace_or_append_handoff_divider(
+        self,
+        boundary: HandoffBoundary,
+        *,
+        animate_in: bool = True,
+    ) -> HandoffDividerRow | None:
+        """Append a handoff divider, coalescing an immediately preceding unused
+        divider when zero turns occurred since the prior model pick."""
+        if self._destroyed:
+            return None
+        tail = self._list.get_last_child()
+        while isinstance(tail, _QueuedRow):
+            tail = tail.get_prev_sibling()
+        if isinstance(tail, HandoffDividerRow):
+            orig_from_provider = tail.boundary.from_provider
+            orig_from_model = tail.boundary.from_model
+            orig_seq = tail.boundary.leg_seq
+            try:
+                self._remove_content_child(tail)
+            except Exception:
+                pass
+            if (
+                boundary.to_provider == orig_from_provider
+                and boundary.to_model == orig_from_model
+            ):
+                return None
+            boundary = HandoffBoundary(
+                leg_seq=boundary.leg_seq or orig_seq,
+                from_provider=orig_from_provider,
+                from_model=orig_from_model,
+                to_provider=boundary.to_provider,
+                to_model=boundary.to_model,
+                capsule_manifest=dict(boundary.capsule_manifest),
+                created_at=boundary.created_at,
+            )
+        return self.append_handoff_divider(boundary, animate_in=animate_in)
+
+    def append_handoff_divider(
+        self,
+        boundary: HandoffBoundary,
+        *,
+        animate_in: bool = True,
+    ) -> HandoffDividerRow | None:
+        """Insert an inline model-handoff divider above any queued rows."""
+        if self._destroyed:
+            return None
+        if self._early_results:
+            self._flush_early_results()
+        self._cancel_pending_stream_flush()
+        self._clear_streaming_bubble()
+        row = HandoffDividerRow(boundary, animate_in=animate_in)
+        self._append_content(row)
+        self._set_pinned(True)
+        return row
+
+    def update_latest_handoff_manifest(self, manifest: dict) -> bool:
+        """Populate the most recent HandoffDividerRow with its compiled capsule manifest."""
+        if self._destroyed or not manifest:
+            return False
+        child = self._list.get_last_child()
+        while child is not None:
+            if isinstance(child, HandoffDividerRow):
+                child.update_manifest(manifest)
+                return True
+            child = child.get_prev_sibling()
+        return False
+
     def show_live_session(self, cwd: str, model: str) -> None:
         """Prepare the view for a brand-new live session."""
         if self._destroyed:
             return
         self._assistant_label = _assistant_name(model_catalog.provider_for(model))
+        self._active_model = model
+        self._active_session_id = ""
         self._render_token += 1
         self._session = None
+        self._composite_items = None
+        self._follow_path = None
         self._rendered_turns = 0
         self._follow_offset = 0
         self._history_start_index = 0
@@ -734,7 +908,8 @@ class TranscriptView(Gtk.Box):
             or self._streaming_bubble is not None
         ):
             return 0
-        tail = read_transcript_since(self._session.path, self._follow_offset)
+        follow_path = self._follow_path or self._session.path
+        tail = read_transcript_since(follow_path, self._follow_offset)
         if tail.restarted:
             # Truncated or replaced under us — a byte offset cannot reconcile
             # that. Rebuild from scratch; set_session re-reads from 0.
@@ -768,6 +943,8 @@ class TranscriptView(Gtk.Box):
         self._render_token += 1
         token = self._render_token
         self._session = session
+        self._composite_items = None
+        self._follow_path = session.path if session is not None else None
         resolution = (
             session_providers.resolve_provider(session.session_id, session.path)
             if session is not None
@@ -776,6 +953,7 @@ class TranscriptView(Gtk.Box):
         self._assistant_label = (
             _assistant_name(resolution.provider) if resolution.known else "Assistant"
         )
+        self._active_session_id = session.session_id if session is not None else ""
         self._rendered_turns = 0
         # Cleared here too so the `session is None` return below cannot leave a
         # cursor pointing into a file we are no longer showing.
@@ -834,6 +1012,63 @@ class TranscriptView(Gtk.Box):
         iterator = iter(turns[self._history_start_index:])
         self._render_batch(iterator, token, first=True)
 
+    def set_composite_session(
+        self,
+        session: Session,
+        composite: CompositeTranscript,
+    ) -> None:
+        """Render a multi-leg Work conversation as one continuous timeline."""
+        if self._destroyed:
+            return
+        self._render_token += 1
+        token = self._render_token
+        self._session = session
+        self._composite_items = composite.items
+        self._follow_path = composite.tail_path or session.path
+        tail_leg = composite.tail_leg
+        if tail_leg is not None and tail_leg.provider:
+            self._assistant_label = _assistant_name(tail_leg.provider)
+            self._active_model = tail_leg.model
+            self._active_session_id = tail_leg.native_session_id or session.session_id
+        else:
+            resolution = session_providers.resolve_provider(session.session_id, session.path)
+            self._assistant_label = (
+                _assistant_name(resolution.provider) if resolution.known else "Assistant"
+            )
+            self._active_session_id = session.session_id
+        self._rendered_turns = 0
+        self._follow_offset = composite.tail_offset
+        self._history_start_index = 0
+        self._load_earlier_row = None
+        self._cancel_pending_stream_flush()
+        self._streaming_bubble = None
+        self._queued_rows.clear()
+        self._clear_content()
+
+        self._scroller.set_child(self._clamp)
+        self._banner.set_session(session)
+        if tail_leg is not None and tail_leg.model:
+            self._banner.set_active_model(
+                tail_leg.model,
+                session_id=tail_leg.native_session_id or session.session_id,
+            )
+        self._bulk_loading = True
+        self._set_pinned(True)
+        self._set_loading(True)
+
+        items = list(composite.items)
+        self._history_start_index = _aligned_start(
+            items, max(0, len(items) - INITIAL_TURN_LIMIT)
+        )
+        self._rendered_turns = sum(
+            1 for item in items[:self._history_start_index] if isinstance(item, Turn)
+        )
+        if self._history_start_index > 0:
+            self._prepend_load_earlier_row()
+
+        iterator = iter(items[self._history_start_index:])
+        self._render_batch(iterator, token, first=True)
+
     def _set_loading(self, loading: bool) -> None:
         """Hide/reveal the transcript list around a bulk load. CSS fades the
         reveal (opacity transition on .helios-transcript-list).
@@ -861,11 +1096,14 @@ class TranscriptView(Gtk.Box):
         finished = False
         for _ in range(BATCH):
             try:
-                turn = next(iterator)
+                item = next(iterator)
             except StopIteration:
                 finished = True
                 break
-            self._append_turn_bubble(turn)
+            if isinstance(item, HandoffBoundary):
+                self.append_handoff_divider(item, animate_in=False)
+            else:
+                self._append_turn_bubble(item)
         if finished:
             # Last batch is in. Re-engage sticky-bottom — and then keep
             # scrolling to the new bottom until `upper` stops changing.
@@ -929,13 +1167,16 @@ class TranscriptView(Gtk.Box):
             self._load_earlier_row = None
 
         new_start = max(0, self._history_start_index - OLDER_TURN_BATCH)
-        try:
-            turns = list(iter_transcript(self._session.path))
-        except Exception:
-            turns = []
-        new_start = _aligned_start(turns, new_start)
-        slice_end = min(self._history_start_index, len(turns))
-        older = turns[new_start:slice_end]
+        if self._composite_items is not None:
+            items: list[CompositeItem] = list(self._composite_items)
+        else:
+            try:
+                items = list(iter_transcript(self._session.path))
+            except Exception:
+                items = []
+        new_start = _aligned_start(items, new_start)
+        slice_end = min(self._history_start_index, len(items))
+        older = items[new_start:slice_end]
         prev: Gtk.Widget | None = None
         if new_start > 0:
             self._prepend_load_earlier_row()
@@ -944,8 +1185,15 @@ class TranscriptView(Gtk.Box):
         # already rendered, so the whole-list scan would attach an old result
         # to a newer card — and without pairing at all, every result in the
         # batch fell back to the standalone row this release exists to remove.
-        batch: list[MessageBubble] = []
-        for turn in older:
+        batch: list[Gtk.Widget] = []
+        for item in older:
+            if isinstance(item, HandoffBoundary):
+                divider = HandoffDividerRow(item, animate_in=False)
+                self._list.insert_child_after(divider, prev)
+                prev = divider
+                batch.append(divider)
+                continue
+            turn = item
             if turn.role == "tool" and turn.tool_results and not turn.tool_uses:
                 turn = self._pair_tool_results(turn, batch)
                 if turn is None:
@@ -1014,6 +1262,144 @@ class _QueuedRow(Gtk.Box):
         self.append(body)
 
 
+
+
+class HandoffDividerRow(Gtk.Box):
+    """Subtle inline divider marking an in-place model/provider handoff."""
+
+    def __init__(self, boundary: HandoffBoundary, *, animate_in: bool = False) -> None:
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.boundary = boundary
+        self._manifest = dict(boundary.capsule_manifest or {})
+        self.add_css_class("helios-handoff-divider")
+        if animate_in:
+            self.add_css_class("helios-bubble-enter")
+        self.set_margin_top(10)
+        self.set_margin_bottom(10)
+
+        line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        line.set_valign(Gtk.Align.CENTER)
+
+        left_rule = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        left_rule.set_hexpand(True)
+        left_rule.set_valign(Gtk.Align.CENTER)
+        left_rule.add_css_class("helios-handoff-rule")
+        line.append(left_rule)
+
+        pill = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        pill.set_valign(Gtk.Align.CENTER)
+        pill.add_css_class("helios-handoff-pill")
+
+        self._summary_label = Gtk.Label(label=boundary.summary_text, xalign=0)
+        self._summary_label.add_css_class("caption")
+        pill.append(self._summary_label)
+
+        self._toggle_btn = Gtk.Button(label="Inspect context ▾")
+        self._toggle_btn.add_css_class("flat")
+        self._toggle_btn.add_css_class("helios-handoff-inspect-btn")
+        self._toggle_btn.set_valign(Gtk.Align.CENTER)
+        self._toggle_btn.set_tooltip_text("Show transferred continuity summary")
+        self._toggle_btn.connect("clicked", self._on_toggle_clicked)
+        pill.append(self._toggle_btn)
+
+        line.append(pill)
+
+        right_rule = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        right_rule.set_hexpand(True)
+        right_rule.set_valign(Gtk.Align.CENTER)
+        right_rule.add_css_class("helios-handoff-rule")
+        line.append(right_rule)
+
+        self.append(line)
+
+        self._revealer = Gtk.Revealer()
+        self._revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self._revealer.set_transition_duration(FAST_MS)
+        self._revealer.set_reveal_child(False)
+
+        self._details_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self._details_box.add_css_class("helios-handoff-details")
+        self._details_box.set_halign(Gtk.Align.CENTER)
+        self._details_label = Gtk.Label(xalign=0)
+        self._details_label.add_css_class("caption")
+        self._details_label.add_css_class("dim-label")
+        self._details_label.set_wrap(True)
+        self._details_label.set_wrap_mode(2)
+        self._details_label.set_selectable(True)
+        self._details_box.append(self._details_label)
+        self._revealer.set_child(self._details_box)
+        self.append(self._revealer)
+
+        self._refresh_details_text()
+
+    @property
+    def is_expanded(self) -> bool:
+        return bool(self._revealer.get_reveal_child())
+
+    def _on_toggle_clicked(self, _btn: Gtk.Button) -> None:
+        expanded = not self._revealer.get_reveal_child()
+        self._revealer.set_reveal_child(expanded)
+        self._toggle_btn.set_label(
+            "Hide context ▴" if expanded else "Inspect context ▾"
+        )
+
+    def update_manifest(self, manifest: dict) -> None:
+        self._manifest = dict(manifest or {})
+        self._refresh_details_text()
+
+    def _refresh_details_text(self) -> None:
+        m = self._manifest
+        if not m:
+            self._details_label.set_label(
+                "Essential context transfers automatically with your next message."
+            )
+            return
+        lines: list[str] = []
+        objective = str(m.get("objective", "") or "").strip()
+        if objective:
+            lines.append(f"Objective: {objective}")
+        turn_count = int(
+            m.get("delta_event_count", m.get("included_events", m.get("turn_count", 0)))
+            or 0
+        )
+        older_count = int(
+            m.get("omitted_delta_events", m.get("summarized_events", 0)) or 0
+        )
+        baseline = int(m.get("baseline_acked_seq", 0) or 0)
+        mode = str(m.get("mode", "delta" if baseline > 0 else "") or "")
+        if mode == "delta":
+            lines.append(
+                f"Delta transfer: {turn_count} new Work event(s) since prior turn on this model"
+            )
+        elif turn_count or older_count:
+            summary_part = (
+                f" (+ {older_count} earlier condensed into cumulative summary)"
+                if older_count
+                else ""
+            )
+            lines.append(f"Transferred: {turn_count} recent turn event(s){summary_part}")
+        files = m.get("touched_files") or []
+        if isinstance(files, list) and files:
+            shown = ", ".join(str(f) for f in files[:5])
+            extra = f" (+{len(files) - 5} more)" if len(files) > 5 else ""
+            lines.append(f"Workspace files referenced: {shown}{extra}")
+        cmds = int(m.get("recent_commands_count", 0) or 0)
+        if cmds > 0:
+            lines.append(f"Recent command outcomes carried forward: {cmds}")
+        images = int(
+            m.get("carryover_image_count", m.get("carryover_images", m.get("image_count", 0)))
+            or 0
+        )
+        if images > 0:
+            lines.append(f"Visual context: {images} image attachment(s) re-hydrated")
+        chars = int(m.get("capsule_chars", m.get("char_count", 0)) or 0)
+        if chars > 0:
+            lines.append(f"Capsule size: {chars:,} chars")
+        if not lines:
+            lines.append("Continuity context synchronized with active Work.")
+        self._details_label.set_label("\n".join(lines))
+
+
 class _LoadEarlierRow(Gtk.Box):
     def __init__(self, on_click) -> None:
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL)
@@ -1057,6 +1443,12 @@ class _Banner(Gtk.Box):
         self._title.set_label(title)
         self._sub_cwd.set_label(s.project.cwd)
         self._sub_id.set_label(f"session {s.session_id}")
+
+    def set_active_model(self, model: str, *, session_id: str = "") -> None:
+        if session_id:
+            self._sub_id.set_label(f"{model} · session {session_id}")
+        elif model:
+            self._sub_id.set_label(model)
 
     def set_live(self, *, cwd: str, model: str) -> None:
         self._title.set_label("New chat")
