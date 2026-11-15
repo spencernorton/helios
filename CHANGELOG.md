@@ -4,6 +4,12 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.116.0 — 2026-11-15
+
+- Switching the toolbar model or provider inside an ongoing conversation now continues in place instead of starting a separate session window: the mounted transcript stays open, the sidebar keeps a single row across all provider legs, and switches selected while a turn is streaming queue cleanly until the active turn finishes.
+- Cross-provider and fresh-leg model switches automatically carry over a bounded, secret-scrubbed `ContinuityCapsule` (`<= 28,000` characters) alongside verified image attachments, active `ProductBrief` guardrails, and unacknowledged turns since each binding's last provider-accepted sequence (`WorkStore` schema v13 with verified pre-migration SQLite backups).
+- Multi-leg conversations stitch chronological history across bindings with inline handoff dividers (*Inspect context* shows the exact capsule sent) and per-turn model attribution chips when a conversation spans more than one model.
+
 ## 0.115.6 — 2026-11-14
 
 - Work items now maintain a revisioned `ProductBrief` (durable outcome, open acceptance criteria, reference-image dispositions, rejected approaches, explicit user stops, and criterion delivery evidence) across turns, model changes, and structured handoffs for all six providers.

@@ -86,6 +86,16 @@ works you can keep typing — the message queues and goes when the turn ends.
 `Esc` or `Ctrl+.` stops the current turn; queued messages come back to the
 composer.
 
+**Switching models mid-session.** Pick another model or provider in the toolbar
+during an ongoing chat to continue in the same conversation instead of opening
+a new one. Same-provider switches reuse the live session or native resume path
+when supported; cross-provider switches carry over a bounded, secret-scrubbed
+continuity summary, active `ProductBrief` constraints, and recent verified
+images, and mark the transition with an inline handoff divider (*Inspect
+context* shows what was transferred) plus model chips on replies. If a turn is
+currently streaming, your selection queues and applies as soon as the turn
+finishes; `Esc` cancels a queued switch alongside the turn.
+
 **Chat in a worktree.** The new-chat menu's *Chat in a Worktree* creates a
 git worktree of the current chat's repository (else the default folder's) on
 a new `helios/<repo>-<time>` branch under `~/.helios/worktrees/`, and starts
