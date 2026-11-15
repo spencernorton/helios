@@ -84,6 +84,8 @@ _log = logging.getLogger("helios.env-scrub")
 HELIOS_INTERNAL_ENV = (
     "HELIOS_SCRATCHPAD_KEY",  # secret — the shared-context pane's API key
     "HELIOS_SCRATCHPAD_URL",  # the pane's endpoint
+    "HELIOS_TITLE_API_KEY",  # secret — optional local title-server key
+    "HELIOS_TITLE_API_KEY_HEADER",
     "HELIOS_DEBUG",
     "HELIOS_LOG_LEVEL",
     "HELIOS_CLAUDE_BINARY",

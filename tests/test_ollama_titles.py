@@ -146,3 +146,56 @@ def test_oversize_and_malformed_responses_are_rejected(monkeypatch):
     respond(monkeypatch, {"choices": []})
     with pytest.raises(ValueError, match="invalid title"):
         ollama.generate_title("http://server/v1", "model", "prompt")
+
+
+def test_state_dir_auth_file_and_custom_header(monkeypatch, tmp_path):
+    monkeypatch.setenv("HELIOS_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("HELIOS_TITLE_API_KEY", raising=False)
+    monkeypatch.delenv("HELIOS_TITLE_API_KEY_HEADER", raising=False)
+    auth_file = tmp_path / "title-auth.json"
+    auth_file.write_text(json.dumps({"api_key": "local-secret-123", "header": "X-API-Key"}), encoding="utf-8")
+    auth_file.chmod(0o600)
+
+    calls = respond(
+        monkeypatch,
+        {"choices": [{"message": {"role": "assistant", "content": "Fix local router timeout"}}]},
+    )
+    assert ollama.generate_title("http://127.0.0.1:8920/v1", "lfm2.5-1.2b", "Prompt") == "Fix local router timeout"
+    req, _ = calls[0]
+    assert req.get_header("X-api-key") == "local-secret-123"
+    assert req.get_header("Authorization") is None
+
+
+def test_insecure_auth_file_permissions_rejected(monkeypatch, tmp_path):
+    monkeypatch.setenv("HELIOS_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("HELIOS_TITLE_API_KEY", raising=False)
+    auth_file = tmp_path / "title-auth.json"
+    auth_file.write_text(json.dumps({"api_key": "local-secret-123"}), encoding="utf-8")
+    auth_file.chmod(0o644)
+
+    calls = respond(monkeypatch, {})
+    with pytest.raises(ValueError, match="0600"):
+        ollama.check_model("http://127.0.0.1:8920/v1", "lfm2.5-1.2b")
+    assert calls == []
+
+
+def test_openai_top_level_list_and_catalog_fallback(monkeypatch, tmp_path):
+    monkeypatch.setenv("HELIOS_STATE_DIR", str(tmp_path))
+    seen_urls = []
+
+    class Resp(io.BytesIO):
+        def read(self, size=-1):
+            return super().read(size)
+
+    def open_multi(request, *, timeout):
+        seen_urls.append(request.full_url)
+        if request.full_url.endswith("/models"):
+            return Resp(json.dumps([{"alias": "image-only"}]).encode())
+        if request.full_url.endswith("/catalog"):
+            return Resp(json.dumps([{"id": "lfm2.5-1.2b"}, {"id": "qwen3.5-2b"}]).encode())
+        raise AssertionError(request.full_url)
+
+    monkeypatch.setattr(ollama.urllib.request, "urlopen", open_multi)
+    status = ollama.check_model("http://127.0.0.1:8920/v1", "lfm2.5-1.2b")
+    assert status.available is True
+    assert seen_urls == ["http://127.0.0.1:8920/v1/models", "http://127.0.0.1:8920/v1/catalog"]

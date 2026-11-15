@@ -397,6 +397,7 @@ Paths written as `~/.helios` are the default app-state location. A configured `H
 | `HELIOS_ROUTER_SOCKET` | Unix socket of an optional Smart Routing broker (default `/run/helios-router/router.sock`); inert unless the socket answers |
 | `HELIOS_SESSION_POOL` | Root of an optional read-only session pool shared between machines (default `~/.local/share/helios/session-pool`); ignored when the path does not exist |
 | `HELIOS_SCRATCHPAD_URL`, `HELIOS_SCRATCHPAD_KEY` | Endpoint (default `http://127.0.0.1:9101`) and optional API key of the scratchpad service the Shared pane reads |
+| `HELIOS_TITLE_API_KEY`, `HELIOS_TITLE_API_KEY_HEADER` | Optional API key and header name for authenticated local `/v1` title servers (or `0600` `~/.helios/title-auth.json`) |
 | `HELIOS_TANDEM_BINARY` | Path of the optional `tandem` binary for the Missions pane |
 | `CLAUDE_HOME` | Where Claude Code transcripts are read (default `~/.claude`) |
 | `XDG_DATA_HOME` | Tool inventories cached under `<dir>/helios/` (default `~/.local/share`) |
