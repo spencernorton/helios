@@ -158,7 +158,8 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         GObject.Object.__init__(self)
         self._init_user_queue()
         self._cwd = cwd
-        self._model = model
+        self._model = model_catalog.canonical_model_id(model)
+        self._model_change_fenced_reason = ""
         self._effort = effort if effort in _EFFORTS else ""
         self._permission_mode = effective_execution_mode(
             permission_mode, cwd, provider=self.provider)
@@ -365,13 +366,21 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         self._notify(callback, True)
         return True
 
+    @property
+    def model_change_pending(self) -> bool:
+        return bool(self._model_changes)
+
     def set_model(self, model: str, callback=None) -> bool:
         """MSP `session/setModel`: durable, applies to subsequent model calls,
         no respawn (probed against `muse serve`, 2026-10-22)."""
-        if not isinstance(model, str) or not model.startswith("muse-"):
+        model = model_catalog.canonical_model_id(model) if isinstance(model, str) else ""
+        if not model or not model.startswith("muse-"):
             self._notify(callback, False, "unknown model")
             return False
-        if model == self._model:
+        if self.model_change_pending:
+            self._notify(callback, False, "another model change is pending")
+            return False
+        if not self._model_change_fenced_reason and model == self._model:
             self._notify(callback, True)
             return True
         if self._is_busy or not self.is_accepting_input or not self._session_id:
@@ -467,10 +476,18 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         if self._resume_session_id and sid != self._resume_session_id:
             self._protocol_failure("Muse resumed a different session. The requested Work remains blocked.")
             return
+        requested_model = self._model
         model_id = session.get("modelId")
         if isinstance(model_id, str) and model_id:
             self._model = model_id
             self._normalize_model_effort()
+        needs_model_switch = bool(
+            self._resume_session_id
+            and requested_model
+            and requested_model.startswith("muse-")
+            and self._model
+            and requested_model != self._model
+        )
         workspace = session.get("workspaceRoot")
         if isinstance(workspace, str) and workspace \
                 and os.path.realpath(workspace) != os.path.realpath(self._cwd):
@@ -504,7 +521,8 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         self._accepting_input = True
         pending, self._startup_pending_text = self._startup_pending_text, None
         self._is_busy = False
-        self.emit("session-started", sid, self._cwd, self._model)
+        announced_model = requested_model if needs_model_switch else self._model
+        self.emit("session-started", sid, self._cwd, announced_model)
         self.emit(
             "capabilities-updated",
             {"tools": list(self.init_tools), "mcp_servers": list(self.init_mcp_servers)},
@@ -512,6 +530,38 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         # Subscription windows are host-wide and only pushed on change, so
         # read the last observation once rather than waiting for the next one.
         self._send("usage/read")
+        def _fence_startup_model_refusal(detail: str) -> None:
+            sfx = f": {detail}" if detail else "."
+            msg = f"Muse refused model {requested_model}{sfx}"
+            self._helios_requested_model = self._model
+            self._model_change_fenced_reason = msg
+            self.end_input()
+            self.emit("error", msg)
+
+        if needs_model_switch and pending:
+            def _after_startup_model(ok: bool, detail: str) -> None:
+                self._is_busy = False
+                if self._stopped or self._accounting_failed:
+                    return
+                if ok:
+                    self.send_user_text(pending, _reuse_execution_attempt=True)
+                    return
+                if self.execution_attempt_id:
+                    self._finish_execution_with_evidence(ExecutionTerminalEvidence(
+                        evidence_type="local_abort", status="aborted",
+                        reason_code="local_abort", queue_disposition="restored"))
+                _fence_startup_model_refusal(detail)
+
+            if self.set_model(requested_model, _after_startup_model):
+                self._is_busy = True
+            return
+        if needs_model_switch:
+            def _after_idle_startup_model(ok: bool, detail: str) -> None:
+                if self._stopped or self._accounting_failed or ok:
+                    return
+                _fence_startup_model_refusal(detail)
+
+            self.set_model(requested_model, _after_idle_startup_model)
         if pending:
             self.send_user_text(pending, _reuse_execution_attempt=True)
 
@@ -528,6 +578,12 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
             return MessageDelivery("rejected")
         if self._accounting_failed:
             self.emit("error", "Helios could not verify Muse accounting. New Work remains blocked.")
+            return MessageDelivery("rejected")
+        if getattr(self, "_model_change_fenced_reason", ""):
+            self.emit("error", self._model_change_fenced_reason)
+            return MessageDelivery("rejected")
+        if self.model_change_pending:
+            self.emit("error", "Muse is still applying the selected model.")
             return MessageDelivery("rejected")
         if self.is_busy and self._startup_pending_text is None:
             self.emit("error", "Muse is still processing the current turn.")
@@ -715,6 +771,7 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
                 result = msg.get("result")
                 if isinstance(result, dict) and result.get("status") == "accepted":
                     self._model = model
+                    self._model_change_fenced_reason = ""
                     self._normalize_model_effort()
                     self._notify(callback, True)
                 else:

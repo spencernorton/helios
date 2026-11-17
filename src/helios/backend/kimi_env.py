@@ -154,8 +154,12 @@ def acp_query(
 
 
 def _option(config: Any, category: str) -> dict:
-    for row in config if isinstance(config, list) else []:
-        if isinstance(row, dict) and row.get("category") == category:
+    rows = [r for r in config if isinstance(r, dict)] if isinstance(config, list) else []
+    for row in rows:
+        if row.get("category") == category:
+            return row
+    for row in rows:
+        if row.get("id") == category:
             return row
     return {}
 

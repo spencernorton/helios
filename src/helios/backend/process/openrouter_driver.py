@@ -403,7 +403,7 @@ class OpenRouterDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object)
     ) -> None:
         super().__init__()
         self._cwd = cwd
-        self._model = model
+        self._model = model_catalog.canonical_model_id(model)
         self._permission_mode = effective_execution_mode(permission_mode, cwd, provider="openrouter")
         self._resume = resume_session_id
         self._plan_turn_id = ""

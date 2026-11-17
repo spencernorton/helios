@@ -843,14 +843,42 @@ def collapse_latest_twins(
 # ── Cross-provider helpers ─────────────────────────────────────────────────
 
 
+_EXPLICIT_PROVIDER_PREFIXES: frozenset[str] = frozenset(
+    {
+        PROVIDER_ANTHROPIC,
+        PROVIDER_OPENAI,
+        PROVIDER_GOOGLE,
+        PROVIDER_MUSE,
+        PROVIDER_KIMI,
+        PROVIDER_OPENROUTER,
+    }
+)
+
+
+def canonical_model_id(model_id: str) -> str:
+    """Strip an explicit ``<provider>:`` prefix while preserving OpenRouter ``:free``."""
+    m = (model_id or "").strip()
+    if ":" in m:
+        prefix, _sep, rest = m.partition(":")
+        if prefix.casefold() in _EXPLICIT_PROVIDER_PREFIXES and rest.strip():
+            return rest.strip()
+    return m
+
+
 def provider_for(model_id: str) -> str:
     """Classify a model id.
 
     OpenRouter ids are always ``vendor/model`` — a slash never appears in a
-    native Anthropic, OpenAI, or Google id. Failing that, unmistakably OpenAI naming
-    or Google naming wins; everything else is Anthropic.
+    native Anthropic, OpenAI, or Google id. Explicit ``<provider>:<id>``
+    prefixes are honored first; failing that, unmistakably Kimi, Muse,
+    OpenRouter, Google, or OpenAI naming wins; everything else is Anthropic.
     """
-    m = model_id or ""
+    m = (model_id or "").strip()
+    if ":" in m:
+        prefix, _sep, rest = m.partition(":")
+        cand = prefix.casefold()
+        if cand in _EXPLICIT_PROVIDER_PREFIXES and rest.strip():
+            return cand
     if _KIMI_PROVIDER_RE.match(m):
         return PROVIDER_KIMI
     if _MUSE_PROVIDER_RE.match(m):
@@ -892,8 +920,9 @@ _LATEST_1M_ALIASES: frozenset[str] = frozenset({"sonnet", "opus", "fable"})
 
 
 def context_window_for(model_id: str, default_anthropic: str = "") -> int:
-    m = model_id or default_anthropic
-    provider = provider_for(m)
+    raw = model_id or default_anthropic
+    provider = provider_for(raw)
+    m = canonical_model_id(raw)
     if provider == PROVIDER_OPENROUTER:
         from helios.backend.openrouter import catalog as or_catalog
 

@@ -4,6 +4,12 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.116.1 — 2026-11-16
+
+- Hardened mid-session model switching across all six providers: enforced per-conversation model immutability across multi-hop Google detours and legacy migrated bindings, normalized explicit `<provider>:<model>` selectors before driver execution, fenced unacknowledged live and cold-resume model changes across Kimi ACP and Muse so prompts never dispatch on a prior or refused model, and retired idle pooled drivers when `set_model` is refused.
+- Preserved `ProductBrief` reference images and guardrails across both `ContinuityCapsule` wire payloads and *Inspect context* previews, excluded target-leg turns from both cumulative and delta capsule sections on rewound pre-migration sessions, and unified `@file` attachment reads under a non-following, bounded regular-file reader so rejected image symlinks never fall through to text reads.
+- Kept staged zero-turn model switches intact across sidebar navigation, full window restarts, and multi-batch (`> 8`-turn) composite transcript loads without divider interleaving, and expanded human-readable model attribution chips across all provider catalogs.
+
 ## 0.116.0 — 2026-11-15
 
 - Switching the toolbar model or provider inside an ongoing conversation now continues in place instead of starting a separate session window: the mounted transcript stays open, the sidebar keeps a single row across all provider legs, and switches selected while a turn is streaming queue cleanly until the active turn finishes.

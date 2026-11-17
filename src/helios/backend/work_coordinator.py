@@ -387,6 +387,15 @@ class WorkCoordinator:
             )
             from_provider = snap.legs[-1].provider if snap.legs else ""
             from_model = snap.legs[-1].model if snap.legs else ""
+            brief = self.store.get_product_brief(work_id)
+            brief_artifact_paths: dict[str, str] = {}
+            for ref in brief.reference_artifacts:
+                art = self.store.get_artifact(work_id, ref.artifact_id)
+                if art is not None and art.path.is_file():
+                    brief_artifact_paths[ref.artifact_id] = str(art.path)
+            essential_intent = brief.render_essential_context(
+                artifact_paths=brief_artifact_paths
+            )
             compiled = compile_continuity_capsule(
                 work=snap.work,
                 goal=safe_goal,
@@ -396,11 +405,15 @@ class WorkCoordinator:
                 target_participant_id=snap.participant.participant_id,
                 target_generation=snap.participant.generation,
                 target_binding_id=(snap.binding.binding_id if snap.binding is not None else ""),
+                target_native_id=(snap.binding.native_id if snap.binding is not None else ""),
                 to_provider=provider,
                 to_model=resolved_model,
                 from_provider=from_provider,
                 from_model=from_model,
                 prior_legs=snap.legs,
+                product_brief_context=essential_intent,
+                brief_artifact_paths=tuple(brief_artifact_paths.values()),
+                artifact_roots=(self.store._root,),
             )
             return dict(compiled.manifest)
         except Exception:
@@ -690,6 +703,7 @@ class WorkCoordinator:
             target_participant_id=snap.participant.participant_id,
             target_generation=snap.participant.generation,
             target_binding_id=(snap.binding.binding_id if snap.binding is not None else ""),
+                target_native_id=(snap.binding.native_id if snap.binding is not None else ""),
             to_provider=provider,
             to_model=resolved_model,
             from_provider=from_provider,
@@ -697,6 +711,7 @@ class WorkCoordinator:
             prior_legs=snap.legs,
             product_brief_context=essential_intent,
             brief_artifact_paths=tuple(brief_artifact_paths.values()),
+            artifact_roots=(self.store._root,),
         )
         if not compiled.has_unseen_context:
             return _wrap_goal_context(

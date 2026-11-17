@@ -102,7 +102,7 @@ class CodexCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         super().__init__()
         self._init_user_queue()
         self._cwd = cwd
-        self._model = model
+        self._model = model_catalog.canonical_model_id(model)
         self._permission_mode = effective_execution_mode(permission_mode, cwd, provider="openai")
         self._effort = effort
         self._acc = codex_events.CodexTurnAccumulator(model=model)
@@ -271,7 +271,7 @@ class CodexCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
             return False
         if not self._execution_change_ready(callback):
             return False
-        self._model = model.strip()
+        self._model = model_catalog.canonical_model_id(model)
         self._notify_execution_callback(callback, True)
         return True
 

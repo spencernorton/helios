@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import threading
@@ -545,6 +546,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         self._permission_changes: dict[object, object] = {}
         self._effort_changes: dict[object, object] = {}
         self._workflow_changes: dict[object, object] = {}
+        self._model_changes: dict[object, object] = {}
         self._live_toast: Adw.Toast | None = None
         # A blank composer is already the user's current conversation even
         # though the provider has not assigned its native id yet.  Keep its
@@ -2891,9 +2893,12 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             self._pending_session_provider_adoption = ""
         old_model = str(getattr(self, "_model", "") or "")
         old_provider = model_catalog.provider_for(old_model)
+        provider = model_catalog.provider_for(alias)
+        stripped_alias = model_catalog.canonical_model_id(alias)
+        if stripped_alias and model_catalog.provider_for(stripped_alias) == provider:
+            alias = stripped_alias
         self._model = alias
         self._ui_state.set("model", alias)  # sticky across restarts
-        provider = model_catalog.provider_for(alias)
         self._provider_models[provider] = alias
         self._ui_state.set(f"model_{provider}", alias)
         self._chat_toolbar.set_model(alias)
@@ -2987,11 +2992,16 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
 
     def _driver_model_is_stale(self, driver) -> bool:
         """The picker changed while this idle driver kept its old model."""
-        return bool(
-            not driver.is_busy
-            and getattr(driver, "_helios_requested_model", self._model)
-            != self._model
+        if driver.is_busy or MainWindow._execution_change_pending_for(self, driver):
+            return False
+        target = model_catalog.canonical_model_id(self._model)
+        raw_req = getattr(driver, "_helios_requested_model", None)
+        if raw_req is not None and str(raw_req).strip():
+            return model_catalog.canonical_model_id(str(raw_req)) != target
+        actual = model_catalog.canonical_model_id(
+            str(getattr(driver, "model", "") or "")
         )
+        return bool(actual and actual != target)
 
     def _try_live_model_change(self, alias: str, label: str) -> bool:
         """Apply a same-provider model pick to the live Claude process.
@@ -3014,7 +3024,18 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         ):
             return False
 
+        model_changes = getattr(self, "_model_changes", None)
+        if not isinstance(model_changes, dict):
+            model_changes = {}
+            self._model_changes = model_changes
+        change_token = object()
+        model_changes[driver] = change_token
+        self._sync_execution_control()
+
         def applied(success: bool, detail: str) -> None:
+            if model_changes.get(driver) is not change_token:
+                return
+            del model_changes[driver]
             restart_required = bool(
                 not success
                 and getattr(driver, "execution_restart_required", False)
@@ -3025,6 +3046,14 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 return
             if success:
                 driver._helios_requested_model = alias
+                coord = getattr(self, "_work_coordinator", None)
+                wid = str(getattr(driver, "_helios_work_id", "") or MainWindow._current_work_id(self) or "")
+                prov = self._driver_provider(driver)
+                if coord is not None and wid and prov:
+                    try:
+                        coord.activate_model_binding(wid, prov, model=alias, force_fresh=False)
+                    except Exception:
+                        pass
                 self._toast(f"Model set to {label} — applied to the live chat.")
                 self._sync_effort_sensitivity()
             else:
@@ -3032,10 +3061,18 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 self._toast(f"Model set to {label} — applies to your next message.")
 
         try:
-            set_model(alias, applied)
+            sent = set_model(alias, applied)
         except Exception:
+            model_changes.pop(driver, None)
+            self._sync_execution_control()
             _log.exception("live model change failed")
             return False
+        if sent is False and model_changes.get(driver) is change_token:
+            del model_changes[driver]
+            self._sync_execution_control()
+            return False
+        if not getattr(self, "_destroyed", False):
+            self._sync_execution_control()
         # The driver invokes the callback exactly once on every path —
         # synchronous refusals included — so the toast is always its job.
         return True
@@ -3229,16 +3266,17 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             return False
         if main_stack.get_visible_child_name() != "transcript":
             return False
+        work_id = str(getattr(target, "work_id", "") or self._current_work_id() or "")
         has_turns_fn = getattr(transcript, "has_visible_turns", None)
         had_conversation = (
             bool(getattr(target, "resume_id", ""))
             or bool(self._driver is not None and self._driver.is_running)
             or bool(callable(has_turns_fn) and has_turns_fn())
             or getattr(self, "_pending_model_switch", None) is not None
+            or (bool(work_id) and MainWindow._work_id_has_continuity(self, work_id))
         )
         if not had_conversation:
             return False
-        work_id = str(getattr(target, "work_id", "") or self._current_work_id() or "")
         if work_id:
             try:
                 work = coordinator.store.get_work(work_id)
@@ -3610,9 +3648,17 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             return 0
 
         drv = getattr(self, "_driver", None)
+        existing_google_part = (
+            coordinator.participant(work_id, model_catalog.PROVIDER_GOOGLE)
+            if new_provider == model_catalog.PROVIDER_GOOGLE
+            else None
+        )
         force_fresh = bool(
-            old_provider == new_provider == model_catalog.PROVIDER_GOOGLE
-            and new_model != old_model
+            new_provider == model_catalog.PROVIDER_GOOGLE
+            and (
+                (old_provider == new_provider and new_model != old_model)
+                or (existing_google_part is not None and bool(existing_google_part.native_id))
+            )
             and coordinator.store.active_or_matching_binding(
                 work_id,
                 new_provider,
@@ -3640,6 +3686,13 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             label = human_model_label(new_provider, new_model)
             outcomes: list[tuple[bool, str]] = []
             dispatched_async = False
+            model_changes = getattr(self, "_model_changes", None)
+            if not isinstance(model_changes, dict):
+                model_changes = {}
+                self._model_changes = model_changes
+            live_token = object()
+            model_changes[drv] = live_token
+            self._sync_execution_control()
 
             def _restore_rejected_live_model(detail_msg: str) -> None:
                 if getattr(self, "_destroyed", False):
@@ -3659,6 +3712,9 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 self._toast(f"Could not switch live session to {label}{sfx}.")
 
             def _on_live_model_outcome(success: bool, detail: str) -> None:
+                if model_changes.get(drv) is not live_token:
+                    return
+                del model_changes[drv]
                 outcomes.append((bool(success), str(detail or "")))
                 if not success:
                     restart_req = bool(getattr(drv, "execution_restart_required", False))
@@ -3745,6 +3801,8 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             try:
                 sync_ret = drv.set_model(new_model, _on_live_model_outcome)
             except Exception as exc:
+                model_changes.pop(drv, None)
+                self._sync_execution_control()
                 _log.exception("live model change failed")
                 _restore_rejected_live_model(str(exc))
                 return False
@@ -3826,8 +3884,40 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
 
         self._bind_visible_driver(rebound_driver)
         if rebound_driver is not None and MainWindow._driver_model_is_stale(self, rebound_driver):
-            if callable(getattr(rebound_driver, "set_model", None)):
-                self._try_live_model_change(new_model, human_model_label(new_provider, new_model))
+            set_rebound_model = getattr(rebound_driver, "set_model", None)
+            if callable(set_rebound_model):
+                model_changes = getattr(self, "_model_changes", None)
+                if not isinstance(model_changes, dict):
+                    model_changes = {}
+                    self._model_changes = model_changes
+                rebound_token = object()
+                model_changes[rebound_driver] = rebound_token
+                self._sync_execution_control()
+
+                def _on_rebound_model_outcome(ok: bool, _detail: str) -> None:
+                    if model_changes.get(rebound_driver) is not rebound_token:
+                        return
+                    del model_changes[rebound_driver]
+                    if ok:
+                        rebound_driver._helios_requested_model = new_model
+                        if not getattr(self, "_destroyed", False):
+                            self._sync_effort_sensitivity()
+                            self._sync_execution_control()
+                        return
+                    try:
+                        rebound_driver.end_input()
+                    except Exception:
+                        pass
+                    if not getattr(self, "_destroyed", False):
+                        if getattr(self, "_driver", None) is rebound_driver:
+                            self._bind_visible_driver(None)
+                        self._sync_execution_control()
+
+                try:
+                    if set_rebound_model(new_model, _on_rebound_model_outcome) is False:
+                        _on_rebound_model_outcome(False, "")
+                except Exception:
+                    _on_rebound_model_outcome(False, "")
             else:
                 try:
                     rebound_driver.end_input()
@@ -5003,6 +5093,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                         exc,
                     )
         MainWindow._stash_or_clear_pending_model_switch(self, keep_for_work_id=work_id)
+        staged_unbound_handoff: tuple[str, str] | None = None
         if continuity_legs:
             cont_draft_key = draft_key(session, work_id=work_id)
             if cont_draft_key != self._draft_key:
@@ -5010,11 +5101,26 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 self._draft_key = cont_draft_key
                 self._composer.set_text(migrated)
             tail_leg = continuity_legs[-1]
-            if tail_leg.model:
-                self._apply_model_choice(tail_leg.model, quiet=True)
-            elif tail_leg.provider:
-                self._adopt_session_provider(tail_leg.provider)
-            session_provider = tail_leg.provider or session_provider
+            lead_prov = str(getattr(work, "lead_provider", "") or "") if work is not None else ""
+            lead_part = (
+                coordinator.participant(work_id, lead_prov)
+                if (coordinator is not None and work_id and lead_prov)
+                else None
+            )
+            if lead_part is not None and not lead_part.native_id:
+                staged_model = str(lead_part.metadata.get("model", "") or "")
+                staged_unbound_handoff = (lead_prov, staged_model)
+                if staged_model:
+                    self._apply_model_choice(staged_model, quiet=True)
+                else:
+                    self._adopt_session_provider(lead_prov)
+                session_provider = lead_prov
+            else:
+                if tail_leg.model:
+                    self._apply_model_choice(tail_leg.model, quiet=True)
+                elif tail_leg.provider:
+                    self._adopt_session_provider(tail_leg.provider)
+                session_provider = tail_leg.provider or session_provider
             if tail_leg.native_session_id and tail_leg.native_session_id != session.session_id:
                 active_session = MainWindow._session_for_native_binding(
                     session.project,
@@ -5059,7 +5165,14 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             or work_id,
             resume_provider=session_provider,
         )
-        self._next_chat = route.target
+        if staged_unbound_handoff is not None and work_id:
+            self._next_chat = switch_work_participant(
+                stage_work(route.target, work_id),
+                "",
+                "",
+            )
+        else:
+            self._next_chat = route.target
         self._sync_assistant_labels()
         if route.live_driver is not None:
             # Bound to a live driver — its events drive the view; stop any
@@ -5105,6 +5218,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             and callable(set_composite)
             and (
                 len(continuity_legs) > 1
+                or staged_unbound_handoff is not None
                 or any(leg.handoff_from_leg_seq for leg in continuity_legs)
             )
         ):
@@ -5112,7 +5226,38 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 continuity_legs,
                 cwd=session.project.cwd,
             )
+            if staged_unbound_handoff is not None and coordinator is not None:
+                st_prov, st_model = staged_unbound_handoff
+                tail_leg = continuity_legs[-1]
+                preview_manifest = coordinator.preview_continuity_manifest(
+                    work_id,
+                    st_prov,
+                    model=st_model,
+                    goal=session_goals.get_goal(work_id),
+                )
+                now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                staged_boundary = HandoffBoundary(
+                    leg_seq=len(continuity_legs) + 1,
+                    from_provider=tail_leg.provider,
+                    from_model=tail_leg.model,
+                    to_provider=st_prov,
+                    to_model=st_model,
+                    capsule_manifest=preview_manifest,
+                    created_at=now_iso,
+                )
+                composite = dataclasses.replace(
+                    composite,
+                    items=(*composite.items, staged_boundary),
+                )
             set_composite(active_session, composite)
+            if staged_unbound_handoff is not None:
+                st_prov, st_model = staged_unbound_handoff
+                self._transcript.set_active_assistant(
+                    st_prov,
+                    st_model,
+                    session_id="",
+                    cwd=session.project.cwd,
+                )
         else:
             self._transcript.set_session(active_session)
         self._refresh_goal_strip()
@@ -5906,11 +6051,24 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         )
         if work_live is not None:
             if continuity_active:
-                if current_participant is not None:
-                    tag_driver(work_live, current_participant)
-                self._bind_visible_driver(work_live)
-                self._stop_following()
-                return True
+                stale_wl = MainWindow._driver_model_is_stale(self, work_live)
+                in_place_wl = callable(getattr(work_live, "set_model", None))
+                if stale_wl and not in_place_wl:
+                    try:
+                        work_live.end_input()
+                    except Exception:
+                        pass
+                else:
+                    if current_participant is not None:
+                        tag_driver(work_live, current_participant)
+                    self._bind_visible_driver(work_live)
+                    self._stop_following()
+                    if stale_wl:
+                        self._try_live_model_change(
+                            self._model,
+                            human_model_label(self._selected_provider(), self._model),
+                        )
+                    return True
             work_live_session_id = str(
                 getattr(work_live, "session_id", "")
                 or (
@@ -5950,9 +6108,22 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 if current_participant is not None:
                     tag_driver(live, current_participant)
                 if continuity_active:
-                    self._bind_visible_driver(live)
-                    self._stop_following()
-                    return True
+                    stale_lv = MainWindow._driver_model_is_stale(self, live)
+                    in_place_lv = callable(getattr(live, "set_model", None))
+                    if stale_lv and not in_place_lv:
+                        try:
+                            live.end_input()
+                        except Exception:
+                            pass
+                    else:
+                        self._bind_visible_driver(live)
+                        self._stop_following()
+                        if stale_lv:
+                            self._try_live_model_change(
+                                self._model,
+                                human_model_label(self._selected_provider(), self._model),
+                            )
+                        return True
                 if self._sessions.reveal_session(target.resume_id):
                     return True
                 MainWindow._show_native_execution_binding(
@@ -6538,11 +6709,16 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
 
         if driver is None:
             return False
-        return (
-            driver in getattr(self, "_permission_changes", {})
-            or driver in getattr(self, "_effort_changes", {})
-            or driver in getattr(self, "_workflow_changes", {})
-        )
+        try:
+            tracked = (
+                driver in getattr(self, "_permission_changes", {})
+                or driver in getattr(self, "_effort_changes", {})
+                or driver in getattr(self, "_workflow_changes", {})
+                or driver in getattr(self, "_model_changes", {})
+            )
+        except TypeError:
+            tracked = False
+        return tracked or bool(getattr(driver, "model_change_pending", False))
 
     def _checkpoint_dispatch_for(self, drv) -> _CheckpointDispatch | None:
         """Return the current unsent checkpoint dispatch for ``drv``."""

@@ -18,6 +18,7 @@ import base64
 import hashlib
 import os
 import re
+import stat
 import tempfile
 import time
 from collections.abc import Sequence
@@ -51,34 +52,87 @@ _CONTINUITY_MEDIA_MAX_FILES = 200
 _MENTION = re.compile(r'@"((?:[^"\\]|\\.)*)"|@([^\s"]+)')
 
 
+def _sniff_image_media_type(data: bytes) -> str:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
 def mentioned_images(text: str) -> list[tuple[str, str]]:
-    """``(path, media_type)`` for each existing absolute image file referenced
-    with ``@``, in order, once each."""
+    """``(path, media_type)`` for each existing absolute regular image file
+    referenced with ``@``, in order, once each."""
     found: list[tuple[str, str]] = []
     for quoted, bare in _MENTION.findall(text or ""):
         # A bare reference ends at whitespace, so prose punctuation sticks to
         # it ("…in @/a/shot.png?"); a quoted one is exact.
         path = re.sub(r"\\(.)", r"\1", quoted) if quoted else bare.rstrip(".,;:!?)]}'")
         media = IMAGE_TYPES.get(os.path.splitext(path)[1].lower())
-        if not media or not os.path.isabs(path) or not os.path.isfile(path):
+        if (
+            not media
+            or not os.path.isabs(path)
+            or os.path.islink(path)
+            or not os.path.isfile(path)
+        ):
             continue
         if path not in (p for p, _ in found):
             found.append((path, media))
     return found
 
 
-def _read_raw_checked(path: str) -> bytes | None:
+def _read_regular_bytes_no_follow(
+    path: str,
+    max_bytes: int,
+    *,
+    allow_empty: bool = False,
+    log_oversize_image: bool = False,
+) -> bytes | None:
+    if not path or not os.path.isabs(path):
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
-        if os.path.getsize(path) > MAX_IMAGE_BYTES:
-            _log.info("image over %d bytes stays a text reference: %s", MAX_IMAGE_BYTES, path)
-            return None
-        with open(path, "rb") as fh:
-            data = fh.read(MAX_IMAGE_BYTES + 1)
-        if not data or len(data) > MAX_IMAGE_BYTES:
+        fd = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        with os.fdopen(fd, "rb") as fh:
+            info = os.fstat(fh.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                return None
+            if info.st_size < 0 or (not allow_empty and info.st_size == 0):
+                return None
+            if info.st_size > max_bytes:
+                if log_oversize_image:
+                    _log.info("image over %d bytes stays a text reference: %s", max_bytes, path)
+                return None
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                piece = fh.read(min(65536, max_bytes + 1 - total))
+                if not piece:
+                    break
+                chunks.append(piece)
+                total += len(piece)
+                if total > max_bytes:
+                    return None
+        data = b"".join(chunks)
+        if not allow_empty and not data:
             return None
         return data
     except OSError:
         return None
+
+
+def _read_raw_checked(path: str) -> bytes | None:
+    data = _read_regular_bytes_no_follow(path, MAX_IMAGE_BYTES, log_oversize_image=True)
+    if data is None or not _sniff_image_media_type(data):
+        return None
+    return data
 
 
 def _b64(path: str) -> str | None:
@@ -247,16 +301,18 @@ def kimi_blocks(text: str, *, carryover: Sequence[Any] = ()) -> list[dict]:
     seen: set[str] = set()
     for quoted, bare in _MENTION.findall(text or ""):
         path = re.sub(r"\\(.)", r"\1", quoted) if quoted else bare.rstrip(".,;:!?)]}'")
-        if path in seen or path in images or not os.path.isabs(path) or not os.path.isfile(path):
+        if path in seen or path in images or not os.path.isabs(path):
             continue
         seen.add(path)
+        # Rejected image extensions (symlinks, forged bytes, >5 MB) NEVER fall through to text reads.
+        if os.path.splitext(path)[1].lower() in IMAGE_TYPES:
+            continue
+        raw_text = _read_regular_bytes_no_follow(path, 1024 * 1024, allow_empty=True)
+        if raw_text is None:
+            continue
         try:
-            if os.path.getsize(path) > 1024 * 1024:
-                continue
-            with open(path, "rb") as fh:
-                raw_text = fh.read()
             content = raw_text.decode("utf-8")
-        except (OSError, UnicodeDecodeError):
+        except UnicodeDecodeError:
             continue
         blocks.append({"type": "resource", "resource": {
             "uri": f"file://{path}", "mimeType": "text/plain", "text": content,
@@ -356,9 +412,28 @@ def persist_reference_attachment(
     """Copy a reference image into the Work artifact store and link it to ProductBrief."""
 
     src = Path(path)
-    ext = src.suffix.lower()
-    media = IMAGE_TYPES.get(ext, "application/octet-stream")
-    data = src.read_bytes()
+    if src.is_symlink():
+        raise ValueError(f"reference attachment cannot be a symlink: {src}")
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(src, flags)
+    except OSError as exc:
+        raise ValueError(f"could not open reference attachment: {src}") from exc
+    with os.fdopen(fd, "rb") as fh:
+        info = os.fstat(fh.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"reference attachment must be a regular file: {src}")
+        if info.st_size <= 0 or info.st_size > MAX_IMAGE_BYTES:
+            raise ValueError(
+                f"reference attachment size {info.st_size} outside 1..{MAX_IMAGE_BYTES}: {src}"
+            )
+        data = fh.read(MAX_IMAGE_BYTES + 1)
+    if not data or len(data) > MAX_IMAGE_BYTES:
+        raise ValueError(f"reference attachment exceeds {MAX_IMAGE_BYTES} bytes: {src}")
+    sniffed = _sniff_image_media_type(data)
+    if not sniffed:
+        raise ValueError(f"reference attachment is not a supported image format: {src}")
+    media = sniffed
     # Keep Artifact.metadata deterministic across duplicate registrations of the
     # same image bytes; per-message role/caption live on ReferenceArtifactRef.
     artifact = store.publish_artifact(
