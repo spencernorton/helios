@@ -3131,7 +3131,27 @@ class WorkStore:
             ).fetchone()
             if active_row is not None:
                 active = _native_binding(active_row)
-                if not model or not active.model or active.model == model:
+                effective_active_model = active.model
+                if not effective_active_model and active.native_id:
+                    leg_m_row = conn.execute(
+                        """
+                        SELECT model FROM work_legs
+                        WHERE work_id = ? AND provider = ? AND native_session_id = ?
+                          AND model <> ''
+                        ORDER BY leg_seq ASC LIMIT 1
+                        """,
+                        (work_id, provider, active.native_id),
+                    ).fetchone()
+                    if leg_m_row is not None:
+                        effective_active_model = str(leg_m_row["model"] or "")
+                # Google conversations are model-immutable: never stamp an arbitrary
+                # requested model onto an active Google binding whose original model is unknown.
+                can_reuse_active = (
+                    not model
+                    or effective_active_model == model
+                    or (not effective_active_model and (provider != "google" or not active.native_id))
+                )
+                if can_reuse_active:
                     if model and active.model != model:
                         conn.execute(
                             "UPDATE native_bindings SET model = ? WHERE binding_id = ?",
@@ -3213,6 +3233,52 @@ class WorkStore:
                         _participant(self._participant_row(conn, current.participant_id)),
                         refreshed_binding,
                     )
+
+            if active_row is not None and model:
+                active = _native_binding(active_row)
+                if active.model != model:
+                    if provider == "google":
+                        conn.execute(
+                            """
+                            UPDATE native_bindings
+                            SET status = 'retired', retired_at = ?
+                            WHERE participant_id = ? AND status = 'active'
+                            """,
+                            (now, current.participant_id),
+                        )
+                        next_gen = (
+                            current.generation + 1
+                            if current.native_id
+                            else current.generation
+                        )
+                        conn.execute(
+                            """
+                            UPDATE participants
+                            SET native_session_id = '', native_thread_id = '',
+                                role = ?, generation = ?, last_event_seq = 0,
+                                metadata_json = ?, updated_at = ?
+                            WHERE participant_id = ?
+                            """,
+                            (
+                                role,
+                                next_gen,
+                                _json(new_meta),
+                                now,
+                                current.participant_id,
+                            ),
+                        )
+                        return (
+                            _participant(self._participant_row(conn, current.participant_id)),
+                            None,
+                        )
+                    conn.execute(
+                        "UPDATE native_bindings SET model = ? WHERE binding_id = ?",
+                        (model, active.binding_id),
+                    )
+                    active_row = conn.execute(
+                        "SELECT * FROM native_bindings WHERE binding_id = ?",
+                        (active.binding_id,),
+                    ).fetchone()
 
             conn.execute(
                 "UPDATE participants SET role = ?, metadata_json = ?, updated_at = ? WHERE participant_id = ?",
@@ -4473,6 +4539,42 @@ class WorkStore:
                     "ALTER TABLE native_bindings ADD COLUMN capsule_manifest_json "
                     "TEXT NOT NULL DEFAULT '{}'"
                 )
+            conn.execute(
+                """
+                UPDATE native_bindings
+                SET model = COALESCE(
+                    (
+                        SELECT wl.model
+                        FROM work_legs wl
+                        WHERE wl.participant_id = native_bindings.participant_id
+                          AND (
+                              wl.binding_id = native_bindings.binding_id
+                              OR (
+                                  native_bindings.native_id <> ''
+                                  AND wl.native_session_id = native_bindings.native_id
+                              )
+                          )
+                          AND wl.model <> ''
+                        ORDER BY wl.leg_seq DESC
+                        LIMIT 1
+                    ),
+                    (
+                        SELECT json_extract(p.metadata_json, '$.model')
+                        FROM participants p
+                        WHERE p.participant_id = native_bindings.participant_id
+                          AND p.generation = native_bindings.generation
+                          AND native_bindings.native_id <> ''
+                          AND (
+                              p.native_session_id = native_bindings.native_id
+                              OR p.native_thread_id = native_bindings.native_id
+                          )
+                          AND COALESCE(json_extract(p.metadata_json, '$.model'), '') <> ''
+                    ),
+                    ''
+                )
+                WHERE model = ''
+                """
+            )
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             conn.execute("COMMIT")
         except Exception:

@@ -812,6 +812,31 @@ class TranscriptView(Gtk.Box):
         divider when zero turns occurred since the prior model pick."""
         if self._destroyed:
             return None
+        bulk_items = getattr(self, "_bulk_render_items", None)
+        bulk_idx = int(getattr(self, "_bulk_render_idx", 0))
+        if self._bulk_loading and isinstance(bulk_items, list) and bulk_idx < len(bulk_items):
+            if bulk_items and isinstance(bulk_items[-1], HandoffBoundary):
+                prev_b = bulk_items.pop()
+                if (
+                    boundary.to_provider == prev_b.from_provider
+                    and boundary.to_model == prev_b.from_model
+                ):
+                    prefix = tuple(self._composite_items[: self._history_start_index]) if self._composite_items else ()
+                    self._composite_items = prefix + tuple(bulk_items)
+                    return None
+                boundary = HandoffBoundary(
+                    leg_seq=boundary.leg_seq or prev_b.leg_seq,
+                    from_provider=prev_b.from_provider,
+                    from_model=prev_b.from_model,
+                    to_provider=boundary.to_provider,
+                    to_model=boundary.to_model,
+                    capsule_manifest=dict(boundary.capsule_manifest),
+                    created_at=boundary.created_at,
+                )
+            bulk_items.append(boundary)
+            prefix = tuple(self._composite_items[: self._history_start_index]) if self._composite_items else ()
+            self._composite_items = prefix + tuple(bulk_items)
+            return None
         tail = self._list.get_last_child()
         while isinstance(tail, _QueuedRow):
             tail = tail.get_prev_sibling()
@@ -861,6 +886,24 @@ class TranscriptView(Gtk.Box):
         """Populate the most recent HandoffDividerRow with its compiled capsule manifest."""
         if self._destroyed or not manifest:
             return False
+        bulk_items = getattr(self, "_bulk_render_items", None)
+        bulk_idx = int(getattr(self, "_bulk_render_idx", 0))
+        if self._bulk_loading and isinstance(bulk_items, list) and bulk_idx < len(bulk_items):
+            for idx in range(len(bulk_items) - 1, bulk_idx - 1, -1):
+                cand = bulk_items[idx]
+                if isinstance(cand, HandoffBoundary):
+                    bulk_items[idx] = HandoffBoundary(
+                        leg_seq=cand.leg_seq,
+                        from_provider=cand.from_provider,
+                        from_model=cand.from_model,
+                        to_provider=cand.to_provider,
+                        to_model=cand.to_model,
+                        capsule_manifest=dict(manifest),
+                        created_at=cand.created_at,
+                    )
+                    prefix = tuple(self._composite_items[: self._history_start_index]) if self._composite_items else ()
+                    self._composite_items = prefix + tuple(bulk_items)
+                    return True
         child = self._list.get_last_child()
         while child is not None:
             if isinstance(child, HandoffDividerRow):
@@ -907,6 +950,8 @@ class TranscriptView(Gtk.Box):
             or self._bulk_loading
             or self._streaming_bubble is not None
         ):
+            return 0
+        if self._composite_items is not None and self._follow_path is None:
             return 0
         follow_path = self._follow_path or self._session.path
         tail = read_transcript_since(follow_path, self._follow_offset)
@@ -1009,8 +1054,9 @@ class TranscriptView(Gtk.Box):
 
         # Render the initial tail lazily in idle batches — keeps the UI
         # responsive while the recent transcript appears.
-        iterator = iter(turns[self._history_start_index:])
-        self._render_batch(iterator, token, first=True)
+        self._bulk_render_items = list(turns[self._history_start_index:])
+        self._bulk_render_idx = 0
+        self._render_batch(None, token, first=True)
 
     def set_composite_session(
         self,
@@ -1024,7 +1070,7 @@ class TranscriptView(Gtk.Box):
         token = self._render_token
         self._session = session
         self._composite_items = composite.items
-        self._follow_path = composite.tail_path or session.path
+        self._follow_path = composite.tail_path
         tail_leg = composite.tail_leg
         if tail_leg is not None and tail_leg.provider:
             self._assistant_label = _assistant_name(tail_leg.provider)
@@ -1066,8 +1112,9 @@ class TranscriptView(Gtk.Box):
         if self._history_start_index > 0:
             self._prepend_load_earlier_row()
 
-        iterator = iter(items[self._history_start_index:])
-        self._render_batch(iterator, token, first=True)
+        self._bulk_render_items = list(items[self._history_start_index:])
+        self._bulk_render_idx = 0
+        self._render_batch(None, token, first=True)
 
     def _set_loading(self, loading: bool) -> None:
         """Hide/reveal the transcript list around a bulk load. CSS fades the
@@ -1094,12 +1141,21 @@ class TranscriptView(Gtk.Box):
             return False  # stop — session changed
         BATCH = 8
         finished = False
+        bulk_items = getattr(self, "_bulk_render_items", None)
         for _ in range(BATCH):
-            try:
-                item = next(iterator)
-            except StopIteration:
-                finished = True
-                break
+            if iterator is not None:
+                try:
+                    item = next(iterator)
+                except StopIteration:
+                    finished = True
+                    break
+            else:
+                idx = int(getattr(self, "_bulk_render_idx", 0))
+                if not isinstance(bulk_items, list) or idx >= len(bulk_items):
+                    finished = True
+                    break
+                item = bulk_items[idx]
+                self._bulk_render_idx = idx + 1
             if isinstance(item, HandoffBoundary):
                 self.append_handoff_divider(item, animate_in=False)
             else:

@@ -232,29 +232,61 @@ def extract_media_paths(text: str) -> list[str]:
     return found
 
 
-def _verified_carryover_candidate(candidate: Path) -> bool:
+def _verified_carryover_candidate(
+    candidate: Path,
+    *,
+    artifact_roots: Sequence[Path] = (),
+) -> bool:
     if not candidate.is_absolute() or candidate.is_symlink():
         return False
     sdir = state_dir()
-    if _ancestor_has_symlink(candidate.parent, sdir):
-        return False
     try:
         resolved_parent = candidate.parent.resolve(strict=True)
-        media_dir = _media_root()
-        if media_dir.exists() and not _ancestor_has_symlink(media_dir, sdir):
-            if resolved_parent == media_dir.resolve(strict=True):
-                return True
-        works_dir = sdir / "works"
-        if works_dir.exists() and not _ancestor_has_symlink(works_dir, sdir):
-            resolved_works = works_dir.resolve(strict=True)
-            if resolved_parent.name == "artifacts" and resolved_parent.parent.parent == resolved_works:
-                return True
     except OSError:
         return False
+
+    if not _ancestor_has_symlink(candidate.parent, sdir):
+        try:
+            media_dir = _media_root()
+            if media_dir.exists() and not _ancestor_has_symlink(media_dir, sdir):
+                if resolved_parent == media_dir.resolve(strict=True):
+                    return True
+        except OSError:
+            pass
+
+    seen_roots: list[tuple[Path, Path]] = [
+        (sdir / "work", sdir),
+        (sdir / "works", sdir),
+    ]
+    for extra in artifact_roots:
+        if extra:
+            ep = Path(extra)
+            seen_roots.append((ep, ep))
+
+    for wroot, stop_root in seen_roots:
+        try:
+            if not wroot.exists() or wroot.is_symlink():
+                continue
+            if _ancestor_has_symlink(wroot, stop_root):
+                continue
+            if _ancestor_has_symlink(candidate.parent, wroot):
+                continue
+            resolved_wroot = wroot.resolve(strict=True)
+            if (
+                resolved_parent.name == "artifacts"
+                and resolved_parent.parent.parent == resolved_wroot
+            ):
+                return True
+        except OSError:
+            continue
     return False
 
 
-def load_carryover_images(paths: Iterable[str]) -> tuple[CarryoverImage, ...]:
+def load_carryover_images(
+    paths: Iterable[str],
+    *,
+    artifact_roots: Sequence[Path] = (),
+) -> tuple[CarryoverImage, ...]:
     """Safely read verified ``~/.helios/media`` or Work artifact images into immutable memory."""
 
     loaded: list[CarryoverImage] = []
@@ -268,7 +300,7 @@ def load_carryover_images(paths: Iterable[str]) -> tuple[CarryoverImage, ...]:
         if not isinstance(raw_path, str) or not raw_path:
             continue
         candidate = Path(raw_path)
-        if not _verified_carryover_candidate(candidate):
+        if not _verified_carryover_candidate(candidate, artifact_roots=artifact_roots):
             continue
         try:
             fd = os.open(candidate, open_flags)
@@ -471,6 +503,9 @@ def _normalize_ledger_records(
     target_participant_id: str,
     target_generation: int,
     target_binding_id: str = "",
+    target_is_initial_leg: bool = False,
+    work_id: str = "",
+    artifact_roots: Sequence[Path] = (),
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Normalize all history records and filter foreign unseen delta records."""
     all_records: list[dict[str, Any]] = []
@@ -530,6 +565,31 @@ def _normalize_ledger_records(
             for p in (payload.get("image_paths") or [])
             if isinstance(p, str) and p
         ]
+        if (
+            etype == "artifact.recorded"
+            and work_id
+            and str(payload.get("media_type", "") or "").startswith("image/")
+        ):
+            digest_str = str(payload.get("digest", "") or "")
+            if digest_str.startswith("sha256:"):
+                dhex = digest_str[7:]
+                if len(dhex) == 64 and all(ch in "0123456789abcdef" for ch in dhex):
+                    sdir_now = state_dir()
+                    cand_roots = [
+                        sdir_now / "work",
+                        sdir_now / "works",
+                        *(Path(r) for r in artifact_roots if r),
+                    ]
+                    for wroot in cand_roots:
+                        apath = wroot / work_id / "artifacts" / dhex
+                        try:
+                            if not apath.is_symlink() and apath.is_file():
+                                astr = str(apath)
+                                if astr not in image_paths:
+                                    image_paths.append(astr)
+                                break
+                        except OSError:
+                            continue
 
         if not clean_text and not touched and not commands and not image_paths:
             continue
@@ -563,8 +623,8 @@ def _normalize_ledger_records(
                     )
                     or (
                         rec["emitting_generation"] == 0
-                        and target_generation == 1
                         and bool(target_binding_id)
+                        and (target_generation == 1 or target_is_initial_leg)
                     )
                 )
             )
@@ -587,30 +647,52 @@ def compile_continuity_capsule(
     to_provider: str,
     to_model: str,
     target_binding_id: str = "",
+    target_native_id: str = "",
     from_provider: str = "",
     from_model: str = "",
     prior_legs: Sequence[Any] = (),
     product_brief_context: str = "",
     brief_artifact_paths: Sequence[str] = (),
+    artifact_roots: Sequence[Path] = (),
     max_chars: int = MAX_CAPSULE_CHARS,
 ) -> CompiledContinuityCapsule:
     """Compile a deterministic, bounded ``HELIOS_CONTINUITY_CAPSULE_V1`` packet."""
+    work_id_str = str(getattr(work, "work_id", "") or "")
+    init_leg = prior_legs[0] if prior_legs else None
+    init_nid = str(getattr(init_leg, "native_session_id", "") or "") if init_leg is not None else ""
+    target_is_initial_leg = bool(
+        init_leg is not None
+        and getattr(init_leg, "handoff_from_leg_seq", None) is None
+        and str(getattr(init_leg, "provider", "") or "") == to_provider
+        and init_nid
+        and target_native_id
+        and init_nid == target_native_id
+    )
     all_records, foreign_all = _normalize_ledger_records(
         all_events,
         target_participant_id=target_participant_id,
         target_generation=target_generation,
         target_binding_id=target_binding_id,
+        target_is_initial_leg=target_is_initial_leg,
+        work_id=work_id_str,
+        artifact_roots=artifact_roots,
     )
     delta_records = [r for r in foreign_all if r["seq"] > baseline_acked_seq]
 
     # Legacy/pre-upgrade session fallback: if no ledger conversation records
     # exist yet, recover scrubbed turns from verified prior leg transcripts.
     if not all_records and baseline_acked_seq == 0 and prior_legs:
+        non_own_legs = [
+            leg
+            for leg in prior_legs
+            if not (target_native_id and str(getattr(leg, "native_session_id", "") or "") == target_native_id)
+        ]
         recovered = _recover_turns_from_prior_legs(
-            prior_legs,
+            non_own_legs,
             cwd=str(getattr(work, "cwd", "") or ""),
         )
         all_records = recovered
+        foreign_all = list(recovered)
         delta_records = list(recovered)
 
     if not delta_records:
@@ -638,7 +720,7 @@ def compile_continuity_capsule(
     decisions: list[dict[str, Any]] = []
     candidate_media_paths: list[str] = []
 
-    core_records = all_records if baseline_acked_seq <= 0 else delta_records
+    core_records = foreign_all if baseline_acked_seq <= 0 else delta_records
     for rec in core_records:
         if (
             baseline_acked_seq <= 0
@@ -680,7 +762,7 @@ def compile_continuity_capsule(
         for bpath in brief_artifact_paths:
             if isinstance(bpath, str) and bpath and bpath not in candidate_media_paths:
                 candidate_media_paths.append(bpath)
-    carryover_images = load_carryover_images(reversed(candidate_media_paths))
+    carryover_images = load_carryover_images(reversed(candidate_media_paths), artifact_roots=artifact_roots)
     carryover_images = tuple(reversed(carryover_images))
 
     objective_str, _ = _scrub(

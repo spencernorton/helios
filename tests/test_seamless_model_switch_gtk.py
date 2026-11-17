@@ -15,6 +15,9 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import GLib, Gtk  # noqa: E402
 
+if not Gtk.init_check():
+    pytest.skip("GTK display unavailable", allow_module_level=True)
+
 from helios.backend import (  # noqa: E402
     conversation_perms,
     model_catalog,

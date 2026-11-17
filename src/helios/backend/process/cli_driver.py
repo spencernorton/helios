@@ -86,7 +86,7 @@ from helios.backend.project_perms import (
     execution_mode_restriction_reason,
 )
 from helios.backend.router_client import dispatch_available, router_socket_path
-from helios.backend import browser_tools
+from helios.backend import browser_tools, model_catalog
 from helios.backend.router_tools import (
     claude_mcp_config,
     router_mcp_launcher_path,
@@ -301,7 +301,7 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
     ) -> None:
         super().__init__()
         self._cwd = cwd
-        self._model = model
+        self._model = model_catalog.canonical_model_id(model)
         # `_model` is overwritten by system/init with the resolved id, which
         # drops the `[1m]` marker. Keep the requested alias for window sizing.
         self._requested_model = model
@@ -554,6 +554,10 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
         ):
             return "off"
         return self._effort or ""
+
+    @property
+    def model_change_pending(self) -> bool:
+        return bool(self._model_change_pending)
 
     @property
     def execution_restart_required(self) -> bool:
@@ -1362,6 +1366,7 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
                 "the Claude process is not accepting input",
             )
             return False
+        model = model_catalog.canonical_model_id(model)
         if self._model_change_pending:
             self._notify_execution_callback(
                 callback,

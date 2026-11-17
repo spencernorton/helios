@@ -166,7 +166,8 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
         GObject.Object.__init__(self)
         self._init_user_queue()
         self._cwd = cwd
-        self._model = model
+        self._model = model_catalog.canonical_model_id(model)
+        self._model_change_fenced_reason = ""
         self._effort = effort
         self._permission_mode = effective_execution_mode(permission_mode, cwd, provider=self.provider)
         self._resume_session_id = resume_session_id or ""
@@ -316,11 +317,19 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
             return False
         return self._set_config("mode", native, callback)
 
-    def set_model(self, model: str, callback=None) -> bool:
-        if not isinstance(model, str) or not model.startswith("kimi-code/"):
+    @property
+    def model_change_pending(self) -> bool:
+        return any(cfg == "model" for cfg, _val, _cb in self._setting_changes.values())
+
+    def set_model(self, model: str, callback=None, *, force: bool = False) -> bool:
+        model = model_catalog.canonical_model_id(model) if isinstance(model, str) else ""
+        if not model or not model.startswith("kimi-code/"):
             self._notify(callback, False, "unknown Kimi model")
             return False
-        if model == self._model:
+        if self.model_change_pending:
+            self._notify(callback, False, "another model change is pending")
+            return False
+        if not force and not self._model_change_fenced_reason and model == self._model:
             self._notify(callback, True)
             return True
         return self._set_config("model", model, callback)
@@ -421,9 +430,21 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
         thinking = kimi_env._option(self._config_options, "thought_level")
         requested_model = self._model
         requested_effort = self._effort
-        if self._resume_session_id:
-            self._model = str(model.get("currentValue") or self._model)
-            self._effort = str(thinking.get("currentValue") or self._effort)
+        reported_model = str(model.get("currentValue") or "")
+        reported_effort = str(thinking.get("currentValue") or "")
+        if reported_model:
+            self._model = reported_model
+        if self._resume_session_id and reported_effort and not requested_effort:
+            self._effort = reported_effort
+        needs_model_switch = bool(
+            requested_model
+            and requested_model.startswith("kimi-code/")
+            and (
+                (reported_model and requested_model != reported_model)
+                or (bool(self._resume_session_id) and not reported_model)
+            )
+        )
+        announced_model = requested_model if needs_model_switch else self._model
         self.init_tools = ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "WebSearch", "Agent"]
         self.init_mcp_servers = [{"name": str(row.get("name")), "status": "configured"}
                                  for row in self._mcp_servers]
@@ -431,15 +452,50 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
         self._accepting_input = True
         pending, self._startup_pending_text = self._startup_pending_text, None
         self._is_busy = False
-        self.emit("session-started", sid, self._cwd, self._model)
+        self.emit("session-started", sid, self._cwd, announced_model)
         self.emit("capabilities-updated", {"tools": list(self.init_tools),
                   "mcp_servers": list(self.init_mcp_servers), "config_options": copy.deepcopy(self._config_options)})
         if not self._resume_session_id:
-            if requested_model != model.get("currentValue"):
-                self.set_model(requested_model)
-            if requested_effort and requested_effort != thinking.get("currentValue"):
+            if requested_effort and requested_effort != reported_effort:
                 self.set_effort(requested_effort)
             self._send("session/set_mode", {"sessionId": sid, "modeId": _MODES.get(self._permission_mode, "default")})
+        def _fence_startup_model_refusal(detail: str) -> None:
+            sfx = f": {detail}" if detail else "."
+            msg = f"Kimi refused model {requested_model}{sfx}"
+            self._helios_requested_model = self._model
+            self._model_change_fenced_reason = msg
+            self.end_input()
+            self.emit("error", msg)
+
+        if needs_model_switch and pending:
+            def _after_startup_model(ok: bool, detail: str) -> None:
+                self._is_busy = False
+                if self._stopped or self._accounting_failed:
+                    return
+                if ok:
+                    self.send_user_text(pending, _reuse_execution_attempt=True)
+                    return
+                if self.execution_attempt_id:
+                    self._finish_execution_with_evidence(ExecutionTerminalEvidence(
+                        evidence_type="local_abort", status="aborted", reason_code="local_abort",
+                        queue_disposition="restored"))
+                _fence_startup_model_refusal(detail)
+
+            sent_switch = self.set_model(
+                requested_model, _after_startup_model, force=not bool(reported_model)
+            )
+            if sent_switch:
+                self._is_busy = True
+            return
+        if needs_model_switch:
+            def _after_idle_startup_model(ok: bool, detail: str) -> None:
+                if self._stopped or self._accounting_failed or ok:
+                    return
+                _fence_startup_model_refusal(detail)
+
+            self.set_model(
+                requested_model, _after_idle_startup_model, force=not bool(reported_model)
+            )
         if pending:
             self.send_user_text(pending, _reuse_execution_attempt=True)
 
@@ -450,6 +506,12 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
             return MessageDelivery("rejected")
         if self._accounting_failed:
             self.emit("error", "Helios could not verify Kimi accounting. New Work remains blocked.")
+            return MessageDelivery("rejected")
+        if getattr(self, "_model_change_fenced_reason", ""):
+            self.emit("error", self._model_change_fenced_reason)
+            return MessageDelivery("rejected")
+        if self.model_change_pending:
+            self.emit("error", "Kimi is still applying the selected model.")
             return MessageDelivery("rejected")
         if self.is_busy and self._startup_pending_text is None:
             self.emit("error", "Kimi is still processing the current turn.")
@@ -589,6 +651,7 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
                 if "error" not in msg:
                     if config_id == "model":
                         self._model = value
+                        self._model_change_fenced_reason = ""
                     elif config_id == "thinking":
                         self._effort = value
                     elif config_id == "mode":

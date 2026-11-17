@@ -26,28 +26,107 @@ def _parse_iso(ts: str) -> datetime | None:
         return None
 
 
+_KIMI_SLUG_LABELS: dict[str, str] = {
+    "kimi-for-coding": "K2.8 Preview",
+}
+_ACRONYM_TOKENS: dict[str, str] = {
+    "gpt": "GPT",
+    "ai": "AI",
+    "vl": "VL",
+    "r1": "R1",
+    "r2": "R2",
+    "v2": "V2",
+    "v3": "V3",
+    "1m": "1M",
+    "deepseek": "DeepSeek",
+}
+
+
+def _cached_catalog_label(model_id: str) -> str:
+    """Non-blocking lookup against already-cached runtime catalog entries."""
+    try:
+        if model_id.startswith("kimi-code/"):
+            entries, _ = model_catalog.kimi_entries(cached_only=True)
+        elif model_id.startswith(("gemini-", "agy")):
+            entries, _ = model_catalog.google_entries(cached_only=True)
+        elif model_id.startswith(("muse-", "muse_")):
+            entries, _ = model_catalog.muse_entries(cached_only=True)
+        else:
+            return ""
+        for entry in entries:
+            if entry.id == model_id and entry.label and entry.label != model_id:
+                return entry.label
+    except Exception:
+        return ""
+    return ""
+
+
+def _humanize_slug_tokens(slug: str) -> str:
+    tokens = [t for t in slug.replace("_", "-").split("-") if t]
+    out: list[str] = []
+    for tok in tokens:
+        low = tok.casefold()
+        if low in _ACRONYM_TOKENS:
+            out.append(_ACRONYM_TOKENS[low])
+        elif len(tok) >= 2 and tok[0].casefold() in {"k", "v", "r", "o"} and tok[1].isdigit():
+            out.append(tok[0].upper() + tok[1:])
+        elif tok[0].isalpha() and tok == tok.lower():
+            out.append(tok.capitalize())
+        else:
+            out.append(tok)
+    return " ".join(out)
+
+
 def compact_model_chip(model: str) -> str:
     """Short human-readable chip label for a per-turn model badge."""
     raw = str(model or "").strip()
     if not raw:
         return ""
-    if raw.startswith("google:"):
-        raw = raw.split(":", 1)[1].strip()
+    if ":" in raw:
+        prefix, _sep, rest = raw.partition(":")
+        if prefix.casefold() in model_catalog._EXPLICIT_PROVIDER_PREFIXES and rest.strip():
+            raw = rest.strip()
+
+    cached = _cached_catalog_label(raw)
+    if cached:
+        return cached
+
+    if raw.startswith("kimi-code/"):
+        tail = raw.partition("/")[2].strip()
+        if tail in _KIMI_SLUG_LABELS:
+            return _KIMI_SLUG_LABELS[tail]
+        if tail:
+            return _humanize_slug_tokens(tail)
+
     if "/" in raw:
         _vendor, _sep, tail = raw.partition("/")
-        raw = tail or raw
+        raw = tail.split(":", 1)[0].strip() or tail or raw
+        for entry in model_catalog.FALLBACK_OPENROUTER:
+            if entry.id.endswith("/" + raw):
+                return entry.label
+        if "-" in raw and raw == raw.lower():
+            chip_or = _humanize_slug_tokens(raw)
+            return chip_or[:33] + "..." if len(chip_or) > 36 else chip_or
+
+    low = raw.casefold()
+    if low.endswith("[1m]"):
+        fam = low[:-4].strip()
+        if fam.isalpha() and 3 <= len(fam) <= 16:
+            return f"{fam.capitalize()} 1M"
+    if low in model_catalog.KNOWN_FAMILIES:
+        return low.capitalize()
+
     if raw.startswith("gpt-"):
         return model_catalog._openai_label(raw)
-    if raw.startswith("gemini-"):
-        parts = raw.split("-")
-        return " ".join(
-            p.upper() if p in {"pro", "flash"} and len(p) <= 3 else p.capitalize()
-            for p in parts
-        )
+    if raw.startswith(("gemini-", "agy-")):
+        return _humanize_slug_tokens(raw)
+    if raw.startswith(("muse-", "muse_")):
+        return _humanize_slug_tokens(raw)
     if raw.startswith("claude-"):
         parsed = model_catalog._parse_pinned(raw)
         if parsed is not None:
             return model_catalog._label_for_pinned(parsed)
+        return _humanize_slug_tokens(raw.removeprefix("claude-"))
     if len(raw) > 36:
         return raw[:33] + "..."
     return raw
@@ -66,10 +145,14 @@ def human_model_label(provider: str, model: str) -> str:
     prov_lower = prov_label.casefold()
     if prov_lower in chip_lower or (provider == "openai" and chip_lower.startswith("gpt")):
         return chip
-    if provider == "anthropic" and any(
-        fam in chip_lower for fam in ("opus", "sonnet", "haiku", "fable")
-    ):
+    if provider == "anthropic":
         return f"Claude {chip}" if not chip_lower.startswith("claude") else chip
+    if provider == "kimi":
+        return f"Kimi {chip}" if "kimi" not in chip_lower else chip
+    if provider == "muse":
+        return f"Muse {chip}" if "muse" not in chip_lower else chip
+    if provider == "google" and "gemini" not in chip_lower and "google" not in chip_lower:
+        return f"Gemini {chip}"
     if provider == "openrouter":
         return f"{chip} (OpenRouter)"
     return chip
