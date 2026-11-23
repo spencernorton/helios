@@ -115,6 +115,7 @@ from helios.backend.project_perms import (
     sanitize_global_default,
 )
 from helios.backend.ui_state import (
+    DEFAULT_MODEL_KEY,
     configured_default_cwd,
     default_cwd,
     migrate_effort_level,
@@ -329,6 +330,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
     # down first. Busy drivers are never evicted, so the cap can be exceeded
     # transiently when everything is genuinely working.
     _MAX_LIVE_DRIVERS = 4
+    _MAX_LIVE_GOOGLE_DRIVERS = 4
 
     @property
     def _driver(self):
@@ -413,6 +415,10 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             max_live=self._MAX_LIVE_DRIVERS,
             idle_seconds=self._IDLE_REAP_SECONDS,
             on_live_ids_changed=self._set_live_session_ids,
+            has_pending_dispatch=lambda driver: (
+                MainWindow._checkpoint_dispatch_pending_for(self, driver)
+                or MainWindow._execution_change_pending_for(self, driver)
+            ),
             log=_log,
         )
         # Provider-neutral durable identity.  This embedded coordinator is the
@@ -558,7 +564,13 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         self._pending_switch_qid_seq = -1
         # Default to the latest Fable with 1M context. The `fable` alias tracks
         # the newest Fable automatically, so this stays current as models ship.
-        self._model = self._ui_state.get("model", DEFAULT_MODEL) or DEFAULT_MODEL
+        # The Settings default (when configured) owns the first fresh chat;
+        # otherwise fall back to the last model used.
+        self._model = self._ui_state.get(
+            DEFAULT_MODEL_KEY, self._ui_state.get("model", DEFAULT_MODEL)
+        )
+        if not isinstance(self._model, str):
+            self._model = DEFAULT_MODEL
         self._effort_key: str = migrate_effort_level(self._ui_state)
         _saved_openai_effort = str(
             self._ui_state.get("effort_openai", "") or ""
@@ -1276,20 +1288,6 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         # The worker normally supplies this baseline itself. Retain the same
         # fail-closed behavior for a malformed/empty callback payload so stale
         # GPT choices can never survive an unsuccessful refresh.
-        if not entries:
-            entries = list(model_catalog.FALLBACK_ANTHROPIC)
-        entries = [
-            entry
-            for entry in entries
-            if not (
-                getattr(entry, "provider", model_catalog.PROVIDER_ANTHROPIC)
-                == model_catalog.PROVIDER_ANTHROPIC
-                and (
-                    not str(getattr(entry, "id", "") or "")
-                    or str(getattr(entry, "id", "") or "").endswith("[1m]")
-                )
-            )
-        ]
         if not entries:
             entries = list(model_catalog.FALLBACK_ANTHROPIC)
         self._openai_catalog_authoritative = bool(openai_authoritative)
@@ -2670,7 +2668,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
 
         new_chat_btn = Gtk.Button.new_from_icon_name("document-edit-symbolic")
         new_chat_btn.set_tooltip_text(
-            "New chat with the selected agent (Ctrl+N)"
+            "New chat with the default model (Ctrl+N)"
         )
         new_chat_btn.add_css_class("suggested-action")
         new_chat_btn.connect("clicked", lambda *_: self._start_new_chat())
@@ -3626,14 +3624,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             self._toast("Could not switch models cleanly in this conversation.")
             return False
 
-        prev_draft_key = getattr(self, "_draft_key", "")
-        new_draft_key = draft_key(target, work_id=work_id)
-        if new_draft_key and new_draft_key != prev_draft_key:
-            current_text = self._composer.current_text()
-            self._drafts.stash(new_draft_key, current_text)
-            if prev_draft_key:
-                self._drafts.stash(prev_draft_key, "")
-            self._draft_key = new_draft_key
+        MainWindow._rekey_visible_draft(self, draft_key(target, work_id=work_id))
 
         def _count_existing_turns(tpath: str) -> int:
             if not tpath:
@@ -4918,6 +4909,14 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
 
     # --- session selection ---
 
+    def _rekey_visible_draft(self, key: str) -> None:
+        """Move the active buffer to its resolved identity without rewriting it."""
+        previous = self._draft_key
+        if key != previous:
+            self._drafts.stash(key, self._composer.current_text())
+            self._drafts.stash(previous, "")
+            self._draft_key = key
+
     @staticmethod
     def _driver_matches_project(driver, project) -> bool:
         """Require a live driver to belong to this exact local workspace."""
@@ -4944,14 +4943,9 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         self._shared.set_handoff_target(session)
         # Park the outgoing draft before anything re-points the view. Must
         # precede every return below, including the `session is None` one.
-        prev_draft_key = self._draft_key
-        self._drafts.stash(prev_draft_key, self._composer.current_text())
-        # Hoisted with the stash: the guard below early-returns on EVERY chat
-        # the user starts (_refresh_sidebar_for_live auto-selects the new row
-        # 400ms after session-started), so a key update left beneath it meant a
-        # started chat kept its `new:<cwd>` key for life.
-        self._draft_key = draft_key(session) if session is not None else ""
+        self._drafts.stash(self._draft_key, self._composer.current_text())
         if session is None:
+            self._draft_key = ""
             self._stop_following()
             # Take the pooled-session banner down; it outlived the selection.
             self._composer.set_read_only(False)
@@ -5020,24 +5014,15 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 session.project,
             )
         ):
-            if same_continuity_work:
-                self._draft_key = draft_key(
-                    session,
-                    work_id=str(getattr(self._driver, "_helios_work_id", "") or ""),
-                )
-            # MIGRATE, do not duplicate: the composer keeps its text here, and
-            # `take()` is a non-destructive get, so leaving the copy under the
-            # old key lets the next New chat in that cwd resurrect it. A blank
-            # stash evicts (see DraftBook).
-            if self._draft_key and self._draft_key != prev_draft_key:
-                self._drafts.stash(self._draft_key, self._composer.current_text())
-                self._drafts.stash(prev_draft_key, "")
+            # The just-started row takes over ownership of the same buffer.
+            MainWindow._rekey_visible_draft(
+                self, draft_key(session, work_id=getattr(self._driver, "_helios_work_id", "")),
+            )
             self._refresh_goal_strip()
             MainWindow._refresh_execution_plan(self)
             self._main_stack.set_visible_child_name("transcript")
             return
 
-        self._composer.set_text(self._drafts.take(self._draft_key))
         self._staged_permission_mode = ""
         self._staged_effort_key = ""
         self._staged_workflow_mode = ""
@@ -5093,13 +5078,13 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                         exc,
                     )
         MainWindow._stash_or_clear_pending_model_switch(self, keep_for_work_id=work_id)
+        native_draft_key = draft_key(session)
+        self._draft_key = draft_key(session, work_id=work_id)
+        self._composer.set_text(
+            self._drafts.take(self._draft_key, fallback_key=native_draft_key)
+        )
         staged_unbound_handoff: tuple[str, str] | None = None
         if continuity_legs:
-            cont_draft_key = draft_key(session, work_id=work_id)
-            if cont_draft_key != self._draft_key:
-                migrated = self._drafts.take(cont_draft_key) or self._composer.current_text()
-                self._draft_key = cont_draft_key
-                self._composer.set_text(migrated)
             tail_leg = continuity_legs[-1]
             lead_prov = str(getattr(work, "lead_provider", "") or "") if work is not None else ""
             lead_part = (
@@ -5336,7 +5321,13 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                     "be verified, so Helios did not stage it."
                 )
                 return
-        self._drafts.stash(self._draft_key, self._composer.current_text())
+        previous_target = self._next_chat
+        continuing_work = (
+            work_id and self._draft_key and previous_target is not None
+            and previous_target.work_id == work_id
+        )
+        if not continuing_work:
+            self._drafts.stash(self._draft_key, self._composer.current_text())
         # A fresh chat has no transcript fill to restore, and a late fill
         # result for the previously viewed session must not land on it.
         self._ctx_fill_sid = ""
@@ -5358,9 +5349,12 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             resume_id,
             self._selected_provider() if resume_id else "",
         )
-        # A ChatTarget has no session_id, so this keys on the cwd.
-        self._draft_key = draft_key(self._next_chat)
-        self._composer.set_text(self._drafts.take(self._draft_key))
+        key = draft_key(self._next_chat)
+        if continuing_work:
+            MainWindow._rekey_visible_draft(self, key)
+        else:
+            self._draft_key = key
+            self._composer.set_text(self._drafts.take(key))
         self._plan.set_live_pending(self._assistant_label())
         self._sync_execution_control()
         self._context.set_project(project)
@@ -5390,7 +5384,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
 
     # --- live chat ---
 
-    def _start_new_chat(self) -> None:
+    def _start_new_chat(self, *, use_default_model: bool = True) -> None:
         """Header-button action: start a fresh chat in the configured default
         workspace.
 
@@ -5417,12 +5411,18 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         except OSError as e:
             self._toast(f"Couldn't prepare {default_cwd()}: {e}")
             return
+        if use_default_model:
+            MainWindow._apply_default_model_for_new_chat(self)
         self._show_fresh_chat_ui(project)
         self._composer.grab_input_focus()
 
     def _start_new_chat_with_provider(self, provider: str) -> None:
-        alias = self._model_for_provider(provider)
-        if not alias:
+        default = getattr(self, "_ui_state", {}).get(DEFAULT_MODEL_KEY)
+        if isinstance(default, str) and model_catalog.provider_for(default) == provider:
+            alias = default
+        else:
+            alias = self._model_for_provider(provider) or None
+        if alias is None:
             label = {
                 model_catalog.PROVIDER_OPENAI: "OpenAI",
                 model_catalog.PROVIDER_GOOGLE: "Google",
@@ -5435,7 +5435,8 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             self._sync_provider_toggle()
             return
         self._apply_model_choice(alias, quiet=True)
-        self._start_new_chat()
+        # An explicit provider choice outranks the Settings default.
+        self._start_new_chat(use_default_model=False)
 
     def _start_new_chat_in_worktree(self) -> None:
         """Opt-in isolation: a fresh worktree of the current chat's repository
@@ -5464,6 +5465,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             except OSError as exc:
                 self._toast(f"Couldn't use {path}: {exc}")
                 return False
+            MainWindow._apply_default_model_for_new_chat(self)
             self._show_fresh_chat_ui(project)
             self._composer.grab_input_focus()
             self._toast(f"New chat in worktree {os.path.basename(path)}.")
@@ -5494,6 +5496,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             except OSError as e:
                 self._toast(f"Couldn't use {path}: {e}")
                 return
+            MainWindow._apply_default_model_for_new_chat(self)
             self._show_fresh_chat_ui(project)
             self._composer.grab_input_focus()
 
@@ -6133,6 +6136,16 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 )
                 return True
         provider = self._selected_provider()
+        if provider == model_catalog.PROVIDER_GOOGLE:
+            limit = MainWindow._MAX_LIVE_GOOGLE_DRIVERS
+            capacity = self._driver_manager.prepare_provider_start(provider, limit)
+            if capacity != "ready":
+                self._toast(
+                    "Helios is closing an idle Gemini session to make room. Your draft is kept."
+                    if capacity == "closing"
+                    else f"All {limit} Gemini session slots are in use. Your draft is kept."
+                )
+                return False
         spawn_permission_mode, spawn_effort_key = self._execution_settings_for_spawn(
             target, provider
         )
@@ -10531,7 +10544,9 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             return
         dlg = SettingsDialog(
             self._permission_mode,
-            self._model,
+            # Settings edits the new-chat default, not the visible chat's
+            # model; before one is configured, seed it with the current pick.
+            self._ui_state.get(DEFAULT_MODEL_KEY, self._model),
             on_codex_credentials_changed=self._on_codex_credentials_changed,
             on_openrouter_credentials_changed=self._on_openrouter_credentials_changed,
         )
@@ -10858,13 +10873,38 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         # A changed global fallback immediately affects any selected
         # conversation that has no explicit conversation-owned mode.
         self._sync_execution_control()
-        # Keep toolbar label + provider toggle + per-provider memory in sync;
-        # quiet=True because the toast below already covers it.
-        self._apply_model_choice(model, quiet=True)
+        # The default is for NEW chats. Persist it under its own key so later
+        # picker changes cannot overwrite it; only switch the visible chat when
+        # it is still a fresh, unbound one (a running conversation keeps its
+        # model — changing that is the picker's job).
+        self._ui_state.set(DEFAULT_MODEL_KEY, model)
+        if getattr(self, "_driver", None) is None and not getattr(
+            getattr(self, "_next_chat", None), "resume_id", ""
+        ):
+            self._apply_model_choice(model, quiet=True)
         self._toast(
             f"Chat defaults saved — {MODE_LABELS.get(permission_mode, permission_mode)} "
-            f"permissions, model {model or 'default'}."
+            f"permissions, new chats use {MainWindow._model_display_label(self, model)}."
         )
+
+    def _model_display_label(self, model: str) -> str:
+        entries = getattr(self, "_catalog_entries_by_id", {})
+        entry = entries.get(model_catalog.picker_model_id(model, entries))
+        return entry.label if entry is not None else (
+            model.removesuffix("[1m]") or "the Claude settings default"
+        )
+
+    def _apply_default_model_for_new_chat(self) -> None:
+        """Every New chat entry point opens on the Settings default model.
+
+        Unconfigured (never saved in Settings) keeps the old behaviour of
+        following the last-used model. A default whose provider cannot run
+        right now is left to the existing send-time guards, exactly like the
+        sticky model restored at startup."""
+        store = getattr(self, "_ui_state", None)
+        default = store.get(DEFAULT_MODEL_KEY) if store is not None else None
+        if isinstance(default, str) and default != getattr(self, "_model", None):
+            self._apply_model_choice(default, quiet=True)
 
     # --- close ---
 

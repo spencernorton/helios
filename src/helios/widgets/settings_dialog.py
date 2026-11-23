@@ -163,9 +163,12 @@ class SettingsDialog(Adw.PreferencesDialog):
         # both provider status and the full picker catalog.
         self._selected_model_id = model
         self._model_choices: list[tuple[str, str]] = self._initial_model_choices(model)
+        self._selected_model_id = model_catalog.picker_model_id(
+            model, (model_id for model_id, _label in self._model_choices),
+        )
 
         self._build_accounts_page()
-        self._build_settings_page(permission_mode, model)
+        self._build_settings_page(permission_mode, self._selected_model_id)
         self._build_providers_page()
         self._build_tools_page()
 
@@ -208,13 +211,16 @@ class SettingsDialog(Adw.PreferencesDialog):
         muse_entries, muse_status = model_catalog.muse_entries(cached_only=True)
         if muse_entries and muse_status == "muse-serve":
             choices.extend(self._entry_pairs(muse_entries))
+        selected_model = model_catalog.picker_model_id(
+            selected_model, (model_id for model_id, _label in choices),
+        )
         if (
             selected_model
             and model_catalog.provider_for(selected_model)
             not in {model_catalog.PROVIDER_OPENAI, model_catalog.PROVIDER_GOOGLE, model_catalog.PROVIDER_MUSE, model_catalog.PROVIDER_KIMI}
             and all(model_id != selected_model for model_id, _label in choices)
         ):
-            choices.insert(0, (selected_model, selected_model))
+            choices.insert(0, (selected_model, selected_model.removesuffix("[1m]")))
         return choices
 
     def _hidden_models(self) -> set[str]:
@@ -236,11 +242,10 @@ class SettingsDialog(Adw.PreferencesDialog):
         # The unfiltered master backs the Shown-models list (restore path)
         # and reload merges; the combo renders the hidden-filtered view.
         self._all_model_choices = deduped
-        hidden = {
-            str(item)
-            for item in (ui_state_store().get(HIDDEN_MODELS_KEY, []) or [])
-            if isinstance(item, str)
-        }
+        self._selected_model_id = model_catalog.picker_model_id(
+            self._selected_model_id, seen_ids,
+        )
+        hidden = SettingsDialog._hidden_models(self)
         choices = [
             choice for choice in deduped
             if choice[0] not in hidden or choice[0] in (self._selected_model_id, "")
@@ -256,7 +261,8 @@ class SettingsDialog(Adw.PreferencesDialog):
                 # catalog did not supply. Select a safe visible row instead.
                 self._selected_model_id = choices[0][0]
             else:
-                choices = [(self._selected_model_id, self._selected_model_id), *choices]
+                model_id = self._selected_model_id
+                choices = [(model_id, model_id.removesuffix("[1m]")), *choices]
         self._model_choices = choices
         if hasattr(self, "_hidden_picker_list") and not getattr(
             self, "_suppress_hidden_refill", False
@@ -265,7 +271,6 @@ class SettingsDialog(Adw.PreferencesDialog):
         model_model = Gtk.StringList()
         for _key, label in self._model_choices:
             model_model.append(label)
-        self._model_row.set_model(model_model)
         midx = next(
             (
                 i
@@ -274,7 +279,11 @@ class SettingsDialog(Adw.PreferencesDialog):
             ),
             0,
         )
-        self._model_row.set_selected(midx)
+        # Replacing the list emits selection changes, including an intermediate
+        # first-row selection. Publish only the final selection.
+        with self._model_row.freeze_notify():
+            self._model_row.set_model(model_model)
+            self._model_row.set_selected(midx)
         self._model_row.set_subtitle("Default model for new chats")
 
     # ── page 1: account + defaults ──────────────────────────────────────
@@ -789,6 +798,10 @@ class SettingsDialog(Adw.PreferencesDialog):
         binary_row.set_subtitle_selectable(True)
         claude_group.add(binary_row)
 
+        self._claude_catalog_row = Adw.ActionRow(title="Model catalog")
+        self._claude_catalog_row.set_subtitle("Loading Claude models…")
+        claude_group.add(self._claude_catalog_row)
+
         # ── OpenRouter · Chat provider ──
         self._or_group = Adw.PreferencesGroup()
         self._or_group.set_title("OpenRouter · Chat")
@@ -1226,6 +1239,10 @@ class SettingsDialog(Adw.PreferencesDialog):
         ):
             return
         auth, version, anthropic, models, status = result
+        catalog_row = getattr(self, "_claude_catalog_row", None)
+        if catalog_row is not None:
+            families = [entry.label for entry in anthropic if entry.group == "Latest"]
+            catalog_row.set_subtitle(" · ".join(families) or "No Claude models found")
         selectable_models = SettingsDialog._selectable_openai_models(models, status)
         google, _ = model_catalog.google_entries(cached_only=True)
         muse_rows, muse_status = model_catalog.muse_entries(cached_only=True)
@@ -1555,7 +1572,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         for model_id, label in matches[:_OR_PICKER_ROW_CAP]:
             row = Adw.ActionRow()
             row.set_title(label)
-            row.set_subtitle(model_id)
+            row.set_subtitle(model_id.removesuffix("[1m]"))
             check = Gtk.CheckButton()
             check.set_active(model_id not in hidden)
             check.set_valign(Gtk.Align.CENTER)

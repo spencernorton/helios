@@ -210,6 +210,30 @@ def test_authoritative_catalog_reenables_valid_persisted_gpt():
     assert toggle.tooltip == "Chat with GPT (OpenAI)"
 
 
+def test_applied_catalog_keeps_claude_aliases_and_the_cli_default():
+    entries = [
+        model_catalog.ModelEntry("fable[1m]", "Fable 5.2", "Latest"),
+        model_catalog.ModelEntry("opus[1m]", "Opus 5.5", "Latest"),
+        model_catalog.ModelEntry("", "Default (from Claude settings)", "Other"),
+    ]
+    applied = []
+    fake = types.SimpleNamespace(
+        _catalog_refresh_running=True,
+        _catalog_force_pending=False,
+        _destroyed=False,
+        _model=entries[0].id,
+        _chat_toolbar=types.SimpleNamespace(set_choices=applied.extend),
+        _gpt_toggle=_Toggle(),
+        _normalize_openai_model_memory=lambda: None,
+        _sync_effort_sensitivity=lambda: None,
+        _sync_execution_control=lambda: None,
+        _sync_new_chat_actions=lambda: None,
+    )
+
+    assert MainWindow._apply_model_catalog(fake, entries, False) is False
+    assert applied == entries
+
+
 @pytest.fixture
 def isolated_worker_catalogs(monkeypatch):
     # These worker tests exercise Claude/OpenAI races, never the host's

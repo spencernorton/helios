@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import types
+from contextlib import nullcontext
 
 import pytest
 
@@ -130,7 +131,7 @@ def test_initial_model_choices_preserve_unknown_selected_model():
     choices = dlg._initial_model_choices("custom-provider-model")
 
     assert choices[0] == ("custom-provider-model", "custom-provider-model")
-    assert ("fable", "Fable (latest)") in choices
+    assert ("fable[1m]", "Fable 5") in choices
 
 
 def test_initial_model_choices_keep_a_persisted_1m_model():
@@ -171,6 +172,9 @@ def test_only_app_server_openai_rows_are_selectable():
 
 def test_refresh_does_not_reinsert_unverified_selected_gpt_model():
     class ModelRow:
+        def freeze_notify(self):
+            return nullcontext()
+
         def set_model(self, model):
             self.model = model
 
@@ -192,8 +196,31 @@ def test_refresh_does_not_reinsert_unverified_selected_gpt_model():
     assert fake._selected_model_id == "fable"
 
 
+def test_model_list_refresh_keeps_the_chosen_default():
+    from gi.repository import Adw
+
+    Adw.init()
+    row = Adw.ComboRow()
+    fake = types.SimpleNamespace(
+        _selected_model_id="fable",
+        _model_choices=[],
+        _model_row=row,
+    )
+    row.connect("notify::selected", types.MethodType(SettingsDialog._on_model_changed, fake))
+
+    SettingsDialog._set_model_choices(fake, [
+        ("haiku", "Haiku 5.5"), ("fable[1m]", "Fable 5.2"),
+    ])
+
+    assert row.get_selected() == 1
+    assert fake._selected_model_id == "fable[1m]"
+
+
 def test_model_choices_dedupe_and_hide(monkeypatch):
     class ModelRow:
+        def freeze_notify(self):
+            return nullcontext()
+
         def set_model(self, model):
             self.model = model
 

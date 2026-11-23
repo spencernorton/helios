@@ -4,6 +4,12 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.117.0 — 2026-11-23
+
+- Headless Claude runs that Helios did not start (scripts, scheduled jobs and other agents using `claude -p` or the Agent SDK) no longer flood the session list: they move to a new *Agent-launched* filter and are left out of *All sessions*, *This machine* and the per-folder filters. Helios's own chats, interactive terminal `claude` sessions and other providers' transcripts are never classified, and sending a message in an agent-launched session adopts it into the normal list.
+- Settings → Defaults → Model now persists to its own key and every *New chat* entry point opens on it, instead of reopening on the last-used model. Claude picker rows name the version each alias resolves to, the current aliases stay visible, *Older models* no longer holds the newest pinned versions, and the selection tick follows the current model on every popover open.
+- Gemini checks its four local session slots before launching a driver, so a starting or closing process still occupies its slot, and the least recently used idle process is retired at capacity; a send refused at capacity returns to the composer instead of being lost. The *Messages* draft also survives the first cross-provider model switch in a fresh chat.
+
 ## 0.116.1 — 2026-11-16
 
 - Hardened mid-session model switching across all six providers: enforced per-conversation model immutability across multi-hop Google detours and legacy migrated bindings, normalized explicit `<provider>:<model>` selectors before driver execution, fenced unacknowledged live and cold-resume model changes across Kimi ACP and Muse so prompts never dispatch on a prior or refused model, and retired idle pooled drivers when `set_model` is refused.

@@ -95,8 +95,9 @@ def _accent_rgb(is_dark: bool) -> tuple[float, float, float]:
 # 25 total rows, which hid it exactly on smaller multi-provider setups.)
 
 # Anthropic first-tier splitting lives in
-# model_catalog.collapse_latest_twins: one Latest row per family up front,
-# its [1m]/bare twin and every pinned version behind the disclosure.
+# model_catalog.collapse_latest_twins: one row per family up front, named
+# after the version it resolves to; older pinned versions behind the
+# disclosure.
 
 # A provider whose catalog is already curated (Codex App Server returns a
 # handful of agent models) shows this many rows before the rest fold away.
@@ -399,10 +400,9 @@ class ChatToolbar(Gtk.Box):
         if self._destroyed:
             return
         self._model_alias = alias
-        label = next(
-            (e.label for e in self._choices if e.id == alias), alias or "Default"
-        )
-        self._model_label.set_label(label)
+        picker_id = model_catalog.picker_model_id(alias, (e.id for e in self._choices))
+        label = next((e.label for e in self._choices if e.id == picker_id), None)
+        self._model_label.set_label(label or alias.removesuffix("[1m]") or "Default")
         # The unified picker lists all available models grouped by provider.
         # Switching models updates the current provider filter for permissions
         # and execution controls.
@@ -1456,7 +1456,15 @@ class ChatToolbar(Gtk.Box):
             ),
         )
         outer.append(search)
-        popover.connect("show", lambda *_a: (search.set_text(""), search.grab_focus()))
+        def _on_show(*_a) -> None:
+            # The ✓ marker is baked into the rows when they are built, so
+            # rebuild on every open: otherwise it stays on whichever model was
+            # selected when the popover was built while the chip shows another.
+            search.set_text("")
+            self._fill_model_rows(box, popover, "")
+            search.grab_focus()
+
+        popover.connect("show", _on_show)
         outer.append(scroller)
         popover.set_child(outer)
         self._model_btn.set_popover(popover)
@@ -1479,7 +1487,9 @@ class ChatToolbar(Gtk.Box):
         """Split into "the ones you actually pick" and "everything older"."""
         target_provider = provider or getattr(self, "_provider_filter", model_catalog.PROVIDER_ANTHROPIC)
         if target_provider == model_catalog.PROVIDER_ANTHROPIC:
-            current, older = model_catalog.collapse_latest_twins(pool)
+            current, older = model_catalog.collapse_latest_twins(
+                pool, keep_id=getattr(self, "_model_alias", ""),
+            )
         elif target_provider == model_catalog.PROVIDER_OPENROUTER:
             chosen = set(ui_state.store().get(ui_state.OPENROUTER_PICKER_KEY, []) or [])
             current = [e for e in pool if e.id in chosen]
@@ -1504,8 +1514,10 @@ class ChatToolbar(Gtk.Box):
         # the store fresh so a Settings change applies on the next open
         # without any refresh plumbing. The selected model always stays.
         hidden = ui_state.store().get(ui_state.HIDDEN_MODELS_KEY, []) or []
-        choices = model_catalog.visible_entries(
-            self._choices, hidden, keep_id=self._model_alias)
+        picker_id = model_catalog.picker_model_id(
+            self._model_alias, (e.id for e in self._choices),
+        )
+        choices = model_catalog.visible_entries(self._choices, hidden, keep_id=picker_id)
         needle = query.strip().lower()
         if needle:
             pool = [
@@ -1591,6 +1603,9 @@ class ChatToolbar(Gtk.Box):
 
     def _append_model_rows(self, box, popover, entries: list[ModelEntry]) -> None:
         last_group = None
+        picker_id = model_catalog.picker_model_id(
+            self._model_alias, (e.id for e in self._choices),
+        )
         for entry in entries:
             alias, label, group = entry.id, entry.label, entry.group
             if group != last_group:
@@ -1608,7 +1623,7 @@ class ChatToolbar(Gtk.Box):
                 box.append(header)
                 last_group = group
 
-            selected = alias == self._model_alias
+            selected = alias == picker_id
             if selected:
                 # Without a marker the current model is indistinguishable
                 # in a long list — the main navigation complaint. A label

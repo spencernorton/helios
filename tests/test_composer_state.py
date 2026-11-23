@@ -37,6 +37,15 @@ def test_an_unknown_key_takes_the_empty_string_not_none() -> None:
     assert DraftBook().take("never-seen") == ""
 
 
+def test_migrating_a_native_key_does_not_resurrect_a_stale_draft() -> None:
+    book = DraftBook()
+    book.stash("s1", "older draft")
+    book.stash("work:w1", "newer draft")
+    assert book.take("work:w1", fallback_key="s1") == "newer draft"
+    book.stash("work:w1", "")
+    assert book.take("work:w1", fallback_key="s1") == ""
+
+
 def test_a_blank_stash_evicts_rather_than_stores() -> None:
     """Clearing the composer must not resurrect the old draft on return."""
 

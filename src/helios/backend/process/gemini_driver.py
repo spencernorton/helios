@@ -102,6 +102,7 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         self._accepted_turn_id = ""
         self._accounting_failed = False
         self._stderr = ""
+        self._startup_error = ""
         self._cumulative_usage: dict[str, int] = {}
         self._completed_turns = 0
         self._seen_result_turns = 0
@@ -456,12 +457,19 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
                 self.emit("activity-updated", {"tool": str(step.get("tool_name") or ""), "state": str(step.get("state") or "")})
         elif event == "result":
             result = msg.get("result")
-            if not isinstance(result, dict) or not self.execution_attempt_id:
+            if not isinstance(result, dict):
+                return False
+            status = str(result.get("status") or "")
+            if not self._session_id:
+                if status in {"ERROR", "INVALID"}:
+                    detail, _ = scrub_sensitive(str(result.get("error") or "Google could not start the session."))
+                    self._startup_error = detail[:2000]
+                return False
+            if not self.execution_attempt_id:
                 return False
             if result.get("conversation_id") != self._session_id:
                 self._protocol_failure("Google returned a result for a different conversation.")
                 return False
-            status = str(result.get("status") or "")
             count = result.get("num_turns")
             if not isinstance(count, int) or isinstance(count, bool) or count <= self._seen_result_turns:
                 # A delayed prior result cannot complete the next queued turn.
@@ -634,13 +642,25 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
                 pass
 
     def end_input(self) -> None:
+        idle = (
+            self.is_accepting_input and not self.is_busy
+            and not self.execution_attempt_id and not self.queued_messages()
+        )
         self._accepting_input = False
         self._finish_predispatch_attempt()
-        if self._proc is not None and self._proc.stdin is not None:
+        proc = self._proc
+        if proc is not None and proc.stdin is not None:
             try:
-                self._proc.stdin.close()
+                proc.stdin.close()
             except OSError:
                 pass
+            if idle:
+                # EOF normally exits on its own. Keep a stuck idle child from
+                # holding a slot forever, and leave active turns to their
+                # regular terminal-receipt and cancellation paths.
+                threading.Thread(
+                    target=self._reap_stopped, args=(proc,), daemon=True,
+                ).start()
 
     def answer_question(self, token: str, answers: Any) -> None:
         self.emit("error", "Antigravity headless cannot accept interactive approvals. Configure scoped permissions in the CLI or use an interactive session.")
@@ -652,7 +672,9 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
             self.emit("error", "Google exited without a confirmed terminal receipt. This Work remains blocked; its input will not be replayed.")
         else:
             self._is_busy = False
-        if code and self._stderr and not self._stopped:
-            self.emit("error", self._stderr.strip())
+        startup_error = self._startup_error if not self._session_id else ""
+        detail = startup_error or (self._stderr.strip() if code else "")
+        if detail and not self._stopped:
+            self.emit("error", detail)
         self.emit("exited", code)
         return False

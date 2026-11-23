@@ -40,6 +40,12 @@ OPENROUTER_PICKER_KEY = "openrouter_picker_models"
 # a hide is one untick away from restored. Empty list = show the full catalog.
 HIDDEN_MODELS_KEY = "hidden_models"
 
+# The model Settings → Defaults names for new chats. Separate from the sticky
+# "model" key, which follows every picker change: sharing one key made the
+# Settings default a no-op. A missing key follows the last-used model.
+# An empty string delegates model selection to Claude Code.
+DEFAULT_MODEL_KEY = "default_model"
+
 
 def _load(path: Path) -> dict[str, Any]:
     if not path.is_file():

@@ -1,5 +1,82 @@
 # Helios — Session Journal
 
+## 2026-11-23 — Release 0.117.0: agent-launched filter plus the live host fixes
+
+- Integrates the four local-only commits that were already running on the
+  maintainer's host (Messages draft, Gemini slot admission, model picker
+  versions/default model, Claude catalog visibility) on top of #74 (the
+  Agent-launched session filter), so a release built from `main` no longer
+  regresses the installed package. Supersedes the "local only / GitHub auth
+  missing" note in the model-picker entry below: these commits are now on
+  GitHub via this PR.
+- Version 0.116.1 → 0.117.0 in `pyproject.toml`, `src/helios/__init__.py`,
+  `llms.txt` and `docs/agent-setup.md`; CHANGELOG entry added.
+
+## 2026-11-23 — Keep the Claude catalog and new-chat defaults consistent
+
+- Stop filtering the current Claude aliases from the main window. Group
+  current Claude models by family and keep their picker labels free of context
+  suffixes. Keep earlier versions under Older models and preserve selected
+  pinned versions and saved aliases.
+- Add a Claude catalog summary to Settings → Providers. Preserve the chosen
+  default when Settings refreshes its model list asynchronously.
+- Apply the saved default to generic new chats and the matching provider
+  shortcut. A different provider shortcut uses that provider. Distinguish
+  Claude Code's own default from an unset Helios preference and leave saved
+  conversations on their existing models.
+
+## 2026-11-23 — Model picker: real Claude versions, working default model
+
+- Settings → Defaults → Model was a no-op: it wrote the same `model` key the
+  toolbar picker overwrites on every pick, and New chat never consulted it,
+  so a new chat reopened on whatever was used last. New
+  `ui_state.DEFAULT_MODEL_KEY` (`default_model`) owns new chats: every
+  New-chat entry point (header button, Ctrl+N, worktree, Ctrl+Shift+N folder)
+  applies it via `MainWindow._apply_default_model_for_new_chat`; the
+  provider-specific "New GPT chat" style entries still win. Unconfigured keeps
+  the old last-used behaviour. Saving Settings switches only a fresh, unbound
+  chat — a running conversation keeps its model.
+- Claude rows now name the version they resolve to ("Fable 5.2",
+  "Opus 5.5", "Sonnet 5.5", "Haiku 5.5") instead of "Fable (latest · 1M
+  context)"; the id is still `fable[1m]` etc. The plain-alias twin is no
+  longer emitted where a `[1m]` twin exists (same 1M model on 5.x — see
+  `_LATEST_1M_ALIASES`). Catalog policy rev 2 → 3 forces a rescan; the cache
+  row gains the description column. Versions come from the newest pinned id
+  per family in the binary scan, the same source the pinned rows already use.
+- "Older models" no longer holds the newest models: the pinned twin of each
+  up-front row is dropped from the disclosure (still found by search).
+- The ✓ marker was baked in at popover build time, so it stuck on the model
+  selected when the rows were built while the chip showed another. Rows now
+  rebuild on every popover open; a persisted plain alias (`opus`) ticks and
+  labels its `[1m]` row.
+- Verified with a headless probe rendering the picker from a copy of the real
+  `~/.helios` state. Built on the unpushed `codex/helios-gemini-draft-fix`
+  commits; GitHub auth still missing on Apollo, so branch
+  `claude/model-picker-fixes` is local only.
+
+## 2026-11-23 — Honor Gemini session capacity before starting a driver
+
+- The background cache's soft limit counted only bound sessions and
+  requested eviction without waiting for EOF to take effect. Gemini now
+  checks its four local slots before a new launch. A starting or closing
+  process occupies a slot until its exit is observable.
+- At capacity, retire the least recently used idle Gemini background
+  process. Leave active, starting and queued work alone. A refused send
+  returns to the composer while a slot becomes available. Bound the EOF
+  wait for idle Antigravity children and surface pre-init error results
+  without treating the first prompt as sent.
+
+## 2026-11-23 — Keep the Messages draft when changing models
+
+- The first cross-provider pick in a fresh chat resolves a Work ID. Move the
+  visible draft to that ID when restaging the same Work so the composer
+  keeps its buffer, cursor and undo history.
+- Resolve the Work before restoring drafts from the sidebar. Native
+  participants of the same Work share one draft, and a deliberate New Chat
+  or another Work gets its own draft.
+- The native composer regression reproduces the empty buffer on the first
+  provider pick and checks repeated switches and New Chat isolation.
+
 ## 2026-11-23 — Agent-launched Claude sessions get their own sidebar filter
 
 - Symptom: the sidebar filled with hundreds of rows the user never started.
