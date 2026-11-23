@@ -114,11 +114,13 @@ from helios.backend.project_perms import (
     resolve_startup_default,
     sanitize_global_default,
 )
+from helios.backend import title_store
 from helios.backend.ui_state import (
     DEFAULT_MODEL_KEY,
     configured_default_cwd,
     default_cwd,
     migrate_effort_level,
+    prune_hidden_models,
     store as ui_state_store,
 )
 from helios.backend.workflow_modes import (
@@ -143,7 +145,7 @@ def _flush_pending_checkpoints(drv, session_id: str) -> None:
     if not pending or not session_id:
         return
     for point in pending:
-        checkpoints.record(session_id, point)
+        checkpoints.record_async(session_id, point)
     drv._helios_pending_checkpoints = []
 
 # OpenRouter credit lookups are cheap but not free; a turn can finish every
@@ -430,6 +432,12 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             _log.warning("Work graph unavailable; using legacy sessions: %s", exc)
             self._work_coordinator = None
         self._reclaim_orphaned_execution_lanes()
+        if self._work_coordinator is not None:
+            threading.Thread(
+                target=self._work_coordinator.store.checkpoint_wal,
+                daemon=True,
+                name="helios-work-wal",
+            ).start()
         # AskUserQuestion dedup — tool_use_id -> None, insertion-ordered so
         # it can be pruned FIFO instead of growing for the window's lifetime.
         self._answered_question_ids: dict[tuple[object, str], None] = {}
@@ -648,7 +656,13 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         # gets bound to the real id in _on_session_started.
         self._pending_goal: GoalState | None = None
         # --- Widgets ---
-        self._sessions = SessionList()
+        self._sessions = SessionList(
+            work_store=(
+                self._work_coordinator.store
+                if self._work_coordinator is not None
+                else None
+            )
+        )
         self._transcript = TranscriptView()
         self._goal_strip = GoalStrip()
         self._plan_progress = PlanProgressStrip()
@@ -1328,6 +1342,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         selectable = model_catalog.dedupe_entries(selectable)
         self._chat_toolbar.set_choices(selectable)
         self._catalog_entries_by_id = {entry.id: entry for entry in selectable}
+        MainWindow._prune_obsolete_hidden_models(self, selectable)
         self._normalize_openai_model_memory()
         pending_provider = str(
             getattr(self, "_pending_session_provider_adoption", "") or ""
@@ -1376,6 +1391,25 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             self._sync_openrouter_toggle_sensitivity()
         self._sync_new_chat_actions()
         return False  # one-shot idle
+
+    def _prune_obsolete_hidden_models(self, selectable: list) -> None:
+        """Prune obsolete hidden_models entries only for providers with live catalogs."""
+        by_provider: dict[str, set[str]] = {}
+        for entry in selectable:
+            prov = getattr(entry, "provider", model_catalog.PROVIDER_ANTHROPIC)
+            by_provider.setdefault(prov, set()).add(entry.id)
+        if not self._openai_catalog_authoritative:
+            by_provider.pop(model_catalog.PROVIDER_OPENAI, None)
+        # Do not prune Anthropic entries when only the static fallback list loaded.
+        fallback_ids = {e.id for e in model_catalog.FALLBACK_ANTHROPIC}
+        anth_ids = by_provider.get(model_catalog.PROVIDER_ANTHROPIC, set())
+        if anth_ids and anth_ids == fallback_ids:
+            by_provider.pop(model_catalog.PROVIDER_ANTHROPIC, None)
+        if by_provider:
+            try:
+                prune_hidden_models(by_provider, state=self._ui_state)
+            except Exception as exc:
+                _log.warning("could not prune obsolete hidden models: %s", exc)
 
     def _refresh_openrouter_credits(self, *, throttle: bool = False) -> None:
         """Populate the usage panel's OpenRouter row from the saved key.
@@ -3325,8 +3359,21 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             except Exception:
                 session_id = ""
         transcript_path = ""
-        if session_id and target is not None and target.project is not None:
-            transcript_path = str(target.project.path / f"{session_id}.jsonl")
+        if session_id:
+            sessions_widget = getattr(self, "_sessions", None)
+            path_fn = getattr(sessions_widget, "session_path", None)
+            if callable(path_fn):
+                transcript_path = str(path_fn(session_id) or "")
+            if not transcript_path:
+                ctx_sess = getattr(self, "_ctx_fill_session", None)
+                if (
+                    ctx_sess is not None
+                    and getattr(ctx_sess, "session_id", "") == session_id
+                    and getattr(ctx_sess, "path", None)
+                ):
+                    transcript_path = str(ctx_sess.path)
+            if not transcript_path and target is not None and target.project is not None:
+                transcript_path = str(target.project.path / f"{session_id}.jsonl")
         return resolved_model, session_id, transcript_path
 
     def _ensure_work_for_outgoing_leg(
@@ -10475,6 +10522,15 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 # Compatibility-only legacy goals are owned by the native
                 # transcript. Canonical Work goals survive participant delete.
                 session_goals.clear_goal(sid)
+            browser = getattr(self, "_browser", None)
+            close_fn = getattr(browser, "close_session", None)
+            if callable(close_fn):
+                close_fn(sid, work_id=detached_work_id)
+        checkpoints.forget_many_async(deleted_ids)
+        try:
+            title_store.store().delete_many(deleted_ids)
+        except Exception as exc:
+            _log.warning("could not prune deleted session titles: %s", exc)
         # If the user was staging a resume against a deleted session, clear it.
         self._next_chat = clear_deleted_resume(self._next_chat, set(deleted_ids))
         # Selecting a different (or no) session also resets transcript view —
@@ -10486,6 +10542,11 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             return
         n = len(archived_ids)
         self._toast(f"Archived {n} session{'s' if n != 1 else ''}.")
+        browser = getattr(self, "_browser", None)
+        close_fn = getattr(browser, "close_session", None)
+        if callable(close_fn):
+            for sid in archived_ids:
+                close_fn(sid)
         # The transcript survives in the archive, so its execution settings
         # and Work binding stay; only a staged resume against it is now dead.
         self._next_chat = clear_deleted_resume(self._next_chat, set(archived_ids))
@@ -10986,7 +11047,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             return False
         sid = session_id or str(getattr(drv, "session_id", "") or "")
         if sid:
-            checkpoints.record(sid, point)
+            checkpoints.record_async(sid, point)
         else:
             # No id yet: hold it on the driver so session-started can file it.
             pending = getattr(drv, "_helios_pending_checkpoints", None)
@@ -11236,6 +11297,11 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             browser_tools.publish("")
             self._browser_bus.unregister_object(self._browser_bus_id)
             self._browser_bus_id = 0
+        browser = getattr(self, "_browser", None)
+        shutdown_browser = getattr(browser, "shutdown", None)
+        if callable(shutdown_browser):
+            shutdown_browser()
+        checkpoints.flush(timeout=2.0)
         # Invalidate every pre-provider dispatch before any worker/deadline idle
         # can land. Closing is not consent to send; the unsent text stays in the
         # same in-memory recovery bucket used by other background teardown.

@@ -4,6 +4,14 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.118.1 — 2026-11-23
+
+- **Non-blocking checkpoint persistence & bounded retention:** Moved `checkpoints.json` writes onto a serialized background worker (`checkpoints.record_async` / `forget_many_async` / `flush`), switched to compact JSON with a 150-session recency cap, and pruned checkpoints and title cache entries when sessions are deleted.
+- **Shared `WorkStore` in `SessionList` & WAL hygiene:** Injected the window's `WorkStore` into `SessionList` so sidebar reloads no longer reopen `work.db` on the GTK main thread, and added non-blocking passive SQLite WAL checkpointing at startup and close.
+- **Bounded WebKit browser panes:** Added `SessionBrowser.close_session`, `shutdown`, and a 4-pane LRU cap for hidden background `BrowserPane` instances (terminating evicted `WebKitWebView` web processes cleanly) wired into session archive, deletion, and window close.
+- **Cross-provider continuity transcript resolution:** Resolved non-Claude transcript paths via `SessionList.session_path` during in-place model switches so Codex, Google, Muse, Kimi, and OpenRouter legs seed continuity context accurately.
+- **Stale hidden-model pruning:** Pruned obsolete model IDs from `hidden_models` after live authoritative provider catalogs load without touching providers that did not load.
+
 ## 0.118.0 — 2026-11-23
 
 - **Gemini silent-turn liveness reconciliation:** Added a read-only Antigravity summary DB watchdog (`google_env.probe_conversation_idle` + `GeminiCliDriver` liveness timer) that reconciles silent turns once Antigravity confirms `CASCADE_RUN_STATUS_IDLE`, flushes streamed assistant text to the transcript and Work ledger, settles the durable execution receipt, and retires the wedged child process so Google session slots are freed cleanly.

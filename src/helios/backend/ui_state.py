@@ -118,6 +118,46 @@ def store() -> UiStateStore:
     return _global
 
 
+def prune_hidden_models(
+    valid_ids_by_provider: dict[str, set[str]],
+    *,
+    state: UiStateStore | None = None,
+) -> int:
+    """Drop obsolete model IDs from hidden_models for loaded providers only.
+
+    Providers absent from ``valid_ids_by_provider`` (or with an empty set)
+    are left untouched so a temporary discovery failure never unhides a
+    user's saved choices.
+    """
+    if not valid_ids_by_provider:
+        return 0
+    from helios.backend import model_catalog
+
+    target = state if state is not None else store()
+    raw = target.get(HIDDEN_MODELS_KEY, [])
+    if not isinstance(raw, list) or not raw:
+        return 0
+    kept: list[str] = []
+    removed = 0
+    for item in raw:
+        mid = str(item or "").strip()
+        if not mid:
+            removed += 1
+            continue
+        prov = model_catalog.provider_for(mid)
+        valid = valid_ids_by_provider.get(prov)
+        if valid:
+            canon = model_catalog.canonical_model_id(mid)
+            if mid not in valid and (not canon or canon not in valid):
+                removed += 1
+                continue
+        if mid not in kept:
+            kept.append(mid)
+    if removed or len(kept) != len(raw):
+        target.set(HIDDEN_MODELS_KEY, kept)
+    return removed
+
+
 # Working directory for new chats, set in Settings → Defaults.
 #
 # $HOME is a discovery root, not an executable workspace: an earlier review
