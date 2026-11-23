@@ -120,6 +120,7 @@ NATIVE_DELIVERY_WIRE = "wire"
 NATIVE_DELIVERY_ACCEPTED = "accepted"
 NATIVE_DELIVERY_REJECTED = "rejected"
 NATIVE_DELIVERY_UNKNOWN = "unknown"
+_METHOD_THREAD_CLOSED = "thread/closed"
 _METHOD_THREAD_STARTED = "thread/started"
 
 _GOAL_STATUSES = {"active", "paused", "blocked", "complete"}
@@ -1573,6 +1574,47 @@ class CodexAppServerDriver(CodexCliDriver):
         except Exception:
             _log.exception("Codex shared transport shutdown failed")
 
+    def _handle_thread_closed(self) -> None:
+        """Reconcile server-initiated thread closure cleanly.
+
+        An idle thread closed by Codex App Server detaches cleanly so the
+        next send resumes transparently. If an execution attempt is still
+        open without a terminal receipt, preserve fail-closed accounting.
+        """
+        if self._closed:
+            return
+        if self.execution_attempt_id:
+            with self._native_delivery_lock:
+                state = self._helios_native_delivery_state
+                dispatch = self._active_turn_start_dispatch
+            if not self._execution_dispatch_recorded:
+                accounting_ok = self._finish_predispatch_attempt()
+                self._pending_queue_delivery = None
+            elif state == NATIVE_DELIVERY_REJECTED and dispatch is not None:
+                accounting_ok = self._settle_verified_turn_start_rejection(dispatch)
+            else:
+                accounting_ok = self._record_execution_stop(
+                    ExecutionStopEvidence(
+                        acknowledgement={},
+                        queue_disposition="held",
+                    )
+                )
+                self.emit(
+                    "error",
+                    "Codex closed this thread without a provider-terminal receipt; "
+                    "this Work remains blocked until reconciled.",
+                )
+            if not accounting_ok:
+                self.emit(
+                    "error",
+                    "Helios could not persist the Codex thread closure outcome; "
+                    "new provider work remains blocked.",
+                )
+            self._finalize_native(1)
+            return
+        _log.info("Codex App Server closed idle thread %s; detaching driver", self.session_id)
+        self._finalize_native(0)
+
     def _finalize_native(self, code: int) -> None:
         if self._closed:
             return
@@ -2972,6 +3014,13 @@ class CodexAppServerDriver(CodexCliDriver):
                 goal_payload = copy.deepcopy(params) if isinstance(params, dict) else {}
                 goal_payload["cleared"] = method == _METHOD_THREAD_GOAL_CLEARED
                 self.emit("native-goal-updated", goal_payload)
+        elif method == _METHOD_THREAD_CLOSED:
+            closed_thread_id = (
+                str(params.get("threadId") or "") if isinstance(params, dict) else ""
+            )
+            if not closed_thread_id or closed_thread_id == self.session_id:
+                self._handle_thread_closed()
+                return False
         elif method == _METHOD_THREAD_STARTED and isinstance(params, dict):
             self._capture_child_thread(params)
 

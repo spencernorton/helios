@@ -11,12 +11,15 @@ import base64
 import json
 import os
 import re
+from datetime import datetime, timezone
 import shutil
+import sqlite3
 import subprocess
 import threading
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any
 
 from helios.backend.process.env_scrub import scrubbed_child_env
 from helios.log import get_logger
@@ -389,3 +392,94 @@ def list_mcp_servers() -> list[dict[str, str]]:
     except (OSError, json.JSONDecodeError) as e:
         _log.warning("could not read %s: %s", mcp_path, e)
         return []
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationIdleSnapshot:
+    """Read-only snapshot of an Antigravity conversation from its summary DB."""
+
+    conversation_id: str
+    status: str
+    not_fully_idle: bool
+    killed: bool
+    step_count: int
+    last_user_input_step_index: int
+    last_modified_epoch: float
+
+
+_FRACTIONAL_SECONDS_RE = re.compile(r"\.(\d+)")
+
+
+def _parse_antigravity_timestamp(raw: Any) -> float | None:
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return float(raw)
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    text = _FRACTIONAL_SECONDS_RE.sub(lambda m: "." + m.group(1)[:6].ljust(6, "0"), text, count=1)
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def probe_conversation_idle(
+    conversation_id: str,
+    *,
+    db_path: Path | None = None,
+) -> ConversationIdleSnapshot | None:
+    """Read Antigravity's summary SQLite DB read-only for one conversation.
+
+    Returns None when the DB or row is absent or unreadable. Safe to call
+    from a background worker thread; never mutates the DB.
+    """
+    cid = str(conversation_id or "").strip()
+    if not cid or "/" in cid or "\\" in cid:
+        return None
+    path = db_path if db_path is not None else (
+        Path.home() / ".gemini" / "antigravity-cli" / "conversation_summaries.db"
+    )
+    if not path.is_file():
+        return None
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=0.5)
+        row = conn.execute(
+            "SELECT status, not_fully_idle, killed, step_count, "
+            "last_user_input_step_index, last_modified_time "
+            "FROM conversation_summaries WHERE conversation_id = ? LIMIT 1",
+            (cid,),
+        ).fetchone()
+    except (sqlite3.Error, OSError):
+        return None
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+    if row is None:
+        return None
+    status, not_fully_idle, killed, step_count, last_user_step, raw_mtime = row
+    mtime_epoch = _parse_antigravity_timestamp(raw_mtime)
+    if mtime_epoch is None:
+        return None
+    try:
+        steps = int(step_count)
+        user_step = int(last_user_step)
+    except (TypeError, ValueError):
+        return None
+    return ConversationIdleSnapshot(
+        conversation_id=cid,
+        status=str(status or ""),
+        not_fully_idle=bool(not_fully_idle),
+        killed=bool(killed),
+        step_count=steps,
+        last_user_input_step_index=user_step,
+        last_modified_epoch=mtime_epoch,
+    )

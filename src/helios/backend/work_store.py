@@ -144,6 +144,7 @@ _STOP_ACKNOWLEDGEMENT_FIELDS = {
 }
 _TERMINAL_EVIDENCE_TYPES = frozenset({"provider_terminal", "verified_rejection"})
 _ORPHANED_TERMINAL_REASON = "orphaned.helios_exited"
+_OPERATOR_RECONCILED_TERMINAL_REASON = "reconciled.operator_confirmed"
 _QUEUE_DISPOSITIONS = frozenset({"held", "restored", "released", "discarded"})
 _FINAL_QUEUE_DISPOSITIONS = frozenset({"restored", "released", "discarded"})
 _RAW_CONTENT_KEYS = frozenset(
@@ -1784,6 +1785,94 @@ class WorkStore:
                 """
             ).fetchall()
         return [_execution_attempt(row) for row in rows]
+
+    def list_active_execution_attempts_for_work(
+        self, work_id: str
+    ) -> list[ExecutionAttempt]:
+        """Return durable running attempts belonging to one Work."""
+
+        if not work_id:
+            return []
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT * FROM execution_attempts
+                WHERE work_id = ? AND status = 'running'
+                ORDER BY started_at, attempt_id
+                """,
+                (work_id,),
+            ).fetchall()
+        return [_execution_attempt(row) for row in rows]
+
+    def reconcile_operator_aborted_attempt(
+        self,
+        attempt_id: str,
+        *,
+        reason: str = _OPERATOR_RECONCILED_TERMINAL_REASON,
+    ) -> ExecutionAttempt:
+        """Release one uncertain running attempt after explicit operator confirmation.
+
+        Never claims provider termination and never restores held queued input.
+        """
+
+        attempt_id = _validate_id(attempt_id, "attempt_id")
+        safe_reason = _recovery_code(
+            reason or _OPERATOR_RECONCILED_TERMINAL_REASON,
+            "terminal reason",
+        )
+        now = _now()
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM execution_attempts WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()
+            if row is None:
+                raise WorkStoreError(f"unknown execution attempt: {attempt_id}")
+            attempt = _execution_attempt(row)
+            if attempt.status != "running":
+                raise WorkStoreError(
+                    f"execution attempt is not running: {attempt_id} ({attempt.status})"
+                )
+            queue = (
+                "discarded"
+                if attempt.queue_disposition == "held"
+                else attempt.queue_disposition
+            )
+            conn.execute(
+                """
+                UPDATE execution_attempts
+                SET status = 'aborted', terminal_reason = ?,
+                    queue_disposition = ?, finished_at = ?, updated_at = ?
+                WHERE attempt_id = ? AND status = 'running'
+                """,
+                (safe_reason, queue, now, now, attempt_id),
+            )
+            self._append_execution_attempt_event_conn(
+                conn,
+                attempt,
+                "execution.attempt.finished",
+                {
+                    "attempt_id": attempt.attempt_id,
+                    "status": "aborted",
+                    "terminal_reason": safe_reason,
+                    "participant_id": attempt.participant_id,
+                    "participant_generation": attempt.participant_generation,
+                    "terminal_receipt_recorded": False,
+                    "usage_recorded": False,
+                    "cost_micro_usd": None,
+                    "stop_acknowledgement_recorded": False,
+                    "stop_acknowledged": False,
+                    "cancellation_confirmed": False,
+                    "operator_confirmed": True,
+                    "queue_disposition": queue,
+                },
+                created_at=now,
+            )
+            updated = conn.execute(
+                "SELECT * FROM execution_attempts WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()
+        return _execution_attempt(updated)
 
     def bind_participant(
         self,

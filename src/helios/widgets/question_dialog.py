@@ -502,10 +502,26 @@ def _build_detail(detail: dict, *, scrollable: bool = True) -> Gtk.Widget:
         view.set_cursor_visible(False)
         view.set_monospace(True)
         view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        view.set_top_margin(8)
+        view.set_bottom_margin(8)
+        view.set_left_margin(10)
+        view.set_right_margin(10)
+        view.set_hexpand(True)
         view.get_buffer().set_text(text)
         body = view
     if not scrollable:
+        # In GTK4, a Gtk.TextView inside a Box/Viewport without vexpand
+        # collapses to its 2px frame border before line validation completes.
+        # Expanding the detail box and view inside the dialog's single outer
+        # ScrolledWindow keeps short commands readable and long commands
+        # smoothly scrollable without introducing a nested ScrolledWindow.
+        box.set_vexpand(True)
+        body.set_vexpand(True)
         body.add_css_class("frame")
+        body.update_property(
+            [Gtk.AccessibleProperty.LABEL],
+            [f"{title or kind} being approved"],
+        )
         box.append(body)
         return box
     scroller = Gtk.ScrolledWindow()

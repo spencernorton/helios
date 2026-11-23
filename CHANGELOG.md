@@ -4,6 +4,14 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.118.0 — 2026-11-23
+
+- **Gemini silent-turn liveness reconciliation:** Added a read-only Antigravity summary DB watchdog (`google_env.probe_conversation_idle` + `GeminiCliDriver` liveness timer) that reconciles silent turns once Antigravity confirms `CASCADE_RUN_STATUS_IDLE`, flushes streamed assistant text to the transcript and Work ledger, settles the durable execution receipt, and retires the wedged child process so Google session slots are freed cleanly.
+- **Automatic Google session-slot retry on eviction:** When starting a Gemini chat evicts an idle background Gemini session, Helios now waits boundedly for the closing slot and dispatches the message automatically instead of forcing a manual resend.
+- **In-UI stuck-turn recovery without replay:** Added an explicit confirmation flow (`Adw.Banner` + *Reconcile stuck turn…* menu action + `WorkCoordinator.reconcile_uncertain_attempt`) to unblock conversations left holding an orphaned execution attempt after a provider crash, with immutable operator-confirmed audit logging and zero automatic prompt replay.
+- **Codex `thread/closed` reconciliation:** Handled `thread/closed` notifications cleanly in `CodexAppServerDriver` so idle server-closed threads detach without drift warnings and resume transparently on the next send.
+- **Approval command detail visibility:** Expanded and padded plain-code tool-approval `Gtk.TextView` details inside the dialog's single outer scroller so command approvals no longer collapse to a 2 px border in GTK4.
+
 ## 0.117.1 — 2026-11-23
 
 - Browser tabs, active pages, file previews and pane visibility now stay scoped to the conversation that opened them instead of appearing across every chat in the window. Switching between conversations restores each chat's own browser tabs and visibility, and mid-session model switches keep the conversation's tabs attached across legs of the same Work.
