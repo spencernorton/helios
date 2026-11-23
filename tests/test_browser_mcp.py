@@ -60,11 +60,12 @@ def test_refusals_and_an_unreachable_helios_are_tool_errors_not_crashes():
 
 
 def test_nothing_is_injected_until_the_window_publishes_the_pane(published):
-    entry = browser_tools.server_entry("/work/proj", "Muse")
+    scope = object()
+    entry = browser_tools.server_entry("/work/proj", "Muse", scope=scope)
     assert entry["command"].endswith("helios-browser-mcp")
     assert entry["args"][:3] == ["--bus", "unix:path=/run/user/1000/bus", "--token"]
     # The folder travels as a Helios-issued token, never as a claim.
-    assert browser_tools.session_for(entry["args"][3]) == ("/work/proj", "Muse")
+    assert browser_tools.session_for(entry["args"][3]) == ("/work/proj", "Muse", scope)
     assert browser_tools.session_for("forged") is None
     assert browser_tools.session_for(["not", "hashable"]) is None
     browser_tools.publish("")
@@ -74,9 +75,12 @@ def test_nothing_is_injected_until_the_window_publishes_the_pane(published):
 def test_codex_threads_carry_the_browser_server(published):
     from helios.backend.process.codex_app_contract import build_thread_params
 
-    params = build_thread_params(cwd="/work/proj", model="gpt-6.1-sol", permission_mode="default")
+    scope = object()
+    params = build_thread_params(
+        cwd="/work/proj", model="gpt-6.1-sol", permission_mode="default", browser_scope=scope,
+    )
     server = params["config"]["mcp_servers"]["helios_browser"]
-    assert browser_tools.session_for(server["args"][-1]) == ("/work/proj", "GPT")
+    assert browser_tools.session_for(server["args"][-1]) == ("/work/proj", "GPT", scope)
     browser_tools.publish("")
     params = build_thread_params(cwd="/work/proj", model="gpt-6.1-sol", permission_mode="default")
     assert "mcp_servers" not in params["config"]

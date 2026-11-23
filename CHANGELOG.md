@@ -4,6 +4,11 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.117.1 — 2026-11-23
+
+- Browser tabs, active pages, file previews and pane visibility now stay scoped to the conversation that opened them instead of appearing across every chat in the window. Switching between conversations restores each chat's own browser tabs and visibility, and mid-session model switches keep the conversation's tabs attached across legs of the same Work.
+- Agent browser tool tokens bind to the spawning conversation's scope: background chats can load their own local previews without hijacking the visible pane, while screenshots and site-consent dialogs require the owning conversation to be active.
+
 ## 0.117.0 — 2026-11-23
 
 - Headless Claude runs that Helios did not start (scripts, scheduled jobs and other agents using `claude -p` or the Agent SDK) no longer flood the session list: they move to a new *Agent-launched* filter and are left out of *All sessions*, *This machine* and the per-folder filters. Helios's own chats, interactive terminal `claude` sessions and other providers' transcripts are never classified, and sending a message in an agent-launched session adopts it into the normal list.

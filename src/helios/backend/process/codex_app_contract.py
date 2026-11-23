@@ -42,7 +42,7 @@ _APPROVAL_LABELS = {
 }
 
 
-def _thread_config(cwd: str = "") -> dict[str, Any]:
+def _thread_config(cwd: str = "", browser_scope: object | None = None) -> dict[str, Any]:
     """Return Helios's fail-closed Codex thread feature policy."""
 
     config = {
@@ -61,7 +61,7 @@ def _thread_config(cwd: str = "") -> dict[str, Any]:
     }
     # Codex starts each thread's MCP servers from its own config layer, so the
     # browser pane's tools ride on the thread rather than ~/.codex/config.toml.
-    browser = browser_tools.server_entry(cwd, "GPT")
+    browser = browser_tools.server_entry(cwd, "GPT", scope=browser_scope)
     if browser is not None:
         # Pre-approved: Codex asks for MCP tool approval by elicitation, which
         # Helios declines, so "prompt" would fail every call. The pane itself
@@ -79,6 +79,7 @@ def build_thread_params(
     permission_mode: str,
     workflow_mode: str = "default",
     thread_id: str = "",
+    browser_scope: object | None = None,
 ) -> dict[str, Any]:
     """Build schema-exact ``thread/start`` or ``thread/resume`` params."""
 
@@ -98,7 +99,7 @@ def build_thread_params(
         "personality": "pragmatic",
         # App Server keeps request_user_input outside default-mode tools unless
         # this tested feature policy is installed on the native thread.
-        "config": _thread_config(cwd),
+        "config": _thread_config(cwd, browser_scope),
     }
     if thread_id:
         params["threadId"] = thread_id

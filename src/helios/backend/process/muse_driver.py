@@ -448,7 +448,9 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
     def _begin_session(self) -> None:
         approval = _APPROVAL_MODES.get(self._permission_mode, "promptUnmatched")
         extra = {}
-        browser = browser_tools.server_entry(self._cwd, "Muse") if self._session_mcp else None
+        browser = browser_tools.server_entry(
+            self._cwd, "Muse", scope=getattr(self, "_helios_browser_scope", None),
+        ) if self._session_mcp else None
         if browser is not None:
             # Optional: a pane that cannot start must never block the session.
             extra["config"] = {"mcpServers": {browser_tools.MCP_SERVER_NAME: {

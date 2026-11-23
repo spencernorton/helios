@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -110,6 +111,201 @@ def test_project_files_cannot_reach_outside_through_symlinks_or_dotdot(tmp_path,
     assert index["ok"] and index["title"] == "Index", index
     read = _call(pane, "browser_read", tab=index["tab"])
     assert "inside" in read["text"] and "SECRET" not in read["text"]
+
+
+def test_browser_tabs_and_sidebar_visibility_follow_their_chat(tmp_path, request):
+    if not Gtk.init_check():
+        pytest.skip("GTK display is unavailable")
+    from helios.widgets.browser_pane import SessionBrowser
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    browser = SessionBrowser(
+        on_shown=lambda shown: browser.set_shown(shown),
+        attach=lambda _path: None,
+        cwd=lambda: str(project),
+    )
+    if not browser.available:
+        pytest.skip("WebKitGTK 6 is not installed")
+    window = Gtk.Window()
+    window.set_default_size(800, 600)
+    window.set_child(browser)
+    request.addfinalizer(window.destroy)
+    browser.set_shown(False)
+    window.present()
+    for name in ("alpha", "beta", "background"):
+        (project / f"{name}.html").write_text(f"<title>{name}</title><p>{name}</p>")
+
+    def for_chat(scope):
+        return SimpleNamespace(handle_call=lambda tool, args, reply: browser.handle_call(
+            scope, tool, {**args, "_cwd": str(project)}, reply,
+        ))
+
+    scope_a = browser.scope
+    a = for_chat(scope_a)
+    alpha = _call(a, "browser_open", url="alpha.html")
+    assert alpha["ok"] and browser.get_visible()
+    browser.bind_session("native-a", scope_a)
+    assert browser.scope is scope_a
+
+    browser.select_session("native-b")
+    assert not browser.get_visible()
+    b = for_chat(browser.scope)
+    assert _call(b, "browser_tabs") == {"ok": True, "tabs": []}
+    beta = _call(b, "browser_open", url="beta.html")
+    assert beta["ok"] and beta["tab"] != alpha["tab"]
+    assert not _call(b, "browser_read", tab=alpha["tab"])["ok"]
+    assert not _call(a, "browser_screenshot", tab=alpha["tab"])["ok"]
+    assert not _call(a, "browser_open", url="https://example.invalid/")["ok"]
+
+    current_pane = browser.get_visible_child()
+    assert _call(a, "browser_open", url="background.html")["ok"]
+    assert browser.get_visible_child() is current_pane
+    assert [tab["title"] for tab in _call(b, "browser_tabs")["tabs"]] == ["beta"]
+    browser.set_shown(False)
+    browser.select_session("native-a")
+    assert browser.scope is scope_a and browser.get_visible()
+    tabs = _call(a, "browser_tabs")["tabs"]
+    assert [tab["title"] for tab in tabs] == ["alpha", "background"]
+    assert [tab["title"] for tab in tabs if tab["selected"]] == ["background"]
+
+    browser.select_session("native-b")
+    assert not browser.get_visible()
+    browser.select_session("native-a", origin="remote")
+    assert not browser.get_visible() and browser.scope is not scope_a
+
+
+def test_browser_tabs_survive_mid_session_model_switch_and_cwd_updates(tmp_path, request):
+    if not Gtk.init_check():
+        pytest.skip("GTK display is unavailable")
+    from helios.widgets.browser_pane import SessionBrowser
+
+    proj_a = tmp_path / "proj_a"
+    proj_b = tmp_path / "proj_b"
+    proj_bg = tmp_path / "proj_bg"
+    for p in (proj_a, proj_b, proj_bg):
+        p.mkdir()
+    (proj_a / "leg1.html").write_text("<title>Leg 1</title><p>first</p>")
+    (proj_b / "leg2.html").write_text("<title>Leg 2</title><p>second</p>")
+    (proj_bg / "other.html").write_text("<title>Other</title><p>bg</p>")
+
+    current_cwd = [str(proj_a)]
+    browser = SessionBrowser(
+        on_shown=lambda shown: browser.set_shown(shown),
+        attach=lambda _path: None,
+        cwd=lambda: current_cwd[0],
+    )
+    if not browser.available:
+        pytest.skip("WebKitGTK 6 is not installed")
+    window = Gtk.Window()
+    window.set_default_size(800, 600)
+    window.set_child(browser)
+    request.addfinalizer(window.destroy)
+    browser.set_shown(False)
+    window.present()
+
+    def for_chat(scope, cwd):
+        return SimpleNamespace(handle_call=lambda tool, args, reply: browser.handle_call(
+            scope, tool, {**args, "_cwd": str(cwd)}, reply,
+        ))
+
+    # Open preview on a fresh chat, then switch models before/after first send.
+    scope_a = browser.scope
+    a = for_chat(scope_a, proj_a)
+    first = _call(a, "browser_open", url="leg1.html")
+    assert first["ok"] and browser.get_visible()
+
+    browser.bind_work("wrk-1")
+    assert browser.matches_target("", work_id="wrk-1")
+    browser.bind_session("native-a1", scope_a, work_id="wrk-1")
+
+    # Mid-session model switch stages an unbound second leg under the same Work.
+    browser.select_session("", work_id="wrk-1")
+    assert browser.scope is scope_a and browser.get_visible()
+    assert browser.matches_target("", work_id="wrk-1")
+
+    # Background scope lookup for another conversation must not disturb Chat A.
+    scope_bg = browser.scope_for("native-bg", work_id="wrk-bg")
+    assert scope_bg is not scope_a and browser.scope is scope_a and browser.get_visible()
+    bg = for_chat(scope_bg, proj_bg)
+    assert _call(bg, "browser_open", url="other.html")["ok"]
+    assert browser.scope is scope_a
+
+    # Second leg binds a new native session id under the same Work.
+    browser.bind_session("native-a2", scope_a, work_id="wrk-1")
+    current_cwd[0] = str(proj_b)
+    pane_a = browser._panes[scope_a]
+    assert pane_a._cwd() == str(proj_b)
+    assert browser._panes[scope_bg]._cwd() == str(proj_bg)
+
+    # Switching away hides Chat A's pane; returning via either leg restores it.
+    browser.select_session("native-other", work_id="wrk-other")
+    assert not browser.get_visible()
+    browser.select_session("native-a2", work_id="wrk-1")
+    assert browser.scope is scope_a and browser.get_visible()
+    assert [tab["title"] for tab in _call(a, "browser_tabs")["tabs"]] == ["Leg 1"]
+
+
+def test_main_window_browser_target_identity_and_work_binding(tmp_path, request):
+    if not Gtk.init_check():
+        pytest.skip("GTK display is unavailable")
+    from helios.backend.projects import Project
+    from helios.backend.session_router import ChatTarget
+    from helios.main_window import MainWindow
+    from helios.widgets.browser_pane import SessionBrowser
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "preview.html").write_text("<title>Preview</title><p>ok</p>")
+
+    browser = SessionBrowser(
+        on_shown=lambda shown: browser.set_shown(shown),
+        attach=lambda _path: None,
+        cwd=lambda: str(project),
+    )
+    if not browser.available:
+        pytest.skip("WebKitGTK 6 is not installed")
+    window = Gtk.Window()
+    window.set_default_size(800, 600)
+    window.set_child(browser)
+    request.addfinalizer(window.destroy)
+    browser.set_shown(False)
+    window.present()
+
+    fake_win = SimpleNamespace(_browser=browser)
+    local_proj = Project(dirname="-proj", cwd=str(project), path=project)
+    remote_proj = Project(
+        dirname="-proj", cwd=str(project), path=project, read_only=True, origin="remote-host",
+    )
+
+    # Fresh chat opens a preview, then acquires a Work ID before sending.
+    scope_a = browser.scope
+    a = SimpleNamespace(handle_call=lambda tool, args, reply: browser.handle_call(
+        scope_a, tool, {**args, "_cwd": str(project)}, reply,
+    ))
+    assert _call(a, "browser_open", url="preview.html")["ok"] and browser.get_visible()
+
+    MainWindow._bind_browser_work(fake_win, "wrk-42")
+    MainWindow._select_browser_session(
+        fake_win, ChatTarget(project=local_proj, resume_id="", work_id="wrk-42"),
+    )
+    assert browser.scope is scope_a and browser.get_visible()
+
+    # Switching to another conversation hides the preview; returning via new leg restores it.
+    MainWindow._select_browser_session(
+        fake_win, ChatTarget(project=local_proj, resume_id="other-sid", work_id="wrk-99"),
+    )
+    assert not browser.get_visible()
+    MainWindow._select_browser_session(
+        fake_win, ChatTarget(project=local_proj, resume_id="leg2-sid", work_id="wrk-42"),
+    )
+    assert browser.scope is scope_a and browser.get_visible()
+
+    # A read-only remote session with the same session id never shares the local scope.
+    MainWindow._select_browser_session(
+        fake_win, ChatTarget(project=remote_proj, resume_id="leg2-sid", work_id="wrk-42"),
+    )
+    assert not browser.get_visible() and browser.scope is not scope_a
 
 
 class _Request:

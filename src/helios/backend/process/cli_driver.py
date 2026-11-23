@@ -658,7 +658,9 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
         elif not router_launcher.is_file():
             _log.debug("Helios Router MCP launcher is missing (broker inactive): %s", router_launcher)
         # The browser pane's tools, whenever the window has published the pane.
-        browser = browser_tools.server_entry(self._cwd, "Claude")
+        browser = browser_tools.server_entry(
+            self._cwd, "Claude", scope=getattr(self, "_helios_browser_scope", None),
+        )
         if browser is not None:
             mcp_servers[browser_tools.MCP_SERVER_NAME] = {"type": "stdio", **browser}
         if mcp_servers:

@@ -16,6 +16,7 @@ import os
 import stat
 from urllib.parse import unquote, urlsplit
 from typing import Callable
+from uuid import uuid4
 
 import gi
 
@@ -244,6 +245,179 @@ def _load_webkit():
     return WebKit
 
 
+class _BrowserEngine:
+    def __init__(self) -> None:
+        self.webkit = _load_webkit()
+        if self.webkit is None:
+            return
+        # Keep Python's URI handler on a window-owned context. Reuse the
+        # network session so every pane uses the same Helios browser profile.
+        self.context = self.webkit.WebContext.new()
+        self.context.register_uri_scheme(browser_target.SCHEME, _serve_project_file)
+        state = paths.state_dir() / "browser"
+        self.session = self.webkit.NetworkSession.new(str(state / "data"), str(state / "cache"))
+        # Local reports and servers cannot use embedded sites to send the
+        # person's third-party sign-ins.
+        self.session.set_itp_enabled(True)
+
+
+class SessionBrowser(Gtk.Stack):
+    """Keep a chat's tabs, selection and pane visibility beside that chat."""
+
+    def __init__(
+        self, *, on_shown: Callable[[bool], None], attach: Callable[[str], None],
+        cwd: Callable[[], str],
+    ) -> None:
+        super().__init__()
+        self._engine = _BrowserEngine()
+        self.available = self._engine.webkit is not None
+        self._on_shown = on_shown
+        self._attach = attach
+        self._cwd = cwd
+        self.scope = object()
+        self.session_id = ""
+        self.work_id = ""
+        self._origin = ""
+        self._panes: dict[object, BrowserPane] = {}
+        self._scope_cwds: dict[object, str] = {}
+        self._shown: set[object] = set()
+        self._scopes: dict[tuple[str, str], object] = {}
+
+    def _keys(
+        self, session_id: str = "", *, origin: str = "", work_id: str = "",
+    ) -> list[tuple[str, str]]:
+        if origin:
+            return [(origin, session_id)] if session_id else []
+        keys: list[tuple[str, str]] = []
+        if work_id:
+            keys.append(("work", work_id))
+        if session_id:
+            keys.append(("", session_id))
+        return keys
+
+    def scope_for(
+        self, session_id: str = "", *, origin: str = "", work_id: str = "",
+    ) -> object:
+        keys = self._keys(session_id, origin=origin, work_id=work_id)
+        if not keys:
+            return object()
+        existing = [self._scopes[key] for key in keys if key in self._scopes]
+        scope = next(
+            (candidate for candidate in existing if candidate in self._panes),
+            existing[0] if existing else object(),
+        )
+        for key in keys:
+            self._scopes[key] = scope
+        return scope
+
+    def matches_target(
+        self, session_id: str = "", *, origin: str = "", work_id: str = "",
+    ) -> bool:
+        if self._origin != origin:
+            return False
+        if origin:
+            return self.session_id == session_id
+        if work_id and self.work_id:
+            return self.work_id == work_id
+        if work_id and self._scopes.get(("work", work_id)) is self.scope:
+            return True
+        if session_id:
+            return (
+                self.session_id == session_id
+                or self._scopes.get(("", session_id)) is self.scope
+            )
+        return not self.session_id and not self.work_id
+
+    def select_session(
+        self, session_id: str = "", *, origin: str = "", work_id: str = "",
+    ) -> None:
+        self.scope = self.scope_for(session_id, origin=origin, work_id=work_id)
+        self.session_id = session_id
+        self.work_id = "" if origin else work_id
+        self._origin = origin
+        pane = self._panes.get(self.scope)
+        if pane is not None:
+            self.set_visible_child(pane)
+        self._on_shown(self.scope in self._shown)
+
+    def bind_work(self, work_id: str) -> None:
+        if not work_id or self._origin:
+            return
+        existing = self._scopes.get(("work", work_id))
+        if existing is None:
+            self._scopes[("work", work_id)] = self.scope
+            if self.session_id:
+                self._scopes[("", self.session_id)] = self.scope
+            self.work_id = work_id
+        elif existing is self.scope:
+            self.work_id = work_id
+
+    def bind_session(
+        self, session_id: str, scope: object, *, work_id: str = "",
+    ) -> None:
+        if session_id:
+            self._scopes[("", session_id)] = scope
+        if work_id:
+            self._scopes[("work", work_id)] = scope
+        if self.scope is scope:
+            if session_id:
+                self.session_id = session_id
+            if work_id and not self._origin:
+                self.work_id = work_id
+        elif not self._origin and (
+            (session_id and self.session_id == session_id)
+            or (work_id and self.work_id == work_id)
+        ):
+            self.select_session(
+                session_id or self.session_id,
+                work_id=work_id or self.work_id,
+            )
+
+    def set_shown(self, shown: bool) -> None:
+        if shown:
+            self._shown.add(self.scope)
+            self.set_visible_child(self._pane_for(self.scope, self._cwd()))
+        else:
+            self._shown.discard(self.scope)
+        self.set_visible(shown)
+
+    def open(self, url: str, **kwargs):
+        pane = self._pane_for(self.scope, self._cwd())
+        self.set_visible_child(pane)
+        return pane.open(url, **kwargs)
+
+    def handle_call(self, scope: object, tool: str, args: dict, reply: Reply) -> None:
+        self._pane_for(scope, args["_cwd"]).handle_call(tool, args, reply)
+
+    def _pane_for(self, scope: object, cwd: str) -> BrowserPane:
+        if cwd:
+            self._scope_cwds[scope] = cwd
+        pane = self._panes.get(scope)
+        if pane is None:
+            pane = BrowserPane(
+                on_reveal=lambda: self._reveal(scope),
+                on_close=lambda: self._on_shown(False) if scope is self.scope else None,
+                cwd=lambda: (
+                    (self._cwd() if scope is self.scope else "")
+                    or self._scope_cwds.get(scope, "")
+                ),
+                is_current=lambda: scope is self.scope,
+                engine=self._engine,
+            )
+            if pane.available:
+                pane.connect(
+                    "attach", lambda _pane, path: self._attach(path) if scope is self.scope else None,
+                )
+            self.add_child(pane)
+            self._panes[scope] = pane
+        return pane
+
+    def _reveal(self, scope: object) -> None:
+        self._shown.add(scope)
+        if scope is self.scope:
+            self._on_shown(True)
+
+
 class BrowserPane(Gtk.Box):
     __gsignals__ = {
         # A screenshot of the selected tab, saved as a file, for the composer.
@@ -256,16 +430,18 @@ class BrowserPane(Gtk.Box):
         on_reveal: Callable[[], None],
         on_close: Callable[[], None],
         cwd: Callable[[], str],
+        is_current: Callable[[], bool] = lambda: True,
+        engine: _BrowserEngine | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.add_css_class("helios-browser-pane")
         self._on_reveal = on_reveal
-        #: The selected chat's folder; relative paths in the address bar resolve here.
         self._cwd = cwd
+        self._is_current = is_current
         self._views: dict[str, object] = {}
-        self._next_id = 1
         self._waiters: dict[object, list[Callable[[str], None]]] = {}
-        self._webkit = _load_webkit()
+        engine = engine or _BrowserEngine()
+        self._webkit = engine.webkit
         self.available = self._webkit is not None
         if not self.available:
             page = Adw.StatusPage(
@@ -277,18 +453,8 @@ class BrowserPane(Gtk.Box):
             self.append(page)
             return
 
-        # A Python URI handler on WebKit's process-wide default context is
-        # destroyed by a C++ exit handler after Python has finalized. Keep the
-        # handler on a pane-owned context so its lifetime follows the widgets.
-        self._context = self._webkit.WebContext.new()
-        self._context.register_uri_scheme(browser_target.SCHEME, _serve_project_file)
-        state = paths.state_dir() / "browser"
-        # Persistent, and separate from the person's own browser profile.
-        self._session = self._webkit.NetworkSession.new(str(state / "data"), str(state / "cache"))
-        # Blocks third-party cookies: a free page (project file, localhost)
-        # that frames or fetches a site the person is signed in to must not
-        # send those sign-ins, or a screenshot would show their data.
-        self._session.set_itp_enabled(True)
+        self._context = engine.context
+        self._session = engine.session
 
         bar = Gtk.Box(spacing=4)
         bar.add_css_class("toolbar")
@@ -472,12 +638,18 @@ class BrowserPane(Gtk.Box):
             reply({**self._describe(view, "loaded", cwd), "png_base64": base64.b64encode(png).decode()})
 
         def snap() -> bool:
+            if not self._is_current():
+                reply({"ok": False, "error": "Switch to the chat that owns this tab to capture it."})
+                return False
             if self._alive(view, reply) and self._shareable(view, view.get_uri() or "", cwd, reply):
                 shown.append(view.get_uri() or "")
                 view.get_snapshot(WebKit.SnapshotRegion.VISIBLE, WebKit.SnapshotOptions.NONE, None, finished)
             return False
 
         def capture() -> None:
+            if not self._is_current():
+                reply({"ok": False, "error": "Switch to the chat that owns this tab to capture it."})
+                return
             if not self._alive(view, reply):
                 return
             # Only a mapped view paints, so show the pane and this tab first.
@@ -596,6 +768,9 @@ class BrowserPane(Gtk.Box):
         if not scope or scope in _always_allowed():
             proceed()
             return
+        if not self._is_current():
+            reply({"ok": False, "error": "Switch to the chat that requested browser access to approve it."})
+            return
         agent = " ".join(str(args.get("_agent") or "The agent").split())[:40]
         if is_web_scope(scope):
             heading = f"Let {agent} {verb} {scope}?"
@@ -624,6 +799,9 @@ class BrowserPane(Gtk.Box):
             GLib.source_remove(timer)
             if response == "deny":
                 reply({"ok": False, "error": f"The person declined access to {scope}."})
+                return
+            if not self._is_current():
+                reply({"ok": False, "error": "The browser request belongs to another chat."})
                 return
             if response == "always":
                 # Re-read: another dialog may have added a host meanwhile.
@@ -666,8 +844,7 @@ class BrowserPane(Gtk.Box):
         return view
 
     def _add_tab(self, view):
-        view._helios_tab_id = str(self._next_id)
-        self._next_id += 1
+        view._helios_tab_id = uuid4().hex
         self._views[view._helios_tab_id] = view
         page = self._tab_view.append(view)
         page.set_title("New tab")

@@ -130,8 +130,11 @@ path); Gemini and OpenRouter get the path as text.
 **Browser pane for agents.** Besides opening, reading and screenshotting
 pages, agents can click (CSS selector or a link/button's text), type into
 fields (optionally submitting) and read the page's console and uncaught
-errors — all under the same per-site consent. The camera button in the
-browser toolbar attaches a screenshot of the page to your message.
+errors under the same per-site consent. Each conversation keeps its own
+tabs, active page and pane visibility while Helios is open. Switch back to a
+conversation to see its tabs or approve a request to access another site.
+The camera button in the browser toolbar attaches the page to your message as
+a screenshot.
 
 **Images and files.** Images in a conversation — screenshots the browser pane
 returns, an image a tool read, a picture the model generated — show as
