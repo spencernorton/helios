@@ -409,8 +409,23 @@ class WorkStore:
             raise
         _chmod(self.path, 0o600)
 
+    def checkpoint_wal(self) -> tuple[int, int, int] | None:
+        """Run a non-blocking passive WAL checkpoint to bound work.db-wal growth."""
+        with self._lock:
+            try:
+                row = self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+            except sqlite3.Error:
+                return None
+        if row is None or len(row) < 3:
+            return None
+        return int(row[0]), int(row[1]), int(row[2])
+
     def close(self) -> None:
         with self._lock:
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except sqlite3.Error:
+                pass
             self._conn.close()
 
     def __enter__(self) -> WorkStore:

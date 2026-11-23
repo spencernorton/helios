@@ -7,6 +7,7 @@ scope because `TitleGenerator` is a GObject) so GTK-free consumers such as
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 import json
 import os
 from pathlib import Path
@@ -93,6 +94,20 @@ class TitleStore:
             self._data[session_id] = title
             _save_cache(self._data)
             return True
+
+    def delete_many(self, session_ids: Iterable[str]) -> int:
+        """Remove deleted session titles from the cache in one atomic write."""
+        ids = [str(sid) for sid in session_ids if sid]
+        if not ids:
+            return 0
+        removed = 0
+        with _CACHE_LOCK:
+            for sid in ids:
+                if self._data.pop(sid, None) is not None:
+                    removed += 1
+            if removed:
+                _save_cache(self._data)
+        return removed
 
 
 _store_singleton: TitleStore | None = None

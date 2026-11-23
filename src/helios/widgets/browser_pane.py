@@ -264,6 +264,9 @@ class _BrowserEngine:
 class SessionBrowser(Gtk.Stack):
     """Keep a chat's tabs, selection and pane visibility beside that chat."""
 
+    # Cap inactive background panes so WebKitWebProcesses cannot grow unbounded.
+    _MAX_HIDDEN_PANES = 4
+
     def __init__(
         self, *, on_shown: Callable[[bool], None], attach: Callable[[str], None],
         cwd: Callable[[], str],
@@ -279,6 +282,7 @@ class SessionBrowser(Gtk.Stack):
         self.work_id = ""
         self._origin = ""
         self._panes: dict[object, BrowserPane] = {}
+        self._pane_order: list[object] = []
         self._scope_cwds: dict[object, str] = {}
         self._shown: set[object] = set()
         self._scopes: dict[tuple[str, str], object] = {}
@@ -337,7 +341,9 @@ class SessionBrowser(Gtk.Stack):
         self._origin = origin
         pane = self._panes.get(self.scope)
         if pane is not None:
+            self._touch_pane(self.scope)
             self.set_visible_child(pane)
+        self._evict_excess_hidden_panes()
         self._on_shown(self.scope in self._shown)
 
     def bind_work(self, work_id: str) -> None:
@@ -410,7 +416,81 @@ class SessionBrowser(Gtk.Stack):
                 )
             self.add_child(pane)
             self._panes[scope] = pane
+        self._touch_pane(scope)
+        self._evict_excess_hidden_panes()
         return pane
+
+    def _touch_pane(self, scope: object) -> None:
+        if scope in self._pane_order:
+            self._pane_order.remove(scope)
+        self._pane_order.append(scope)
+
+    def _destroy_pane(self, scope: object) -> bool:
+        pane = self._panes.pop(scope, None)
+        if scope in self._pane_order:
+            self._pane_order.remove(scope)
+        self._shown.discard(scope)
+        if pane is None:
+            return False
+        try:
+            pane.close_all_tabs()
+        except Exception:
+            _log.exception("failed closing tabs for evicted browser pane")
+        try:
+            self.remove(pane)
+        except Exception:
+            pass
+        return True
+
+    def _evict_excess_hidden_panes(self) -> int:
+        cap = max(0, int(self._MAX_HIDDEN_PANES))
+        evictable = [
+            scope
+            for scope in self._pane_order
+            if scope is not self.scope
+            and scope in self._panes
+            and not self._panes[scope].has_pending_waiters
+        ]
+        evicted = 0
+        while len(evictable) > cap:
+            victim = evictable.pop(0)
+            if self._destroy_pane(victim):
+                evicted += 1
+        return evicted
+
+    def close_session(self, session_id: str = "", *, origin: str = "", work_id: str = "") -> bool:
+        """Tear down any WebKit pane owned by an archived or deleted session."""
+        keys = self._keys(session_id, origin=origin, work_id=work_id)
+        targets: list[object] = []
+        for key in keys:
+            scope = self._scopes.pop(key, None)
+            if scope is not None and scope not in targets:
+                targets.append(scope)
+        if not targets:
+            return False
+        # Also drop any remaining alias keys pointing at the retired scopes.
+        target_set = set(targets)
+        for key in [k for k, sc in self._scopes.items() if sc in target_set]:
+            self._scopes.pop(key, None)
+        closed = False
+        for scope in targets:
+            self._scope_cwds.pop(scope, None)
+            if self._destroy_pane(scope):
+                closed = True
+            if scope is self.scope:
+                self.scope = object()
+                self.session_id = ""
+                self.work_id = ""
+                self._origin = ""
+                self._on_shown(False)
+        return closed
+
+    def shutdown(self) -> None:
+        """Terminate all WebKit tabs cleanly on application close."""
+        for scope in list(self._panes):
+            self._destroy_pane(scope)
+        self._scopes.clear()
+        self._scope_cwds.clear()
 
     def _reveal(self, scope: object) -> None:
         self._shown.add(scope)
@@ -492,6 +572,34 @@ class BrowserPane(Gtk.Box):
         self._sync_toolbar()
 
     # ── public ──────────────────────────────────────────────────────────
+
+    @property
+    def has_pending_waiters(self) -> bool:
+        return any(bool(waiters) for waiters in self._waiters.values())
+
+    def close_all_tabs(self) -> None:
+        """Close all tabs and terminate their WebKit web processes."""
+        if not self.available:
+            return
+        views = list(self._views.values())
+        self._views.clear()
+        for view in views:
+            self._settle(view, "closed")
+            terminate = getattr(view, "terminate_web_process", None)
+            if callable(terminate):
+                try:
+                    terminate()
+                except Exception:
+                    pass
+            page = self._tab_view.get_page(view)
+            if page is not None:
+                try:
+                    self._tab_view.close_page(page)
+                except Exception:
+                    pass
+        self._waiters.clear()
+        self._stack.set_visible_child_name("empty")
+        self._sync_toolbar()
 
     def open(self, url: str, *, new_tab: bool = True, on_loaded: Callable | None = None):
         """Load ``url`` and select its tab; ``on_loaded(view, status)`` once it settles."""

@@ -141,10 +141,11 @@ class SessionList(Gtk.Box):
     # enough: see _restore_scroll.
     _SCROLL_RESTORE_FRAMES = 3
 
-    def __init__(self) -> None:
+    def __init__(self, *, work_store=None) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.add_css_class("helios-session-list")
 
+        self._work_store = work_store
         self._ui_state = ui_state_store()
 
         # Header — title + subtitle on the left, select-mode toggle on the right.
@@ -675,6 +676,24 @@ class SessionList(Gtk.Box):
         if self._filter != original and original in self._filter_ids:
             self._set_filter(original)
         return False
+
+    def session_path(self, session_id: str) -> str:
+        """Return the discovered transcript file path for session_id, if known."""
+        if not session_id:
+            return ""
+        row = self._rows_by_id.get(session_id)
+        if row is not None:
+            sess = getattr(row, "session", None)
+            path = getattr(sess, "path", None)
+            if path:
+                return str(path)
+        for sess in getattr(self, "_all_sessions", ()) or ():
+            if getattr(sess, "session_id", "") == session_id and getattr(sess, "path", None):
+                return str(sess.path)
+        pending = getattr(self, "_pending_sessions", {}).get(session_id)
+        if pending is not None and getattr(pending, "path", None):
+            return str(pending.path)
+        return ""
 
     def invalidate_session_project(self, session: Session) -> None:
         """Drop the cached transcript list for one session's project, so the

@@ -33,11 +33,14 @@ GTK-free; every call shells out to git and belongs on a worker thread.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 import json
 import os
+import queue
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,6 +53,10 @@ _log = get_logger("checkpoints")
 # Per session. Old entries fall off the end; the git objects they referenced
 # become unreachable and gc away on git's normal schedule.
 MAX_PER_SESSION = 50
+
+# Cap total persisted sessions so historical chats cannot bloat checkpoints.json
+# into multi-megabyte rewrites. Oldest sessions by latest timestamp drop first.
+MAX_SESSIONS = 150
 
 # Cap on the recorded ignored-path list. With `--directory` a normal repo
 # produces a handful of entries; the cap only bites on pathological trees,
@@ -442,12 +449,59 @@ def _predates(path: Path, created_at: int) -> bool:
 
 # ── persistence ────────────────────────────────────────────────────────────
 
+_STORE_LOCK = threading.Lock()
+_WRITE_QUEUE: queue.Queue = queue.Queue()
+_WRITER_LOCK = threading.Lock()
+_WRITER_THREAD: threading.Thread | None = None
+
+
+def _ensure_writer() -> None:
+    global _WRITER_THREAD
+    if _WRITER_THREAD is not None and _WRITER_THREAD.is_alive():
+        return
+    with _WRITER_LOCK:
+        if _WRITER_THREAD is not None and _WRITER_THREAD.is_alive():
+            return
+        _WRITER_THREAD = threading.Thread(
+            target=_writer_loop,
+            daemon=True,
+            name="helios-checkpoints-io",
+        )
+        _WRITER_THREAD.start()
+
+
+def _writer_loop() -> None:
+    while True:
+        op, arg1, arg2, path = _WRITE_QUEUE.get()
+        try:
+            if op == "record":
+                _record_sync(arg1, arg2, path=path)
+            elif op == "forget_many":
+                _forget_many_sync(arg1, path=path)
+            elif op == "barrier":
+                arg1.set()
+        except Exception as exc:
+            _log.warning("background checkpoint write failed: %s", exc)
+        finally:
+            _WRITE_QUEUE.task_done()
+
+
+def flush(timeout: float = 5.0) -> bool:
+    """Wait for all queued async checkpoint writes to finish."""
+    if _WRITER_THREAD is None or not _WRITER_THREAD.is_alive():
+        return True
+    done = threading.Event()
+    _WRITE_QUEUE.put(("barrier", done, None, None))
+    return done.wait(max(0.01, float(timeout)))
+
 
 def load(session_id: str) -> list[Checkpoint]:
     """Checkpoints for one session, newest first."""
     if not session_id:
         return []
-    rows = _read_all().get(session_id)
+    flush(timeout=2.0)
+    with _STORE_LOCK:
+        rows = _read_all().get(session_id)
     if not isinstance(rows, list):
         return []
     out = [c for c in (Checkpoint.from_dict(r) for r in rows) if c is not None]
@@ -459,41 +513,104 @@ def load(session_id: str) -> list[Checkpoint]:
     return out
 
 
-def record(session_id: str, checkpoint: Checkpoint) -> None:
-    """Append a checkpoint, keeping only the most recent MAX_PER_SESSION."""
+def _prune_sessions(data: dict) -> dict:
+    if len(data) <= MAX_SESSIONS:
+        return data
+    def _latest_ts(items: object) -> int:
+        if not isinstance(items, list):
+            return 0
+        best = 0
+        for row in items:
+            if isinstance(row, dict):
+                try:
+                    ts = int(row.get("created_at") or 0)
+                except (TypeError, ValueError):
+                    ts = 0
+                if ts > best:
+                    best = ts
+        return best
+    ordered = sorted(data.items(), key=lambda kv: (_latest_ts(kv[1]), kv[0]), reverse=True)
+    return dict(ordered[:MAX_SESSIONS])
+
+
+def _record_sync(session_id: str, checkpoint: Checkpoint, *, path: Path | None = None) -> None:
     if not session_id or checkpoint is None:
         return
-    data = _read_all()
-    rows = data.get(session_id)
-    rows = list(rows) if isinstance(rows, list) else []
-    rows.append(checkpoint.as_dict())
-    # Trim from the front: oldest first in file order, newest kept.
-    data[session_id] = rows[-MAX_PER_SESSION:]
-    _write_all(data)
+    with _STORE_LOCK:
+        data = _read_all(path=path)
+        rows = data.get(session_id)
+        rows = list(rows) if isinstance(rows, list) else []
+        rows.append(checkpoint.as_dict())
+        # Trim from the front: oldest first in file order, newest kept.
+        data[session_id] = rows[-MAX_PER_SESSION:]
+        data = _prune_sessions(data)
+        _write_all(data, path=path)
+
+
+def record(session_id: str, checkpoint: Checkpoint) -> None:
+    """Append a checkpoint, keeping only the most recent MAX_PER_SESSION."""
+    _record_sync(session_id, checkpoint)
+
+
+def record_async(session_id: str, checkpoint: Checkpoint) -> None:
+    """Queue checkpoint persistence onto the serialized background writer."""
+    if not session_id or checkpoint is None:
+        return
+    _ensure_writer()
+    _WRITE_QUEUE.put(("record", session_id, checkpoint, _store_path()))
+
+
+def _forget_many_sync(session_ids: Iterable[str], *, path: Path | None = None) -> int:
+    ids = [str(sid) for sid in session_ids if sid]
+    if not ids:
+        return 0
+    removed = 0
+    with _STORE_LOCK:
+        data = _read_all(path=path)
+        for sid in ids:
+            if data.pop(sid, None) is not None:
+                removed += 1
+        if removed:
+            _write_all(data, path=path)
+    return removed
 
 
 def forget(session_id: str) -> None:
-    data = _read_all()
-    if data.pop(session_id, None) is not None:
-        _write_all(data)
+    _forget_many_sync((session_id,))
 
 
-def _read_all() -> dict:
+def forget_many(session_ids: Iterable[str]) -> int:
+    return _forget_many_sync(session_ids)
+
+
+def forget_many_async(session_ids: Iterable[str]) -> None:
+    ids = tuple(str(sid) for sid in session_ids if sid)
+    if not ids:
+        return
+    _ensure_writer()
+    _WRITE_QUEUE.put(("forget_many", ids, None, _store_path()))
+
+
+def _read_all(*, path: Path | None = None) -> dict:
+    target = path if path is not None else _store_path()
     try:
-        data = json.loads(_store_path().read_text(encoding="utf-8"))
+        data = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}
 
 
-def _write_all(data: dict) -> None:
-    path = _store_path()
+def _write_all(data: dict, *, path: Path | None = None) -> None:
+    target = path if path is not None else _store_path()
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps(data, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
         os.chmod(tmp, 0o600)
-        tmp.replace(path)
+        tmp.replace(target)
     except OSError as e:
         _log.warning("could not save checkpoints: %s", e)
 
