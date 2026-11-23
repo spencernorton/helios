@@ -1,5 +1,18 @@
 # Helios — Session Journal
 
+## 2026-11-23 — Keep the Claude catalog and new-chat defaults consistent
+
+- Stop filtering the current Claude aliases from the main window. Group
+  current Claude models by family and keep their picker labels free of context
+  suffixes. Keep earlier versions under Older models and preserve selected
+  pinned versions and saved aliases.
+- Add a Claude catalog summary to Settings → Providers. Preserve the chosen
+  default when Settings refreshes its model list asynchronously.
+- Apply the saved default to generic new chats and the matching provider
+  shortcut. A different provider shortcut uses that provider. Distinguish
+  Claude Code's own default from an unset Helios preference and leave saved
+  conversations on their existing models.
+
 ## 2026-11-23 — Model picker: real Claude versions, working default model
 
 - Settings → Defaults → Model was a no-op: it wrote the same `model` key the

@@ -41,7 +41,7 @@ import os
 import re
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -829,38 +829,48 @@ def visible_entries(
     ]
 
 
+def picker_model_id(model_id: str, available_ids: Iterable[str]) -> str:
+    """Match an existing saved Claude alias to its single picker row."""
+    if model_id.isalpha():
+        ids = set(available_ids)
+        extended = f"{model_id}[1m]"
+        if model_id not in ids and extended in ids:
+            return extended
+    return model_id
+
+
 def collapse_latest_twins(
-    entries: list[ModelEntry],
+    entries: list[ModelEntry], *, keep_id: str = "",
 ) -> tuple[list[ModelEntry], list[ModelEntry]]:
-    """Split an Anthropic pool into (first tier, older) with one Latest row
-    per family. `opus[1m]` and `opus` name the same floating model at two
-    context sizes; showing both plus every pinned twin reads as duplicates.
-    The first Latest row per family stays up front, its twins and all pinned
-    versions fold behind the disclosure (still reachable by search)."""
-    current: list[ModelEntry] = []
+    """Group Claude by family and leave only earlier versions in Older models."""
+    current: dict[str, list[ModelEntry]] = {}
     older: list[ModelEntry] = []
-    seen_families: set[str] = set()
-    # Label of the version each up-front alias row resolves to ("Fable 5.2").
-    # The matching pinned id is the same model, not an older one, so it must
-    # not be filed under "Older models" (it stays reachable through search).
-    current_labels: set[str] = set()
+    default: list[ModelEntry] = []
     for entry in entries:
         if entry.group == "Latest":
-            family = entry.id.removesuffix("[1m]")
-            if family in seen_families:
-                older.append(entry)
-            else:
-                seen_families.add(family)
-                current.append(entry)
-                current_labels.add(entry.label)
-        elif entry.group == "Other":
-            current.append(entry)
-        else:
+            family = entry.id.removesuffix("[1m]").capitalize()
+            current.setdefault(family, [replace(entry, group=family)])
+
+    for entry in entries:
+        if entry.group == "Latest":
+            continue
+        if entry.group == "Other":
+            default.append(entry)
+            continue
+        rows = current.get(entry.group)
+        if rows is None:
+            current[entry.group] = [entry]
+            continue
+        pin = _parse_pinned(entry.id)
+        label = entry.label.removesuffix(f" ({pin.date})") if pin and pin.date else entry.label
+        if entry.id == keep_id:
+            rows.append(entry)
+        elif label != rows[0].label:
             older.append(entry)
-    if not current:
-        return list(entries), []
-    older = [entry for entry in older if entry.label not in current_labels]
-    return current, older
+
+    families = [family.capitalize() for family in KNOWN_FAMILIES]
+    families.extend(family for family in current if family not in families)
+    return [entry for family in families for entry in current.get(family, [])] + default, older
 
 
 # ── Cross-provider helpers ─────────────────────────────────────────────────

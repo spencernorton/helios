@@ -400,16 +400,9 @@ class ChatToolbar(Gtk.Box):
         if self._destroyed:
             return
         self._model_alias = alias
-        label = next(
-            (e.label for e in self._choices if e.id == alias), None
-        )
-        if label is None and alias and not alias.endswith("[1m]"):
-            # A plain alias persisted before rev 3 of the catalog ("opus")
-            # names the same model as its listed `[1m]` row.
-            label = next(
-                (e.label for e in self._choices if e.id == f"{alias}[1m]"), None
-            )
-        self._model_label.set_label(label or alias or "Default")
+        picker_id = model_catalog.picker_model_id(alias, (e.id for e in self._choices))
+        label = next((e.label for e in self._choices if e.id == picker_id), None)
+        self._model_label.set_label(label or alias.removesuffix("[1m]") or "Default")
         # The unified picker lists all available models grouped by provider.
         # Switching models updates the current provider filter for permissions
         # and execution controls.
@@ -1494,7 +1487,9 @@ class ChatToolbar(Gtk.Box):
         """Split into "the ones you actually pick" and "everything older"."""
         target_provider = provider or getattr(self, "_provider_filter", model_catalog.PROVIDER_ANTHROPIC)
         if target_provider == model_catalog.PROVIDER_ANTHROPIC:
-            current, older = model_catalog.collapse_latest_twins(pool)
+            current, older = model_catalog.collapse_latest_twins(
+                pool, keep_id=getattr(self, "_model_alias", ""),
+            )
         elif target_provider == model_catalog.PROVIDER_OPENROUTER:
             chosen = set(ui_state.store().get(ui_state.OPENROUTER_PICKER_KEY, []) or [])
             current = [e for e in pool if e.id in chosen]
@@ -1519,8 +1514,10 @@ class ChatToolbar(Gtk.Box):
         # the store fresh so a Settings change applies on the next open
         # without any refresh plumbing. The selected model always stays.
         hidden = ui_state.store().get(ui_state.HIDDEN_MODELS_KEY, []) or []
-        choices = model_catalog.visible_entries(
-            self._choices, hidden, keep_id=self._model_alias)
+        picker_id = model_catalog.picker_model_id(
+            self._model_alias, (e.id for e in self._choices),
+        )
+        choices = model_catalog.visible_entries(self._choices, hidden, keep_id=picker_id)
         needle = query.strip().lower()
         if needle:
             pool = [
@@ -1606,6 +1603,9 @@ class ChatToolbar(Gtk.Box):
 
     def _append_model_rows(self, box, popover, entries: list[ModelEntry]) -> None:
         last_group = None
+        picker_id = model_catalog.picker_model_id(
+            self._model_alias, (e.id for e in self._choices),
+        )
         for entry in entries:
             alias, label, group = entry.id, entry.label, entry.group
             if group != last_group:
@@ -1623,14 +1623,7 @@ class ChatToolbar(Gtk.Box):
                 box.append(header)
                 last_group = group
 
-            current = self._model_alias
-            selected = alias == current or (
-                # A plain alias saved before catalog rev 3 ("opus") is the
-                # model behind its listed `[1m]` row.
-                bool(current)
-                and alias == f"{current}[1m]"
-                and all(e.id != current for e in self._choices)
-            )
+            selected = alias == picker_id
             if selected:
                 # Without a marker the current model is indistinguishable
                 # in a long list — the main navigation complaint. A label

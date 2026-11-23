@@ -125,3 +125,17 @@ def test_unconfigured_openrouter_shows_the_whole_catalog(monkeypatch):
     current, older = split(OPENROUTER)
     assert current == pool(OPENROUTER)
     assert older == []
+
+
+def test_claude_families_stay_visible_when_current_aliases_are_hidden():
+    current, older = model_catalog.collapse_latest_twins([
+        ModelEntry("haiku", "Haiku 5.5", "Latest"),
+        ModelEntry("claude-fable-5-2", "Fable 5.2", "Fable"),
+        ModelEntry("claude-fable-5-1", "Fable 5.1", "Fable"),
+    ])
+
+    assert [(row.id, row.group) for row in current] == [
+        ("claude-fable-5-2", "Fable"),
+        ("haiku", "Haiku"),
+    ]
+    assert [row.id for row in older] == ["claude-fable-5-1"]

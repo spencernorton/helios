@@ -113,7 +113,7 @@ class TestPickerHygieneHelpers:
         ]
         current, older = model_catalog.collapse_latest_twins(pool)
         assert [e.id for e in current] == ["opus[1m]", "sonnet[1m]", ""]
-        assert [e.id for e in older] == ["opus", "sonnet", "claude-opus-4-8"]
+        assert [e.id for e in older] == ["claude-opus-4-8"]
 
 
 class TestSearchAlwaysAvailable:

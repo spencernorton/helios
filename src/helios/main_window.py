@@ -566,11 +566,11 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         # the newest Fable automatically, so this stays current as models ship.
         # The Settings default (when configured) owns the first fresh chat;
         # otherwise fall back to the last model used.
-        self._model = (
-            self._ui_state.get(DEFAULT_MODEL_KEY, "")
-            or self._ui_state.get("model", DEFAULT_MODEL)
-            or DEFAULT_MODEL
+        self._model = self._ui_state.get(
+            DEFAULT_MODEL_KEY, self._ui_state.get("model", DEFAULT_MODEL)
         )
+        if not isinstance(self._model, str):
+            self._model = DEFAULT_MODEL
         self._effort_key: str = migrate_effort_level(self._ui_state)
         _saved_openai_effort = str(
             self._ui_state.get("effort_openai", "") or ""
@@ -1288,20 +1288,6 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         # The worker normally supplies this baseline itself. Retain the same
         # fail-closed behavior for a malformed/empty callback payload so stale
         # GPT choices can never survive an unsuccessful refresh.
-        if not entries:
-            entries = list(model_catalog.FALLBACK_ANTHROPIC)
-        entries = [
-            entry
-            for entry in entries
-            if not (
-                getattr(entry, "provider", model_catalog.PROVIDER_ANTHROPIC)
-                == model_catalog.PROVIDER_ANTHROPIC
-                and (
-                    not str(getattr(entry, "id", "") or "")
-                    or str(getattr(entry, "id", "") or "").endswith("[1m]")
-                )
-            )
-        ]
         if not entries:
             entries = list(model_catalog.FALLBACK_ANTHROPIC)
         self._openai_catalog_authoritative = bool(openai_authoritative)
@@ -2682,7 +2668,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
 
         new_chat_btn = Gtk.Button.new_from_icon_name("document-edit-symbolic")
         new_chat_btn.set_tooltip_text(
-            "New chat with the selected agent (Ctrl+N)"
+            "New chat with the default model (Ctrl+N)"
         )
         new_chat_btn.add_css_class("suggested-action")
         new_chat_btn.connect("clicked", lambda *_: self._start_new_chat())
@@ -5431,8 +5417,12 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         self._composer.grab_input_focus()
 
     def _start_new_chat_with_provider(self, provider: str) -> None:
-        alias = self._model_for_provider(provider)
-        if not alias:
+        default = getattr(self, "_ui_state", {}).get(DEFAULT_MODEL_KEY)
+        if isinstance(default, str) and model_catalog.provider_for(default) == provider:
+            alias = default
+        else:
+            alias = self._model_for_provider(provider) or None
+        if alias is None:
             label = {
                 model_catalog.PROVIDER_OPENAI: "OpenAI",
                 model_catalog.PROVIDER_GOOGLE: "Google",
@@ -10556,7 +10546,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             self._permission_mode,
             # Settings edits the new-chat default, not the visible chat's
             # model; before one is configured, seed it with the current pick.
-            self._ui_state.get(DEFAULT_MODEL_KEY, "") or self._model,
+            self._ui_state.get(DEFAULT_MODEL_KEY, self._model),
             on_codex_credentials_changed=self._on_codex_credentials_changed,
             on_openrouter_credentials_changed=self._on_openrouter_credentials_changed,
         )
@@ -10888,7 +10878,9 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         # it is still a fresh, unbound one (a running conversation keeps its
         # model — changing that is the picker's job).
         self._ui_state.set(DEFAULT_MODEL_KEY, model)
-        if getattr(self, "_driver", None) is None:
+        if getattr(self, "_driver", None) is None and not getattr(
+            getattr(self, "_next_chat", None), "resume_id", ""
+        ):
             self._apply_model_choice(model, quiet=True)
         self._toast(
             f"Chat defaults saved — {MODE_LABELS.get(permission_mode, permission_mode)} "
@@ -10896,8 +10888,11 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         )
 
     def _model_display_label(self, model: str) -> str:
-        entry = getattr(self, "_catalog_entries_by_id", {}).get(model)
-        return entry.label if entry is not None else (model or "the Claude settings default")
+        entries = getattr(self, "_catalog_entries_by_id", {})
+        entry = entries.get(model_catalog.picker_model_id(model, entries))
+        return entry.label if entry is not None else (
+            model.removesuffix("[1m]") or "the Claude settings default"
+        )
 
     def _apply_default_model_for_new_chat(self) -> None:
         """Every New chat entry point opens on the Settings default model.
@@ -10907,8 +10902,8 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         right now is left to the existing send-time guards, exactly like the
         sticky model restored at startup."""
         store = getattr(self, "_ui_state", None)
-        default = str(store.get(DEFAULT_MODEL_KEY, "") or "") if store is not None else ""
-        if default and default != getattr(self, "_model", None):
+        default = store.get(DEFAULT_MODEL_KEY) if store is not None else None
+        if isinstance(default, str) and default != getattr(self, "_model", None):
             self._apply_model_choice(default, quiet=True)
 
     # --- close ---

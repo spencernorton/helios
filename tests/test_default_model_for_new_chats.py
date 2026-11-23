@@ -34,9 +34,9 @@ class _Project:
         self.read_only = False
 
 
-def _window(*, model: str, default: str = "", driver=None):
+def _window(*, model: str, default: str | None = None, driver=None):
     store = _Store()
-    if default:
+    if default is not None:
         store[DEFAULT_MODEL_KEY] = default
     applied: list[str] = []
     shown: list[object] = []
@@ -121,3 +121,36 @@ def test_saving_settings_leaves_a_running_conversation_on_its_model(monkeypatch)
     assert store[DEFAULT_MODEL_KEY] == "fable[1m]"
     assert applied == []
     assert window._model == "haiku"
+
+
+def test_matching_provider_new_chat_uses_the_saved_default():
+    window, _store, applied, shown, _ = _window(model="haiku", default="fable[1m]")
+    window._model_for_provider = lambda _provider: "haiku"
+
+    MainWindow._start_new_chat_with_provider(window, "anthropic")
+
+    assert applied == ["fable[1m]"]
+    assert len(shown) == 1
+
+
+@pytest.mark.parametrize("provider", [None, "anthropic"])
+def test_claude_cli_default_is_distinct_from_no_default(provider):
+    window, _store, applied, shown, _ = _window(model="haiku", default="")
+    if provider is None:
+        MainWindow._start_new_chat(window)
+    else:
+        MainWindow._start_new_chat_with_provider(window, provider)
+
+    assert applied == [""]
+    assert len(shown) == 1
+
+
+def test_saving_default_does_not_change_an_unbound_existing_conversation(monkeypatch):
+    monkeypatch.setattr(main_window_module, "sanitize_global_default", lambda m: m)
+    window, store, applied, _shown, _toasts = _window(model="haiku")
+    window._next_chat = types.SimpleNamespace(resume_id="saved-session")
+
+    MainWindow._on_prefs_apply(window, None, "default", "fable[1m]")
+
+    assert store[DEFAULT_MODEL_KEY] == "fable[1m]"
+    assert applied == []
