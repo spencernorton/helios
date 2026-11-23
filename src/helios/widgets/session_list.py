@@ -11,8 +11,11 @@ rest noise) — a session's project dir is now just metadata:
     via the per-cwd filter choices and the row's right-click "Copy folder path"
 
 A filter dropdown (All / This machine / per-cwd labels / per-host /
-Temporary) replaces project selection. Throwaway cwds (/tmp/*, _tmp_*) are
-hidden from All and live behind the Temporary filter.
+Temporary / Agent-launched) replaces project selection. Throwaway cwds
+(/tmp/*, _tmp_*) are hidden from All and live behind the Temporary filter.
+Headless Claude runs Helios did not start (scripts, cron, other agents'
+`claude -p`) are hidden the same way behind Agent-launched; see
+backend/session_origin.py.
 """
 
 from __future__ import annotations
@@ -42,6 +45,10 @@ from helios.backend.projects import (
     ensure_local_project,
     is_throwaway_cwd,
     purge_removed_sessions,
+)
+from helios.backend.session_origin import (
+    agent_launched_ids,
+    helios_owned_session_ids,
 )
 from helios.backend.session_state import (
     STATE_AWAITING,
@@ -78,6 +85,7 @@ _STATE_SORT_RANK = {
 FILTER_ALL = "all"
 FILTER_LOCAL = "local"
 FILTER_TEMP = "temp"
+FILTER_AGENT = "agent"
 # plus dynamic "host:<origin>" and "cwd:<path>" values.
 
 # Reserved id for the one staged fresh chat (New Chat clicked, nothing sent
@@ -264,6 +272,9 @@ class SessionList(Gtk.Box):
         # only when asked (manual reload / startup).
         self._local_sessions: list[Session] = []
         self._pool_sessions: list[Session] = []
+        # Local headless sessions Helios did not launch (recomputed per
+        # reload); hidden from every filter except Agent-launched.
+        self._agent_session_ids: set[str] = set()
         # Bumped per reload; in-flight pool scans / title workers check it
         # and abandon work that belongs to a list we've since rebuilt.
         self._reload_gen = 0
@@ -390,6 +401,11 @@ class SessionList(Gtk.Box):
             local,
             live_ids=keep_ids,
             now=time.time(),
+        )
+        self._agent_session_ids = agent_launched_ids(
+            self._local_sessions,
+            owned_ids=helios_owned_session_ids(),
+            keep_ids=keep_ids,
         )
         if not ui_state_store().get("show_pool_sessions", False):
             self._pool_sessions = []
@@ -645,11 +661,12 @@ class SessionList(Gtk.Box):
         """Like select_session, but if the row is filtered out, switch to a
         filter that can contain it and try again. ALL holds every non-throwaway
         session (incl. pool rows); TEMP holds the throwaway (`_tmp_`/`/tmp`)
-        ones — so a background session anywhere can always be surfaced."""
+        ones; AGENT holds headless runs Helios did not launch — so a background
+        session anywhere can always be surfaced."""
         if self.select_session(session_id):
             return True
         original = self._filter
-        for candidate in (FILTER_ALL, FILTER_TEMP):
+        for candidate in (FILTER_ALL, FILTER_TEMP, FILTER_AGENT):
             if candidate != self._filter and candidate in self._filter_ids:
                 self._set_filter(candidate)
                 if self.select_session(session_id):
@@ -669,17 +686,25 @@ class SessionList(Gtk.Box):
     def _rebuild_filter_choices(self) -> None:
         """Derive the dropdown's choices from what's actually on disk:
         All · This machine · one entry per distinct local cwd (custom label
-        if renamed) · one entry per pool host · Temporary (only if any)."""
+        if renamed) · one entry per pool host · Temporary and Agent-launched
+        (each only if any)."""
         names = name_store()
         labels: list[str] = ["All sessions", "This machine"]
         ids: list[str] = [FILTER_ALL, FILTER_LOCAL]
 
         cwds: dict[str, float] = {}
         has_temp = False
+        has_agent = False
+        agent_ids = getattr(self, "_agent_session_ids", set())
         for s in self._local_sessions:
             cwd = s.project.cwd
             if is_throwaway_cwd(cwd):
                 has_temp = True
+                continue
+            if s.session_id in agent_ids:
+                # Don't mint a cwd choice that would only ever list
+                # agent runs (e.g. a batch job's private work dir).
+                has_agent = True
                 continue
             cwds[cwd] = max(cwds.get(cwd, 0.0), s.mtime)
         for cwd in sorted(cwds, key=lambda c: -cwds[c]):
@@ -695,6 +720,9 @@ class SessionList(Gtk.Box):
         if has_temp:
             labels.append("Temporary")
             ids.append(FILTER_TEMP)
+        if has_agent:
+            labels.append("Agent-launched")
+            ids.append(FILTER_AGENT)
 
         if self._filter not in ids:
             self._filter = FILTER_ALL
@@ -742,16 +770,24 @@ class SessionList(Gtk.Box):
         f = self._filter
         ro = s.project.read_only
         temp = not ro and is_throwaway_cwd(s.project.cwd)
+        # Temporary wins: a throwaway-cwd agent run stays where it always was.
+        agent = (
+            not ro
+            and not temp
+            and s.session_id in getattr(self, "_agent_session_ids", ())
+        )
         if f == FILTER_ALL:
-            return not temp
+            return not temp and not agent
         if f == FILTER_LOCAL:
-            return not ro and not temp
+            return not ro and not temp and not agent
         if f == FILTER_TEMP:
             return temp
+        if f == FILTER_AGENT:
+            return agent
         if f.startswith("host:"):
             return ro and s.project.origin == f[5:]
         if f.startswith("cwd:"):
-            return not ro and s.project.cwd == f[4:]
+            return not ro and not agent and s.project.cwd == f[4:]
         return True
 
     # ── Rendering ────────────────────────────────────────────────────
