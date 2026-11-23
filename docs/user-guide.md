@@ -44,13 +44,21 @@ terminal sessions are already in the sidebar, as one list ordered by what
 needs attention (working, stuck, errored, then finished) and newest first.
 GPT sessions are Codex App Server threads; OpenRouter sessions live under
 `~/.helios/openrouter-sessions/`. The sidebar filter narrows the list to *All
-sessions*, *This machine*, one folder, one other machine, or *Temporary*.
+sessions*, *This machine*, one folder, one other machine, *Temporary* or
+*Agent-launched*.
 
 Sessions whose folder is under `/tmp` or has a path component starting with
 `_tmp_` are *temporary*: they appear only under the **Temporary** filter, and
 once such a project has at most one transcript, 14 days of inactivity and a
 folder that no longer exists, it is moved to `~/.claude/projects-archive/`
-at startup (move it back to restore). Other machines' sessions appear only
+at startup (move it back to restore).
+
+Claude sessions that a script, scheduled job or another agent started with
+headless `claude -p` (or the Agent SDK) are *agent-launched*: they appear only
+under the **Agent-launched** filter, not in *All sessions*, *This machine* or a
+folder. Helios's own chats and interactive terminal `claude` sessions are never
+classified this way, and sending a message in an agent-launched session from
+Helios adopts it into the normal list. Other machines' sessions appear only
 with Settings → Behavior → *Show other machines' sessions* on and
 `HELIOS_SESSION_POOL` pointing at a session pool root; they are read-only.
 

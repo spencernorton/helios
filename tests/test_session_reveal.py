@@ -63,3 +63,12 @@ def test_set_filter_preserves_selection():
     f._set_filter = types.MethodType(SessionList._set_filter, f)
     f._set_filter(FILTER_TEMP)
     assert renders == [True]
+
+
+def test_reveal_falls_back_to_agent_launched():
+    from helios.widgets.session_list import FILTER_AGENT
+
+    ids = [FILTER_ALL, FILTER_TEMP, FILTER_AGENT]
+    f = _fake(FILTER_ALL, ids, present_under=FILTER_AGENT)
+    assert f.reveal_session("s") is True
+    assert f._filter == FILTER_AGENT

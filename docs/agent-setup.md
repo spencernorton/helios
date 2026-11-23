@@ -678,6 +678,8 @@ Session archival moves transcripts. 15 s after the window opens and every 24 h, 
 
 Throwaway rule for display: sessions whose working directory is `/tmp`, under `/tmp/`, or has a `_tmp_*` component are hidden from the All and Local sidebar filters and shown only under Temporary.
 
+Agent-launched rule for display: a local Claude transcript whose first `entrypoint` starts with `sdk` (headless `claude -p` or the Agent SDK) is hidden from the All, Local and per-folder filters and shown only under Agent-launched, unless `~/.helios/work/work.db` binds it to a Work that Helios has sent a turn in (an `execution_attempts` row or a `user.message` event). Opening a session alone does not count. Interactive `claude` (`entrypoint: cli`), Helios's non-Claude transcripts and other machines' sessions are never classified. If the Work store cannot be read, nothing is hidden.
+
 ### 9.3 Network
 
 | Endpoint | When |

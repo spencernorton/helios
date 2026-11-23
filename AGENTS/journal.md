@@ -1,5 +1,28 @@
 # Helios — Session Journal
 
+## 2026-11-23 — Agent-launched Claude sessions get their own sidebar filter
+
+- Symptom: the sidebar filled with hundreds of rows the user never started.
+  A headless `claude -p` batch in `$HOME` wrote one
+  transcript per call; the cwd-based Temporary rule (`/tmp`, `_tmp_*`) cannot
+  catch `$HOME`, and agent scratch has since moved to `/var/tmp/agent-work`.
+- Transcript metadata alone cannot separate them: Helios's own Claude chats
+  are also `entrypoint: sdk-cli` / `promptSource: sdk`. A Work binding is not
+  proof of ownership either — `resolve_native_work` lazily binds any transcript
+  the user merely *opens* (3 batch rows on the dev host had bindings, zero turns).
+- New `backend/session_origin.py`: a local transcript is agent-launched when
+  its first `entrypoint` starts with `sdk` and no Work Helios has *driven*
+  (an `execution_attempts` row or a `user.message` event) binds it. Read-only
+  SQLite, ~2.5 ms warm; the entrypoint scan is bounded (64 lines / 256 KB) and
+  cached once found. It fails open: an unreadable store hides nothing; live,
+  selected and pending sessions are never classified; pool rows are skipped.
+- Session list: new **Agent-launched** filter (shown only when non-empty),
+  excluded from All, This machine and per-cwd choices; agent-only cwds mint
+  no filter entry; `reveal_session` falls back to it. Sending a message in
+  one from Helios adopts it into the normal list.
+- Dry run against a real `~/.claude/projects` + `work.db`: 146 rows →
+  7 visible (exactly the user's own chats), 139 behind Agent-launched.
+
 ## 2026-11-09 — Muse Stop no longer bricks the session; context meter fixed
 
 - `MuseServeDriver.stop()` sent `turn/interrupt` and immediately SIGTERM'd
