@@ -1129,6 +1129,23 @@ class WorkCoordinator:
 
         return self.store.reclaim_orphaned_execution_attempts()
 
+    def active_attempts_for_work(self, work_id: str) -> list[ExecutionAttempt]:
+        """Return durable running execution attempts for one Work."""
+
+        return self.store.list_active_execution_attempts_for_work(work_id)
+
+    def reconcile_uncertain_attempt(
+        self,
+        attempt_id: str,
+        *,
+        reason: str = "reconciled.operator_confirmed",
+    ) -> ExecutionAttempt:
+        """Release one uncertain running attempt after operator confirmation."""
+
+        return self.store.reconcile_operator_aborted_attempt(
+            attempt_id, reason=reason
+        )
+
     def record_execution_dispatch(
         self,
         attempt_id: str,

@@ -50,6 +50,10 @@ class GeminiDriverSpawnError(RuntimeError):
 class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
     display_name = "gemini"
     provider = "google"
+    _LIVENESS_CHECK_INTERVAL_SECONDS = 15
+    _IDLE_RECONCILE_SILENCE_SECONDS = 45.0
+    _IDLE_DB_QUIET_SECONDS = 30.0
+    _HARD_STALL_NOTICE_SECONDS = 1200.0
 
     __gsignals__ = {
         "session-started": (GObject.SignalFlags.RUN_FIRST, None, (str, str, str)),
@@ -108,6 +112,10 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         self._seen_result_turns = 0
         self._last_step_index = -1
         self._dispatch_step_floor = -1
+        self._turn_started_wall = 0.0
+        self._liveness_source_id = 0
+        self._liveness_probe_in_flight = False
+        self._stall_notice_emitted = False
         self._startup_pending_text: str | None = None
         self._transcript = CodexTranscriptWriter(cwd, provider=model_catalog.PROVIDER_GOOGLE)
         self.init_tools: list[str] = []
@@ -312,6 +320,9 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
             self.emit("error", "Google delivery is uncertain. This Work remains blocked until provider-backed recovery confirms the outcome.")
             return MessageDelivery("uncertain")
         self._last_activity = time.monotonic()
+        self._turn_started_wall = time.time()
+        self._stall_notice_emitted = False
+        self._start_liveness_watchdog()
         # A pipe write is a local handoff. Native user_input/result events
         # provide acceptance; no synthetic conversation id is emitted.
         return MessageDelivery("accepted")
@@ -547,6 +558,7 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
             self._is_busy = False
             self._completed_turns = count
             self._streaming = None
+            self._cancel_liveness_watchdog()
             self._last_activity = time.monotonic()
             if status != "SUCCESS":
                 detail, _ = scrub_sensitive(str(result.get("error") or status))
@@ -586,9 +598,183 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
             )
         )
 
+    def _start_liveness_watchdog(self) -> None:
+        if self._liveness_source_id:
+            return
+        interval = max(1, int(self._LIVENESS_CHECK_INTERVAL_SECONDS))
+        self._liveness_source_id = GLib.timeout_add_seconds(
+            interval, self._on_liveness_tick
+        )
+
+    def _cancel_liveness_watchdog(self) -> None:
+        sid, self._liveness_source_id = self._liveness_source_id, 0
+        self._liveness_probe_in_flight = False
+        if sid:
+            try:
+                GLib.source_remove(sid)
+            except Exception:
+                pass
+
+    def _on_liveness_tick(self) -> bool:
+        if (
+            not self._is_busy
+            or self._stopped
+            or self._accounting_failed
+            or not self.execution_attempt_id
+            or not self._session_id
+        ):
+            self._liveness_source_id = 0
+            return False
+        silence = time.monotonic() - self._last_activity
+        if silence >= self._IDLE_RECONCILE_SILENCE_SECONDS and not self._liveness_probe_in_flight:
+            self._liveness_probe_in_flight = True
+            attempt_id = self.execution_attempt_id
+            session_id = self._session_id
+            threading.Thread(
+                target=self._probe_idle_worker,
+                args=(attempt_id, session_id),
+                daemon=True,
+                name="google-liveness-probe",
+            ).start()
+        if silence >= self._HARD_STALL_NOTICE_SECONDS and not self._stall_notice_emitted:
+            self._stall_notice_emitted = True
+            minutes = max(1, int(silence // 60))
+            _log.warning(
+                "Gemini turn %s silent on stdout for %dm without idle confirmation",
+                self._session_id[:8],
+                minutes,
+            )
+            self.emit(
+                "activity-updated",
+                {
+                    "tool": "waiting",
+                    "state": f"No output from Antigravity for {minutes}+ minutes",
+                },
+            )
+        return True
+
+    def _probe_idle_worker(self, attempt_id: str, session_id: str) -> None:
+        snap = google_env.probe_conversation_idle(session_id)
+        GLib.idle_add(self._apply_idle_probe, attempt_id, snap)
+
+    def _apply_idle_probe(
+        self,
+        attempt_id: str,
+        snap: google_env.ConversationIdleSnapshot | None,
+    ) -> bool:
+        self._liveness_probe_in_flight = False
+        if (
+            not self._is_busy
+            or self._stopped
+            or self._accounting_failed
+            or self.execution_attempt_id != attempt_id
+            or not self._session_id
+        ):
+            return False
+        if (time.monotonic() - self._last_activity) < self._IDLE_RECONCILE_SILENCE_SECONDS:
+            return False
+        if snap is None or snap.conversation_id != self._session_id:
+            return False
+        if snap.status != "CASCADE_RUN_STATUS_IDLE" or snap.not_fully_idle or snap.killed:
+            return False
+        if snap.last_modified_epoch < (self._turn_started_wall - 2.0):
+            return False
+        if (time.time() - snap.last_modified_epoch) < self._IDLE_DB_QUIET_SECONDS:
+            return False
+        min_step = max(self._dispatch_step_floor, snap.last_user_input_step_index)
+        if snap.step_count <= min_step:
+            return False
+        _log.warning(
+            "Reconciling silent Gemini turn %s from Antigravity summary DB "
+            "(status=%s step_count=%d user_step=%d)",
+            self._session_id[:8],
+            snap.status,
+            snap.step_count,
+            snap.last_user_input_step_index,
+        )
+        if not self._accept_prompt(f"{self._session_id}/reconciled/{snap.step_count}"):
+            return False
+        streamed_text = ""
+        if self._streaming is not None:
+            streamed_text = "".join(
+                block.text for block in self._streaming.blocks if block.text
+            ).strip()
+        if streamed_text:
+            turn = Turn(role="assistant")
+            turn.add("text", streamed_text)
+            if not self._record_execution_contribution(turn):
+                self._hold_accounting_failure(
+                    "Helios could not save the reconciled Google response. This Work remains blocked."
+                )
+                return False
+            try:
+                self._transcript.append_assistant(
+                    turn, model=self._model, result={"usage": {}}
+                )
+            except Exception:
+                self._hold_accounting_failure(
+                    "Helios could not save the reconciled Google transcript. This Work remains blocked."
+                )
+                return False
+            self.emit("turn-appended", turn)
+        if not self._finish_execution_with_evidence(
+            ExecutionTerminalEvidence(
+                evidence_type="provider_terminal",
+                status="completed",
+                reason_code="provider_result.reconciled_idle",
+                provider_status="CASCADE_RUN_STATUS_IDLE",
+                request_id=self.execution_attempt_id,
+                turn_id=self._accepted_turn_id,
+                native_id=self._session_id,
+                usage={},
+                queue_disposition="released",
+            )
+        ):
+            self._hold_accounting_failure(
+                "Helios could not finish the reconciled Google receipt. This Work remains blocked."
+            )
+            return False
+        self._is_busy = False
+        self._completed_turns += 1
+        self._seen_result_turns = max(self._seen_result_turns + 1, self._completed_turns)
+        self._streaming = None
+        self._cancel_liveness_watchdog()
+        self._last_activity = time.monotonic()
+        self.emit(
+            "result",
+            {
+                "conversation_id": self._session_id,
+                "status": "SUCCESS",
+                "subtype": "success",
+                "response": streamed_text,
+                "reconciled": True,
+                "turn_usage": {},
+            },
+        )
+        # Close the wedged stream-json child so its Google slot frees cleanly;
+        # any queued follow-ups are returned to the composer on exit rather
+        # than sent into a process that stopped emitting result frames.
+        self._retire_wedged_process()
+        return False
+
+    def _retire_wedged_process(self) -> None:
+        self._stopped = True
+        self._accepting_input = False
+        proc = self._proc
+        if proc is not None and proc.stdin is not None:
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+        if proc is not None and proc.poll() is None:
+            threading.Thread(
+                target=self._reap_stopped, args=(proc,), daemon=True
+            ).start()
+
     def _hold_accounting_failure(self, message: str) -> None:
         self._accounting_failed = True
         self._accepting_input = False
+        self._cancel_liveness_watchdog()
         self._finish_predispatch_attempt()
         self.emit("error", message)
 
@@ -621,6 +807,7 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
     def stop(self, *, interrupt: bool = True) -> None:
         self._stopped = True
         self._accepting_input = False
+        self._cancel_liveness_watchdog()
         self._finish_predispatch_attempt()
         if self._proc is not None and self._proc.poll() is None:
             try:
@@ -667,6 +854,7 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
 
     def _on_exit(self, code: int) -> bool:
         self._accepting_input = False
+        self._cancel_liveness_watchdog()
         self._finish_predispatch_attempt()
         if self.execution_attempt_id:
             self.emit("error", "Google exited without a confirmed terminal receipt. This Work remains blocked; its input will not be replayed.")
