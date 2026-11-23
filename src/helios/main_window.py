@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import dataclasses
-import json
 import os
 import threading
 import time
@@ -75,7 +74,7 @@ from helios.backend.composite_transcript import (
 )
 from helios.backend.conversation_perms import store as conversation_perms_store
 from helios.backend.latest_worker import LatestTaskRunner
-from helios.backend import browser_target, transcript_fork, worktrees
+from helios.backend import transcript_fork, worktrees
 from helios.backend.attachments import mentioned_images
 from helios.backend import projects as _projects
 from helios.backend.projects import (
@@ -152,23 +151,6 @@ def _flush_pending_checkpoints(drv, session_id: str) -> None:
 # few seconds. Spend moves slowly enough that a minute is plenty.
 _OR_CREDITS_MIN_INTERVAL = 60.0
 
-# How long a pre-turn snapshot may hold up the send. Milliseconds on a normal
-# repo; this only bites on a pathological one, where shipping the message
-# without an undo point beats freezing the composer.
-_CHECKPOINT_DEADLINE_MS = 4000
-
-
-class _CheckpointDispatch(NamedTuple):
-    """One pre-turn snapshot that still owns an unsent composer submit."""
-
-    driver: object
-    generation: int
-    text: str
-    provider: str
-    work_id: str
-    cwd: str
-
-
 class _NativeRecoveryAnchor(NamedTuple):
     """Where a wire-pending native prompt belongs if rejection is definite."""
 
@@ -214,7 +196,13 @@ from helios.widgets.capabilities_pane import CapabilitiesPane
 from helios.widgets.goal_strip import GoalStrip
 from helios.widgets.handoff_dialog import present_handoff_dialog
 from helios.widgets.work_indicator import WorkIndicator
+from helios.window_browser import WindowBrowserMixin
+from helios.window_checkpoints import (
+    WindowCheckpointsMixin,
+    _CheckpointDispatch,
+)
 from helios.window_goal import GoalWorkMixin
+from helios.window_recovery import WindowRecoveryMixin
 from helios.widgets.mission_pane import MissionPane
 from helios.widgets.plan_pane import PlanPane
 from helios.widgets.plan_progress_strip import PlanProgressStrip
@@ -301,7 +289,13 @@ class _PendingModelSwitch:
     stop_requested: bool = False
 
 
-class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
+class MainWindow(
+    GoalWorkMixin,
+    WindowBrowserMixin,
+    WindowRecoveryMixin,
+    WindowCheckpointsMixin,
+    Adw.ApplicationWindow,
+):
     """Two+1 columns: Sessions | Transcript+Composer | Context/Shared.
 
     There is no projects panel: the session list is unified across every
@@ -4844,102 +4838,6 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
 
     # --- browser pane ---
 
-    def _open_in_pane(self, path: str) -> None:
-        """Show a local file in the side pane: WebKit renders images (with
-        click-to-zoom), PDFs (built-in PDF.js), HTML and text."""
-        if not self._browser.available:
-            Gtk.FileLauncher.new(Gio.File.new_for_path(path)).launch(self, None, None, None)
-            return
-        cwd = self._current_project_cwd() or ""
-        try:
-            url = browser_target.localize(browser_target.resolve(path, cwd), cwd)
-        except browser_target.TargetError as exc:
-            self._toast(str(exc))
-            return
-        self._browser_btn.set_active(True)
-        self._browser.open(url)
-
-    def _on_browser_toggle(self, button: Gtk.ToggleButton) -> None:
-        shown = button.get_active()
-        if shown and not self._browser.get_visible():
-            # Half the content width on first use, then wherever it was left.
-            width = self._browser_paned.get_width() or 1000
-            saved = int(self._ui_state.get("browser_paned", 0) or 0)
-            self._browser_paned.set_position(saved if 200 < saved < width - 200 else width // 2)
-        self._browser.set_shown(shown)
-
-    @staticmethod
-    def _browser_target_identity(target: ChatTarget | None) -> tuple[str, str, str]:
-        if target is None:
-            return "", "", ""
-        project = target.project
-        origin = ""
-        if getattr(project, "read_only", False):
-            origin = str(getattr(project, "origin", "") or "remote")
-        work_id = "" if origin else str(getattr(target, "work_id", "") or "")
-        return str(target.resume_id or ""), origin, work_id
-
-    def _bind_browser_work(self, work_id: str) -> None:
-        browser = getattr(self, "_browser", None)
-        if browser is not None and work_id:
-            browser.bind_work(work_id)
-
-    def _select_browser_session(self, target: ChatTarget | None = None) -> None:
-        browser = getattr(self, "_browser", None)
-        if browser is None:
-            return
-        session_id, origin, work_id = MainWindow._browser_target_identity(target)
-        browser.select_session(session_id, origin=origin, work_id=work_id)
-
-    def _register_browser_bus(self) -> None:
-        """Export the pane on the session bus and tell drivers how to reach it."""
-        app = self.get_application()
-        connection = app.get_dbus_connection() if app is not None else None
-        self._browser_bus_id = 0
-        if connection is None or not self._browser.available:
-            return
-        node = Gio.DBusNodeInfo.new_for_xml(browser_tools.INTERFACE_XML)
-        # closures2 is GLib 2.84+; the older call is what 24.04 (2.80) has.
-        register = getattr(connection, "register_object_with_closures2", None) or connection.register_object
-        try:
-            self._browser_bus_id = register(
-                browser_tools.OBJECT_PATH, node.interfaces[0], self._on_browser_bus_call, None, None,
-            )
-            address = Gio.dbus_address_get_for_bus_sync(Gio.BusType.SESSION, None)
-        except GLib.Error as exc:
-            _log.warning("browser pane is not reachable by agents: %s", exc.message)
-            return
-        self._browser_bus = connection
-        browser_tools.publish(address)
-
-    def _on_browser_bus_call(self, _conn, _sender, _path, _iface, _method, params, invocation) -> None:
-        replied: list[bool] = []
-
-        def reply(result: dict) -> None:
-            if not replied:
-                replied.append(True)
-                invocation.return_value(GLib.Variant("(s)", (json.dumps(result),)))
-
-        tool, raw = params.unpack()
-        try:
-            args = json.loads(raw)
-        except ValueError:
-            args = None
-        if not isinstance(args, dict):
-            reply({"ok": False, "error": "Browser tool arguments must be a JSON object."})
-        elif self._destroyed:
-            reply({"ok": False, "error": "Helios is closing."})
-        else:
-            # Folder and agent come from the token Helios issued at spawn,
-            # never from the payload; an unknown caller gets nothing.
-            session = browser_tools.session_for(args.pop("_token", None))
-            args = {k: v for k, v in args.items() if not str(k).startswith("_")}
-            if session is None or session[2] is None:
-                reply({"ok": False, "error": "Unknown Helios browser session."})
-                return
-            args["_cwd"], args["_agent"], scope = session
-            self._browser.handle_call(scope, tool, args, reply)
-
     def _save_window_layout(self) -> None:
         """Persist window size + splitter positions. Cheap; called on close."""
         try:
@@ -5674,30 +5572,6 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 "conversation. Reopen it before sending another message."
             )
         return ""
-
-    def _reclaim_orphaned_execution_lanes(self) -> None:
-        """Free execution lanes a Helios that exited mid-turn still holds.
-
-        Startup only, and it must stay that way: a Helios killed mid-turn
-        leaves its attempt 'running', and per-Work admission then refuses every
-        later message in that chat with "already executing" — permanently,
-        since the driver that would produce a terminal receipt died with the
-        process. Nothing is live this early, so any running row is an orphan.
-        """
-
-        coordinator = getattr(self, "_work_coordinator", None)
-        if coordinator is None:
-            return
-        try:
-            orphans = coordinator.reclaim_orphaned_execution_attempts()
-        except Exception as exc:
-            _log.warning("could not reclaim orphaned execution attempts: %s", exc)
-            return
-        for orphan in orphans:
-            _log.warning(
-                "released execution attempt %s orphaned by a previous Helios",
-                orphan.attempt_id,
-            )
 
     def _start_execution_attempt_for_driver(self, drv) -> tuple[str, str]:
         """Atomically reserve this driver's durable execution lane."""
@@ -6846,104 +6720,6 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         except TypeError:
             tracked = False
         return tracked or bool(getattr(driver, "model_change_pending", False))
-
-    def _checkpoint_dispatch_for(self, drv) -> _CheckpointDispatch | None:
-        """Return the current unsent checkpoint dispatch for ``drv``."""
-
-        if drv is None:
-            return None
-        pending = getattr(self, "_pending_checkpoint_dispatches", None)
-        if not isinstance(pending, dict):
-            return None
-        entry = pending.get(id(drv))
-        if not isinstance(entry, _CheckpointDispatch) or entry.driver is not drv:
-            return None
-        return entry
-
-    def _checkpoint_dispatch_pending_for(self, drv) -> bool:
-        return MainWindow._checkpoint_dispatch_for(self, drv) is not None
-
-    def _begin_checkpoint_dispatch(self, drv, text: str) -> int:
-        """Install a new one-shot dispatch generation for ``drv``."""
-
-        generation = int(getattr(self, "_checkpoint_dispatch_generation", 0)) + 1
-        self._checkpoint_dispatch_generation = generation
-        pending = getattr(self, "_pending_checkpoint_dispatches", None)
-        if not isinstance(pending, dict):
-            pending = {}
-            self._pending_checkpoint_dispatches = pending
-        target = getattr(self, "_next_chat", None)
-        target_project = getattr(target, "project", None)
-        pending[id(drv)] = _CheckpointDispatch(
-            drv,
-            generation,
-            text,
-            str(getattr(drv, "provider", "") or ""),
-            str(
-                getattr(drv, "_helios_work_id", "")
-                or getattr(drv, "_helios_work_id_hint", "")
-                or getattr(target, "work_id", "")
-                or ""
-            ),
-            canonical_cwd(
-                str(
-                    getattr(target_project, "cwd", "")
-                    or getattr(drv, "_cwd", "")
-                    or ""
-                )
-            ),
-        )
-        return generation
-
-    def _checkpoint_dispatch_matches_target(self, drv) -> bool:
-        """Verify the staged provider/Work/cwd without requiring a native id."""
-
-        entry = MainWindow._checkpoint_dispatch_for(self, drv)
-        target = getattr(self, "_next_chat", None)
-        if entry is None or target is None:
-            return False
-        selected_provider = str(self._selected_provider() or "")
-        current_work_id = str(getattr(target, "work_id", "") or "")
-        current_cwd = canonical_cwd(
-            str(getattr(getattr(target, "project", None), "cwd", "") or "")
-        )
-        return (
-            (not entry.provider or entry.provider == selected_provider)
-            and entry.work_id == current_work_id
-            and entry.cwd == current_cwd
-        )
-
-    def _take_checkpoint_dispatch(
-        self,
-        drv,
-        generation: int | None = None,
-    ) -> _CheckpointDispatch | None:
-        """Atomically claim/cancel the matching dispatch on the GTK thread."""
-
-        entry = MainWindow._checkpoint_dispatch_for(self, drv)
-        if entry is None or (
-            generation is not None and entry.generation != generation
-        ):
-            return None
-        self._pending_checkpoint_dispatches.pop(id(drv), None)
-        return entry
-
-    def _restore_checkpoint_dispatch_text(self, drv, text: str) -> bool:
-        """Return one unsent checkpoint-owned prompt to its visible/background owner."""
-
-        if not text:
-            return False
-        if self._destroyed or not self._drv_is_current(drv):
-            drafts = getattr(self, "_native_unsent_drafts", None)
-            if not isinstance(drafts, dict):
-                drafts = {}
-                self._native_unsent_drafts = drafts
-            bucket = drafts.setdefault(MainWindow._native_draft_key(drv), [])
-            bucket.append(text)
-            return True
-        existing = self._composer.current_text().strip()
-        self._composer.set_text(f"{text}\n\n{existing}" if existing else text)
-        return True
 
     def _restore_blocked_execution_send(self, text: str) -> bool:
         """Restore a submit that could not be routed to an active driver.
@@ -9238,268 +9014,6 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                     self._toast(f"{label} limit {int(used)}% used.{suffix}")
                 return
 
-    def _on_clear_budget_block(self) -> None:
-        """Reopen the selected Work after the budget breaker closed it.
-
-        The breaker stays one-way for a process respawn; a human choice is the
-        renewal path. Without this, one trip abandoned the conversation — which
-        is what a notional dollar figure did on 2026-08-05.
-        """
-
-        if self._destroyed:
-            return
-        work_id = str(self._current_work_id() or "")
-        if not work_id:
-            self._toast("Select a Work first — there is nothing to clear.")
-            return
-
-        blocked = getattr(self, "_budget_blocked_work_ids", None)
-        latched = isinstance(blocked, set) and work_id in blocked
-        coordinator = getattr(self, "_work_coordinator", None)
-        cleared = False
-        if coordinator is not None:
-            try:
-                work = coordinator.clear_budget_exhausted(
-                    work_id=work_id,
-                    reason="operator cleared the budget block from the menu",
-                )
-                cleared = getattr(work, "status", "") == "active"
-            except Exception as exc:
-                _log.warning("could not clear Work budget block: %s", exc)
-                self._toast(f"Could not clear the budget block: {exc}")
-                return
-
-        # The in-memory latch closes the gate even when the store is healthy, so
-        # it has to be released too or the Work stays blocked until restart.
-        if latched:
-            blocked.discard(work_id)
-
-        if cleared or latched:
-            self._toast("Budget block cleared. This Work can run again.")
-        else:
-            self._toast("This Work is not blocked by the budget breaker.")
-        MainWindow._sync_execution_control(self)
-
-    def _orphaned_attempts_for_work(self, work_id: str) -> list:
-        """Return durable running attempts for work_id with no live running driver."""
-
-        if not work_id:
-            return []
-        coordinator = getattr(self, "_work_coordinator", None)
-        active_fn = getattr(coordinator, "active_attempts_for_work", None)
-        if not callable(active_fn):
-            return []
-        try:
-            attempts = list(active_fn(work_id) or ())
-        except Exception as exc:
-            _log.warning("could not inspect active attempts for %s: %s", work_id, exc)
-            return []
-        if not attempts:
-            return []
-        live_attempt_ids: set[str] = set()
-        manager = getattr(self, "_driver_manager", None)
-        drivers_fn = getattr(manager, "drivers_for_shutdown", None)
-        if callable(drivers_fn):
-            for drv in drivers_fn():
-                aid = str(getattr(drv, "execution_attempt_id", "") or "")
-                if aid and getattr(drv, "is_running", False):
-                    live_attempt_ids.add(aid)
-        return [att for att in attempts if att.attempt_id not in live_attempt_ids]
-
-    def _sync_stuck_attempt_banner(self) -> None:
-        """Reveal an in-UI unblock banner when the viewed Work has an orphaned attempt."""
-
-        banner = getattr(self, "_stuck_attempt_banner", None)
-        if banner is None or getattr(self, "_destroyed", False):
-            return
-        current_work = getattr(self, "_current_work_id", None)
-        work_id = str(current_work() or "") if callable(current_work) else ""
-        orphaned = MainWindow._orphaned_attempts_for_work(self, work_id)
-        if not orphaned:
-            banner.set_revealed(False)
-            return
-        provider = orphaned[0].provider
-        label = model_catalog.PROVIDER_LABELS.get(provider, provider or "provider")
-        banner.set_title(
-            f"This conversation is blocked by an unfinished {label} turn (not auto-replayed)."
-        )
-        banner.set_revealed(True)
-
-    def _reconcile_orphaned_attempts_confirmed(self, work_id: str, attempt_ids: list[str]) -> int:
-        """Execute operator-confirmed reconciliation without replaying any prompt."""
-
-        coordinator = getattr(self, "_work_coordinator", None)
-        reconcile_fn = getattr(coordinator, "reconcile_uncertain_attempt", None)
-        if not callable(reconcile_fn) or not work_id or not attempt_ids:
-            return 0
-        still_orphaned = {
-            att.attempt_id
-            for att in MainWindow._orphaned_attempts_for_work(self, work_id)
-        }
-        cleared = 0
-        for aid in attempt_ids:
-            if aid not in still_orphaned:
-                continue
-            reconcile_fn(aid, reason="reconciled.operator_confirmed")
-            cleared += 1
-        return cleared
-
-    def _on_reconcile_stuck_turn(self) -> None:
-        """Confirm with the user before clearing an unfinished provider attempt."""
-
-        if getattr(self, "_destroyed", False):
-            return
-        work_id = str(self._current_work_id() or "")
-        if not work_id:
-            self._toast("Select a conversation first — there is no stuck turn to clear.")
-            return
-        orphaned = MainWindow._orphaned_attempts_for_work(self, work_id)
-        if not orphaned:
-            coordinator = getattr(self, "_work_coordinator", None)
-            active_fn = getattr(coordinator, "active_attempts_for_work", None)
-            active = list(active_fn(work_id) or ()) if callable(active_fn) else []
-            if active:
-                self._toast(
-                    "A provider process is still running for this turn. Stop it first before clearing."
-                )
-            else:
-                self._toast("This conversation has no stuck provider turn.")
-            MainWindow._sync_stuck_attempt_banner(self)
-            return
-        attempt_ids = [att.attempt_id for att in orphaned]
-        first = orphaned[0]
-        label = model_catalog.PROVIDER_LABELS.get(first.provider, first.provider or "provider")
-        details = f"{label} attempt {first.attempt_id} (started {first.started_at})"
-        if len(orphaned) > 1:
-            details += f" and {len(orphaned) - 1} more"
-        dlg = Adw.AlertDialog.new(
-            "Unblock this conversation?",
-            (
-                f"The previous {details} ended without a confirmed provider receipt.\n\n"
-                "Clearing it marks the unfinished attempt as aborted so you can send a new message. "
-                "Helios will not automatically replay the previous prompt."
-            ),
-        )
-        dlg.add_response("cancel", "Cancel")
-        dlg.add_response("unblock", "Unblock conversation")
-        dlg.set_response_appearance("unblock", Adw.ResponseAppearance.DESTRUCTIVE)
-        dlg.set_default_response("cancel")
-        dlg.set_close_response("cancel")
-
-        def on_response(_dialog, response: str) -> None:
-            if response != "unblock" or getattr(self, "_destroyed", False):
-                return
-            try:
-                cleared = MainWindow._reconcile_orphaned_attempts_confirmed(
-                    self, work_id, attempt_ids
-                )
-            except Exception as exc:
-                _log.warning("could not reconcile stuck turn for %s: %s", work_id, exc)
-                self._toast(f"Could not clear the stuck turn: {exc}")
-                return
-            if cleared:
-                self._toast("Unfinished turn cleared. You can send a new message.")
-            else:
-                self._toast("No stuck turn needed clearing.")
-            MainWindow._sync_execution_control(self)
-
-        dlg.connect("response", on_response)
-        dlg.present(self)
-
-    _CAPACITY_RETRY_TIMEOUT_SECONDS = 6.0
-    _CAPACITY_RETRY_POLL_MS = 200
-
-    def _stage_capacity_retry_send(self, text: str) -> None:
-        """Retry a Gemini send automatically once an evicted idle slot closes."""
-
-        MainWindow._cancel_capacity_retry_send(self, restore_draft=False)
-        target = getattr(self, "_next_chat", None)
-        cwd = canonical_cwd(target.project.cwd) if target is not None and target.project is not None else ""
-        pending = {
-            "text": text,
-            "work_id": str(getattr(target, "work_id", "") or "") if target is not None else "",
-            "resume_id": str(getattr(target, "resume_id", "") or "") if target is not None else "",
-            "cwd": cwd,
-            "provider": model_catalog.PROVIDER_GOOGLE,
-            "model": str(getattr(self, "_model", "") or ""),
-            "deadline": time.monotonic() + MainWindow._CAPACITY_RETRY_TIMEOUT_SECONDS,
-            "timer_id": 0,
-        }
-        self._pending_capacity_send = pending
-        composer = getattr(self, "_composer", None)
-        if composer is not None:
-            composer.set_busy(True)
-        toolbar = getattr(self, "_chat_toolbar", None)
-        if toolbar is not None:
-            toolbar.set_busy(True)
-        activity = getattr(self, "_activity", None)
-        if activity is not None:
-            activity.set_activity(STATE_THINKING)
-        pending["timer_id"] = GLib.timeout_add(
-            MainWindow._CAPACITY_RETRY_POLL_MS,
-            lambda: MainWindow._maybe_retry_capacity_send(self, from_timer=True),
-        )
-
-    def _cancel_capacity_retry_send(self, *, restore_draft: bool = True) -> None:
-        pending = getattr(self, "_pending_capacity_send", None)
-        if not isinstance(pending, dict):
-            return
-        self._pending_capacity_send = None
-        timer_id = int(pending.get("timer_id", 0) or 0)
-        if timer_id:
-            try:
-                GLib.source_remove(timer_id)
-            except Exception:
-                pass
-        if getattr(self, "_destroyed", False):
-            return
-        clear_busy = getattr(self, "_clear_busy_ui", None)
-        if callable(clear_busy) and getattr(self, "_driver", None) is None:
-            clear_busy()
-        text = str(pending.get("text", "") or "")
-        if restore_draft and text:
-            GLib.idle_add(self._restore_blocked_execution_send, text)
-
-    def _maybe_retry_capacity_send(self, *, from_timer: bool = False) -> bool:
-        pending = getattr(self, "_pending_capacity_send", None)
-        if not isinstance(pending, dict) or getattr(self, "_destroyed", False):
-            return False
-        target = getattr(self, "_next_chat", None)
-        cwd = canonical_cwd(target.project.cwd) if target is not None and target.project is not None else ""
-        matches_target = (
-            target is not None
-            and str(getattr(target, "work_id", "") or "") == pending["work_id"]
-            and str(getattr(target, "resume_id", "") or "") == pending["resume_id"]
-            and cwd == pending["cwd"]
-            and self._selected_provider() == pending["provider"]
-            and str(getattr(self, "_model", "") or "") == pending["model"]
-        )
-        if not matches_target:
-            MainWindow._cancel_capacity_retry_send(self, restore_draft=True)
-            return False
-        manager = getattr(self, "_driver_manager", None)
-        capacity = (
-            manager.prepare_provider_start(
-                pending["provider"], MainWindow._MAX_LIVE_GOOGLE_DRIVERS
-            )
-            if manager is not None
-            else "busy"
-        )
-        if capacity == "ready":
-            text = pending["text"]
-            MainWindow._cancel_capacity_retry_send(self, restore_draft=False)
-            MainWindow._on_composer_send(self, getattr(self, "_composer", None), text)
-            return False
-        if capacity == "busy" or time.monotonic() >= pending["deadline"]:
-            MainWindow._cancel_capacity_retry_send(self, restore_draft=True)
-            self._toast(
-                "Gemini session slots are still busy — your draft is kept."
-                if capacity == "busy"
-                else "An idle Gemini session took too long to close — your draft is kept."
-            )
-            return False
-        return from_timer
-
     def _on_native_turn_status(self, drv, payload: dict) -> None:
         status = str(payload.get("status") or "") if isinstance(payload, dict) else ""
         plan = None
@@ -9656,14 +9170,6 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         self._activity.set_activity(STATE_REVIEWING)
         self._toast("Reviewing changes…")
         return True
-
-    def _rewind_before(self, timestamp: str) -> None:
-        try:
-            when = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp()
-        except ValueError:
-            self._toast("That message has no usable time to rewind to.")
-            return
-        self._show_rewind(before=when)
 
     def _fork_from_message(self, message_uuid: str) -> None:
         """Fork the viewed Claude conversation just before one of your
@@ -10943,280 +10449,6 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         self._chat_toolbar.set_choices(list(self._catalog_entries_by_id.values()))
 
     # --- checkpoints / rewind ---
-
-    def _checkpoint_cwd(self) -> str:
-        target = self._next_chat
-        project = target.project if target is not None else None
-        return str(getattr(project, "cwd", "") or "")
-
-    def _capture_checkpoint(self, drv, text: str, dispatch) -> None:
-        """Snapshot the working tree, THEN release the turn.
-
-        git work happens off the main loop so the UI never freezes, but
-        ``dispatch`` is called only once the snapshot has been written — and
-        always exactly once, including on failure. A checkpoint that races the
-        edits it is supposed to precede would silently capture a half-applied
-        turn.
-        """
-        cwd = self._checkpoint_cwd()
-        session_id = str(getattr(drv, "session_id", "") or "")
-        generation = MainWindow._begin_checkpoint_dispatch(self, drv, text)
-        if not cwd:
-            if MainWindow._take_checkpoint_dispatch(
-                self,
-                drv,
-                generation,
-            ) is not None:
-                dispatch()
-            return
-
-        def work() -> None:
-            point = None
-            try:
-                point = checkpoints.snapshot(cwd, text)
-            except Exception as exc:  # noqa: BLE001 — a send must never be lost
-                _log.warning("checkpoint snapshot raised: %s", exc)
-            # One idle callback for both outcomes so `dispatch` cannot be
-            # skipped by an early return: no repo, git missing, or a raise all
-            # still send the message, just without an undo point.
-            GLib.idle_add(
-                self._checkpoint_captured,
-                drv,
-                generation,
-                session_id,
-                point,
-                dispatch,
-            )
-
-        threading.Thread(target=work, daemon=True, name="checkpoint").start()
-        GLib.timeout_add(
-            _CHECKPOINT_DEADLINE_MS,
-            self._checkpoint_deadline,
-            drv,
-            generation,
-            dispatch,
-        )
-
-    def _checkpoint_captured(
-        self,
-        drv,
-        generation: int,
-        session_id: str,
-        point,
-        dispatch,
-    ) -> bool:
-        # Worker, deadline, Stop and teardown all compete for the same token on
-        # the GTK thread. Only the exact current generation may store or send.
-        if MainWindow._take_checkpoint_dispatch(self, drv, generation) is None:
-            if point is not None:
-                _log.info("discarding checkpoint from a cancelled/stale dispatch")
-            return False
-        if self._destroyed:
-            return False
-        if point is not None:
-            self._store_checkpoint(drv, session_id, point)
-        dispatch()
-        return False
-
-    def _checkpoint_deadline(self, drv, generation: int, dispatch) -> bool:
-        """Release the turn when the snapshot is taking too long.
-
-        Correctness for the checkpoint must not become a hostage situation for
-        the send: a slow clean filter, a network filesystem, or a wedged git
-        would otherwise stall the message behind git's own 30s-per-command
-        timeout. Past the deadline the turn goes out with no undo point, and
-        the user is told so rather than left wondering.
-        """
-        if self._destroyed or MainWindow._take_checkpoint_dispatch(
-            self,
-            drv,
-            generation,
-        ) is None:
-            return False
-        _log.warning("checkpoint capture exceeded its deadline; sending without one")
-        self._toast(
-            "Sent without a checkpoint — the snapshot was taking too long. "
-            "Rewind is unavailable for this message.",
-            timeout=6,
-        )
-        dispatch()
-        return False
-
-    def _store_checkpoint(self, drv, session_id: str, point) -> bool:
-        if self._destroyed:
-            return False
-        sid = session_id or str(getattr(drv, "session_id", "") or "")
-        if sid:
-            checkpoints.record_async(sid, point)
-        else:
-            # No id yet: hold it on the driver so session-started can file it.
-            pending = getattr(drv, "_helios_pending_checkpoints", None)
-            if pending is None:
-                pending = []
-                drv._helios_pending_checkpoints = pending
-            pending.append(point)
-        return False
-
-    def _show_rewind(self, before: float | None = None) -> None:
-        """Open Rewind. ``before`` (unix time of one of your messages) narrows
-        it to the checkpoint taken just before that message was sent."""
-        if self._destroyed:
-            return
-        from helios.widgets.rewind_dialog import RewindDialog
-
-        drv = self._driver
-        checkpoint_pending = MainWindow._checkpoint_dispatch_pending_for(self, drv)
-        if self._agent_is_writing(drv) or checkpoint_pending:
-            # A rewind and a running turn both write the same files. Whichever
-            # lands second wins, so the result is neither the checkpoint nor
-            # the turn — it is a mix that never existed. Refuse rather than
-            # race, and say why.
-            self._toast(
-                "Stop the current response before rewinding — it is still "
-                "writing files.",
-                timeout=6,
-            )
-            return
-        if self._restore_in_flight:
-            self._toast("A restore is already running.")
-            return
-        session_id = str(
-            getattr(drv, "session_id", "")
-            or getattr(self._next_chat, "resume_id", "")
-            or ""
-        )
-        work_id = str(
-            getattr(drv, "_helios_work_id", "")
-            or getattr(getattr(self, "_next_chat", None), "work_id", "")
-            or ""
-        )
-        if work_id and MainWindow._work_id_has_continuity(self, work_id):
-            coordinator = getattr(self, "_work_coordinator", None)
-            leg_sids: list[str] = []
-            if coordinator is not None:
-                for leg in coordinator.list_work_legs(work_id):
-                    if leg.native_session_id and leg.native_session_id not in leg_sids:
-                        leg_sids.append(leg.native_session_id)
-            if session_id and session_id not in leg_sids:
-                leg_sids.append(session_id)
-            merged_points = []
-            for sid in leg_sids:
-                merged_points.extend(checkpoints.load(sid))
-            merged_points.sort(key=lambda p: p.created_at)
-            points = merged_points
-        else:
-            points = checkpoints.load(session_id) if session_id else []
-        if before is not None:
-            # A checkpoint is taken as the message is sent; allow clock skew.
-            earlier = [p for p in points if p.created_at <= before + 5]
-            if not earlier:
-                self._toast("No checkpoint was taken before that message.")
-                return
-            points = [max(earlier, key=lambda p: p.created_at)]
-        # `changes_since` takes a fresh snapshot and shells out to git several
-        # times; on a large repo that is seconds. Hand the dialog an async
-        # loader so neither opening it nor selecting a checkpoint can freeze
-        # the window.
-        dialog = RewindDialog(points, load_changes=self._load_changes_async)
-        dialog.connect("restore-requested", self._on_restore_requested)
-        dialog.present(self)
-
-    def _load_changes_async(self, point, on_ready) -> None:
-        """Compute a checkpoint's change list off the main loop."""
-
-        def work() -> None:
-            try:
-                changes = checkpoints.changes_since(point)
-            except Exception as exc:  # noqa: BLE001 — never crash the dialog
-                _log.warning("checkpoint diff failed: %s", exc)
-                changes = []
-            GLib.idle_add(on_ready, changes)
-
-        threading.Thread(target=work, daemon=True, name="checkpoint-diff").start()
-
-    @staticmethod
-    def _agent_is_writing(drv) -> bool:
-        """Whether a turn is currently in flight and could touch the worktree."""
-        return drv is not None and bool(getattr(drv, "is_busy", False))
-
-    def _on_restore_requested(self, _dialog, point, paths) -> None:
-        if self._destroyed:
-            return
-        # Re-checked here, not only when the dialog opened: the agent may have
-        # started a queued turn while the user was reading the change list.
-        checkpoint_pending = MainWindow._checkpoint_dispatch_pending_for(
-            self,
-            self._driver,
-        )
-        if self._agent_is_writing(self._driver) or checkpoint_pending:
-            self._toast(
-                "Restore cancelled — a response started while the dialog was "
-                "open and is writing files.",
-                timeout=6,
-            )
-            return
-        if self._restore_in_flight:
-            self._toast("A restore is already running.")
-            return
-        self._restore_in_flight = True
-
-        def work() -> None:
-            result = None
-            error = ""
-            try:
-                result = checkpoints.restore(point, list(paths))
-            except Exception as exc:  # noqa: BLE001 — never die silently
-                # The dialog has already closed. Without this the thread dies
-                # and the user is left with no idea whether files moved.
-                _log.exception("checkpoint restore failed")
-                error = str(exc)
-            finally:
-                GLib.idle_add(self._report_restore, result, error)
-
-        threading.Thread(target=work, daemon=True, name="checkpoint-restore").start()
-
-    def _report_restore(self, result, error: str = "") -> bool:
-        # Cleared unconditionally, before any early return: leaving the flag
-        # set would wedge the action for the rest of the session.
-        self._restore_in_flight = False
-        if self._destroyed:
-            return False
-        if result is None:
-            self._toast(
-                f"Restore failed: {error or 'unknown error'}. Your files were "
-                "not fully changed — check the log.",
-                timeout=8,
-            )
-            return False
-        touched = len(result.restored) + len(result.removed)
-        if result.failed:
-            self._toast(
-                f"Restored {touched} file(s); {len(result.failed)} could not be "
-                "changed.",
-                timeout=6,
-            )
-        elif result.kept:
-            # Never silent: a refused deletion means the checkpoint and the
-            # disk disagree about what predates the turn, and the user needs
-            # to know a file they may have expected gone is still there.
-            self._toast(
-                f"Restored {touched} file(s). Kept {len(result.kept)} that "
-                "existed before this checkpoint.",
-                timeout=6,
-            )
-        elif touched:
-            note = (
-                f" Removed files were moved to {result.trash_dir}."
-                if result.trash_dir
-                else ""
-            )
-            self._toast(
-                f"Restored {touched} file(s) from the checkpoint.{note}",
-                timeout=8 if note else 4,
-            )
-        else:
-            self._toast("Nothing to restore.")
-        return False
 
     def _on_codex_credentials_changed(self) -> None:
         """Refresh app-wide GPT capabilities after durable credential update."""
