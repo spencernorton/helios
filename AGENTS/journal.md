@@ -1,5 +1,17 @@
 # Helios — Session Journal
 
+## 2026-11-23 — Honor Gemini session capacity before starting a driver
+
+- The background cache's soft limit counted only bound sessions and
+  requested eviction without waiting for EOF to take effect. Gemini now
+  checks its four local slots before a new launch. A starting or closing
+  process occupies a slot until its exit is observable.
+- At capacity, retire the least recently used idle Gemini background
+  process. Leave active, starting and queued work alone. A refused send
+  returns to the composer while a slot becomes available. Bound the EOF
+  wait for idle Antigravity children and surface pre-init error results
+  without treating the first prompt as sent.
+
 ## 2026-11-23 — Keep the Messages draft when changing models
 
 - The first cross-provider pick in a fresh chat resolves a Work ID. Move the

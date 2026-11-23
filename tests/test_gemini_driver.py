@@ -1072,6 +1072,43 @@ def test_stderr_auth_failure_is_drained_and_visible(driver_factory):
     assert any("authentication required" in error for error in driver._test_errors)
 
 
+def test_startup_error_result_releases_only_the_unsent_reservation(driver_factory):
+    driver = driver_factory(ready=False)
+    assert driver.send_user_text("unsent draft").state == "pending"
+    driver._dispatch_message(_result("ERROR", error="Provider is at session capacity"))
+
+    driver._on_exit(1)
+
+    assert driver._test_errors == ["Provider is at session capacity"]
+    assert driver._test_process.stdin.writes == []
+    assert driver.execution_attempt_id == ""
+    terminal = [row[2] for row in driver._test_lifecycle if row[0] == "terminal"]
+    assert len(terminal) == 1 and terminal[0].evidence_type == "local_abort"
+
+
+def test_idle_google_eof_gets_a_backstop_but_running_turn_does_not(driver_factory, monkeypatch):
+    idle = driver_factory()
+    busy = driver_factory()
+    busy.send_user_text("started turn")
+    reapers = []
+    class CapturingReaper:
+        def __init__(self, *, target, args, daemon):
+            reapers.append((target, args, daemon))
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(gd.threading, "Thread", CapturingReaper)
+
+    idle.end_input()
+    busy.end_input()
+
+    assert idle._test_process.stdin.closed
+    assert busy._test_process.stdin.closed
+    assert reapers == [(idle._reap_stopped, (idle._test_process,), True)]
+    assert busy.execution_attempt_id
+
+
 def test_exit_without_native_terminal_does_not_release_or_replay(driver_factory):
     driver = driver_factory()
     driver.send_user_text("hello")

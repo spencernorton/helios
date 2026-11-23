@@ -13,6 +13,7 @@ class FakeDriver:
         last_activity: float = 0.0,
     ) -> None:
         self.session_id = session_id
+        self.is_running = True
         self.is_busy = busy
         self.is_accepting_input = accepting
         self.last_activity = last_activity
@@ -109,6 +110,69 @@ def test_evict_for_cap_uses_lru_idle_background_only():
     assert oldest.ended == 1
     assert middle.ended == 1
     assert busy.ended == 0
+
+
+def test_gemini_start_waits_for_an_idle_process_to_exit():
+    mgr = DriverManager(max_live=4, idle_seconds=60)
+    oldest = FakeDriver("old", last_activity=1)
+    newer = FakeDriver("newer", last_activity=2)
+    current = FakeDriver("current")
+    starting = FakeDriver(accepting=False)
+    starting.is_initializing = True
+    for driver in (oldest, newer, current, starting):
+        driver.provider = "google"
+        mgr.add_starting(driver, [])
+        mgr.register_started(driver, driver.session_id)
+    mgr.bind_current(current)
+
+    assert mgr.prepare_provider_start("google", 4) == "closing"
+    assert oldest.ended == 1
+    assert mgr.prepare_provider_start("google", 4) == "closing"
+    assert newer.ended == current.ended == starting.ended == 0
+
+    oldest.is_running = False  # OS exit precedes the GTK registry callback.
+    assert mgr.prepare_provider_start("google", 4) == "ready"
+
+
+def test_gemini_start_preserves_active_and_pending_turns():
+    busy = FakeDriver("busy", busy=True)
+    checkpoint = FakeDriver("checkpoint")
+    queued = FakeDriver("queued")
+    queued.queued_messages = lambda: [(1, "queued text")]
+    starting = FakeDriver(accepting=False)
+    starting.is_initializing = True
+    claude = FakeDriver("claude")
+    claude.provider = "anthropic"
+    mgr = DriverManager(
+        max_live=4, idle_seconds=60,
+        has_pending_dispatch=lambda driver: driver is checkpoint,
+    )
+    for driver in (busy, checkpoint, queued, starting):
+        driver.provider = "google"
+        mgr.add_starting(driver, [])
+        mgr.register_started(driver, driver.session_id)
+    mgr.register_started(claude, claude.session_id)
+    mgr.bind_current(None)
+
+    assert mgr.prepare_provider_start("google", 4) == "busy"
+    assert all(d.ended == 0 for d in (busy, checkpoint, queued, starting, claude))
+    busy.is_running = False
+    assert mgr.prepare_provider_start("google", 4) == "ready"
+    assert claude.ended == 0
+
+
+def test_gemini_start_counts_a_detached_process_until_it_exits():
+    mgr = DriverManager(max_live=4, idle_seconds=60)
+    closing = FakeDriver("closing")
+    closing.provider = "google"
+    mgr.add_starting(closing, [])
+    mgr.register_started(closing, closing.session_id)
+    mgr.teardown(closing)
+
+    assert not mgr.live_ids()
+    assert mgr.prepare_provider_start("google", 1) == "closing"
+    closing.is_running = False
+    assert mgr.prepare_provider_start("google", 1) == "ready"
 
 
 def test_provider_helpers():

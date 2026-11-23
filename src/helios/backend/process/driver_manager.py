@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 
 Driver = Any
@@ -43,16 +43,19 @@ class DriverManager:
         max_live: int,
         idle_seconds: int,
         on_live_ids_changed: Callable[[set[str]], None] | None = None,
+        has_pending_dispatch: Callable[[Driver], bool] | None = None,
         log=None,
     ) -> None:
         self.max_live = max_live
         self.idle_seconds = idle_seconds
         self._on_live_ids_changed = on_live_ids_changed
+        self._has_pending_dispatch = has_pending_dispatch
         self._log = log
         self.current: Driver | None = None
         self.starting: Driver | None = None
         self.live: dict[str, Driver] = {}
         self.handlers: dict[Driver, list[int]] = {}
+        self._tearing_down: set[Driver] = set()
 
     def is_current(self, driver: Driver) -> bool:
         return driver is self.current
@@ -219,6 +222,10 @@ class DriverManager:
         old = driver if driver is not None else self.current
         if old is None:
             return None
+        if getattr(old, "is_running", False):
+            # Hard teardown disconnects the exit handler. The process can
+            # still occupy a provider slot after leaving the live registry.
+            self._tearing_down.add(old)
         self.forget(old)
         self.stop_driver(old, interrupt=interrupt)
         return old
@@ -229,12 +236,9 @@ class DriverManager:
 
     def reap_idle(self, *, now: float | None = None) -> None:
         now = time.monotonic() if now is None else now
+        self._tearing_down = {driver for driver in self._tearing_down if driver.is_running}
         for driver in list(self.live.values()):
-            if (
-                driver is self.current
-                or _is_working(driver)
-                or not driver.is_accepting_input
-            ):
+            if not self._can_retire_idle(driver):
                 continue
             if now - driver.last_activity >= self.idle_seconds:
                 self._info("reaping idle background driver %s", _short_id(driver))
@@ -248,11 +252,7 @@ class DriverManager:
             (
                 driver
                 for driver in self.live.values()
-                if (
-                    driver is not self.current
-                    and not _is_working(driver)
-                    and driver.is_accepting_input
-                )
+                if self._can_retire_idle(driver)
             ),
             key=lambda driver: driver.last_activity,
         )
@@ -263,6 +263,50 @@ class DriverManager:
                 self.max_live,
             )
             _end_input_quietly(driver)
+
+    def prepare_provider_start(
+        self, provider: str, limit: int,
+    ) -> Literal["ready", "closing", "busy"]:
+        """Make room for a provider with a hard local process limit."""
+        running = [
+            driver for driver in (self.drivers_for_shutdown() | self._tearing_down)
+            if self.driver_matches_provider(driver, provider) and driver.is_running
+        ]
+        if len(running) < limit:
+            return "ready"
+        # Startup and shutdown both occupy a process slot. Wait for a closing
+        # process before retiring another or launching its replacement.
+        if any(
+            driver in self._tearing_down
+            or (not _driver_is_active(driver) and not _is_working(driver))
+            for driver in running
+        ):
+            return "closing"
+        victim = min(
+            (driver for driver in running if self._can_retire_idle(driver)),
+            key=lambda driver: driver.last_activity,
+            default=None,
+        )
+        if victim is not None:
+            _end_input_quietly(victim)
+            if not victim.is_running and len(running) == limit:
+                return "ready"
+            if not victim.is_accepting_input:
+                return "closing"
+        return "busy"
+
+    def _can_retire_idle(self, driver: Driver) -> bool:
+        if (
+            driver is self.current
+            or not driver.is_accepting_input
+            or _is_working(driver)
+            or getattr(driver, "is_initializing", False)
+            or getattr(driver, "execution_attempt_id", "")
+            or (self._has_pending_dispatch is not None and self._has_pending_dispatch(driver))
+        ):
+            return False
+        queued = getattr(driver, "queued_messages", None)
+        return not (callable(queued) and queued())
 
     def _emit_live_ids(self) -> None:
         if self._on_live_ids_changed is not None:

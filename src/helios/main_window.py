@@ -329,6 +329,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
     # down first. Busy drivers are never evicted, so the cap can be exceeded
     # transiently when everything is genuinely working.
     _MAX_LIVE_DRIVERS = 4
+    _MAX_LIVE_GOOGLE_DRIVERS = 4
 
     @property
     def _driver(self):
@@ -413,6 +414,10 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             max_live=self._MAX_LIVE_DRIVERS,
             idle_seconds=self._IDLE_REAP_SECONDS,
             on_live_ids_changed=self._set_live_session_ids,
+            has_pending_dispatch=lambda driver: (
+                MainWindow._checkpoint_dispatch_pending_for(self, driver)
+                or MainWindow._execution_change_pending_for(self, driver)
+            ),
             log=_log,
         )
         # Provider-neutral durable identity.  This embedded coordinator is the
@@ -6129,6 +6134,16 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 )
                 return True
         provider = self._selected_provider()
+        if provider == model_catalog.PROVIDER_GOOGLE:
+            limit = MainWindow._MAX_LIVE_GOOGLE_DRIVERS
+            capacity = self._driver_manager.prepare_provider_start(provider, limit)
+            if capacity != "ready":
+                self._toast(
+                    "Helios is closing an idle Gemini session to make room. Your draft is kept."
+                    if capacity == "closing"
+                    else f"All {limit} Gemini session slots are in use. Your draft is kept."
+                )
+                return False
         spawn_permission_mode, spawn_effort_key = self._execution_settings_for_spawn(
             target, provider
         )
