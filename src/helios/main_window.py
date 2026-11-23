@@ -3626,14 +3626,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             self._toast("Could not switch models cleanly in this conversation.")
             return False
 
-        prev_draft_key = getattr(self, "_draft_key", "")
-        new_draft_key = draft_key(target, work_id=work_id)
-        if new_draft_key and new_draft_key != prev_draft_key:
-            current_text = self._composer.current_text()
-            self._drafts.stash(new_draft_key, current_text)
-            if prev_draft_key:
-                self._drafts.stash(prev_draft_key, "")
-            self._draft_key = new_draft_key
+        MainWindow._rekey_visible_draft(self, draft_key(target, work_id=work_id))
 
         def _count_existing_turns(tpath: str) -> int:
             if not tpath:
@@ -4918,6 +4911,14 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
 
     # --- session selection ---
 
+    def _rekey_visible_draft(self, key: str) -> None:
+        """Move the active buffer to its resolved identity without rewriting it."""
+        previous = self._draft_key
+        if key != previous:
+            self._drafts.stash(key, self._composer.current_text())
+            self._drafts.stash(previous, "")
+            self._draft_key = key
+
     @staticmethod
     def _driver_matches_project(driver, project) -> bool:
         """Require a live driver to belong to this exact local workspace."""
@@ -4944,14 +4945,9 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         self._shared.set_handoff_target(session)
         # Park the outgoing draft before anything re-points the view. Must
         # precede every return below, including the `session is None` one.
-        prev_draft_key = self._draft_key
-        self._drafts.stash(prev_draft_key, self._composer.current_text())
-        # Hoisted with the stash: the guard below early-returns on EVERY chat
-        # the user starts (_refresh_sidebar_for_live auto-selects the new row
-        # 400ms after session-started), so a key update left beneath it meant a
-        # started chat kept its `new:<cwd>` key for life.
-        self._draft_key = draft_key(session) if session is not None else ""
+        self._drafts.stash(self._draft_key, self._composer.current_text())
         if session is None:
+            self._draft_key = ""
             self._stop_following()
             # Take the pooled-session banner down; it outlived the selection.
             self._composer.set_read_only(False)
@@ -5020,24 +5016,15 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 session.project,
             )
         ):
-            if same_continuity_work:
-                self._draft_key = draft_key(
-                    session,
-                    work_id=str(getattr(self._driver, "_helios_work_id", "") or ""),
-                )
-            # MIGRATE, do not duplicate: the composer keeps its text here, and
-            # `take()` is a non-destructive get, so leaving the copy under the
-            # old key lets the next New chat in that cwd resurrect it. A blank
-            # stash evicts (see DraftBook).
-            if self._draft_key and self._draft_key != prev_draft_key:
-                self._drafts.stash(self._draft_key, self._composer.current_text())
-                self._drafts.stash(prev_draft_key, "")
+            # The just-started row takes over ownership of the same buffer.
+            MainWindow._rekey_visible_draft(
+                self, draft_key(session, work_id=getattr(self._driver, "_helios_work_id", "")),
+            )
             self._refresh_goal_strip()
             MainWindow._refresh_execution_plan(self)
             self._main_stack.set_visible_child_name("transcript")
             return
 
-        self._composer.set_text(self._drafts.take(self._draft_key))
         self._staged_permission_mode = ""
         self._staged_effort_key = ""
         self._staged_workflow_mode = ""
@@ -5093,13 +5080,13 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                         exc,
                     )
         MainWindow._stash_or_clear_pending_model_switch(self, keep_for_work_id=work_id)
+        native_draft_key = draft_key(session)
+        self._draft_key = draft_key(session, work_id=work_id)
+        self._composer.set_text(
+            self._drafts.take(self._draft_key, fallback_key=native_draft_key)
+        )
         staged_unbound_handoff: tuple[str, str] | None = None
         if continuity_legs:
-            cont_draft_key = draft_key(session, work_id=work_id)
-            if cont_draft_key != self._draft_key:
-                migrated = self._drafts.take(cont_draft_key) or self._composer.current_text()
-                self._draft_key = cont_draft_key
-                self._composer.set_text(migrated)
             tail_leg = continuity_legs[-1]
             lead_prov = str(getattr(work, "lead_provider", "") or "") if work is not None else ""
             lead_part = (
@@ -5336,7 +5323,13 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                     "be verified, so Helios did not stage it."
                 )
                 return
-        self._drafts.stash(self._draft_key, self._composer.current_text())
+        previous_target = self._next_chat
+        continuing_work = (
+            work_id and self._draft_key and previous_target is not None
+            and previous_target.work_id == work_id
+        )
+        if not continuing_work:
+            self._drafts.stash(self._draft_key, self._composer.current_text())
         # A fresh chat has no transcript fill to restore, and a late fill
         # result for the previously viewed session must not land on it.
         self._ctx_fill_sid = ""
@@ -5358,9 +5351,12 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             resume_id,
             self._selected_provider() if resume_id else "",
         )
-        # A ChatTarget has no session_id, so this keys on the cwd.
-        self._draft_key = draft_key(self._next_chat)
-        self._composer.set_text(self._drafts.take(self._draft_key))
+        key = draft_key(self._next_chat)
+        if continuing_work:
+            MainWindow._rekey_visible_draft(self, key)
+        else:
+            self._draft_key = key
+            self._composer.set_text(self._drafts.take(key))
         self._plan.set_live_pending(self._assistant_label())
         self._sync_execution_control()
         self._context.set_project(project)

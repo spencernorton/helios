@@ -1,5 +1,16 @@
 # Helios — Session Journal
 
+## 2026-11-23 — Keep the Messages draft when changing models
+
+- The first cross-provider pick in a fresh chat resolves a Work ID. Move the
+  visible draft to that ID when restaging the same Work so the composer
+  keeps its buffer, cursor and undo history.
+- Resolve the Work before restoring drafts from the sidebar. Native
+  participants of the same Work share one draft, and a deliberate New Chat
+  or another Work gets its own draft.
+- The native composer regression reproduces the empty buffer on the first
+  provider pick and checks repeated switches and New Chat isolation.
+
 ## 2026-11-23 — Agent-launched Claude sessions get their own sidebar filter
 
 - Symptom: the sidebar filled with hundreds of rows the user never started.

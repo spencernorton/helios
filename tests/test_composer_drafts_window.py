@@ -21,9 +21,12 @@ try:
 except ValueError:
     pytest.skip("GtkSource 5 unavailable", allow_module_level=True)
 
-from helios.backend import session_providers  # noqa: E402
+from helios.backend import model_catalog, session_providers  # noqa: E402
 from helios.backend.composer_state import DraftBook, draft_key  # noqa: E402
+from helios.backend.process.driver_manager import DriverManager  # noqa: E402
 from helios.backend.projects import Project, Session  # noqa: E402
+from helios.backend.work_coordinator import WorkCoordinator  # noqa: E402
+from helios.backend.work_store import WorkStore  # noqa: E402
 from helios.main_window import MainWindow  # noqa: E402
 from helios.widgets.composer import Composer  # noqa: E402
 
@@ -59,10 +62,10 @@ class _Noop:
         return lambda *a, **k: None
 
 
-def _session(tmp_path, session_id: str, cwd: str) -> Session:
+def _session(tmp_path, session_id: str, cwd: str, *, provider: str = "anthropic") -> Session:
     path = tmp_path / f"{session_id}.jsonl"
     path.write_text("", encoding="utf-8")
-    session_providers.set_provider(session_id, "anthropic")
+    session_providers.set_provider(session_id, provider)
     return Session(
         project=Project(dirname=cwd.replace("/", "-"), cwd=cwd, path=tmp_path),
         session_id=session_id,
@@ -129,6 +132,36 @@ def test_a_draft_stays_with_the_session_it_was_typed_in(tmp_path) -> None:
     assert win._composer.text == "half a thought for A"
 
 
+def test_native_participants_share_their_work_draft(tmp_path):
+    store = WorkStore(tmp_path / "work.db")
+    try:
+        win = _window()
+        coordinator = win._work_coordinator = WorkCoordinator(store)
+        claude = _session(tmp_path, "claude-session", "/repo")
+        gemini = _session(tmp_path, "gemini-session", "/repo", provider="google")
+        unrelated = _session(tmp_path, "unrelated-session", "/repo")
+        work = coordinator.ensure_work(cwd="/repo", lead_provider="anthropic")
+        coordinator.bind_participant(work.work_id, "anthropic", native_id=claude.session_id)
+        coordinator.bind_participant(work.work_id, "google", native_id=gemini.session_id)
+        win._drafts.stash(claude.session_id, "Draft from before Work binding")
+
+        MainWindow._on_session_selected(win, None, claude)
+        assert win._composer.current_text() == "Draft from before Work binding"
+        assert win._drafts.take(claude.session_id) == ""
+        win._composer.set_text("Draft for the shared Work")
+
+        MainWindow._on_session_selected(win, None, gemini)
+        assert win._draft_key == f"work:{work.work_id}"
+        assert win._composer.current_text() == "Draft for the shared Work"
+
+        MainWindow._on_session_selected(win, None, unrelated)
+        assert win._composer.current_text() == ""
+        MainWindow._on_session_selected(win, None, claude)
+        assert win._composer.current_text() == "Draft for the shared Work"
+    finally:
+        store.close()
+
+
 def test_new_chat_does_not_inherit_the_previous_conversations_text(
     tmp_path,
 ) -> None:
@@ -143,6 +176,53 @@ def test_new_chat_does_not_inherit_the_previous_conversations_text(
 
     MainWindow._on_session_selected(win, None, a)
     assert win._composer.text == "meant for A"
+
+
+@pytest.mark.skipif(not _HAVE_DISPLAY, reason="no display available")
+def test_first_model_switch_keeps_a_fresh_chat_draft_as_it_gains_a_work_id(tmp_path):
+    store = WorkStore(tmp_path / "work.db")
+    try:
+        win = _window()
+        win._composer = Composer()
+        win._model = "opus"
+        win._provider_models = {}
+        win._ui_state = _Noop()
+        win._pending_goal = None
+        win._work_coordinator = WorkCoordinator(store)
+        win._driver_manager = DriverManager(max_live=4, idle_seconds=60)
+        win._main_stack.get_visible_child_name = lambda: "transcript"
+        win._selected_provider = lambda: model_catalog.provider_for(win._model)
+        win._current_work_id = lambda: win._next_chat.work_id
+        win._sync_provider_toggle = lambda: None
+        win._sync_effort_sensitivity = lambda: None
+        win._refresh_openrouter_credits = lambda: None
+        win._apply_model_choice = lambda *args, **kw: MainWindow._apply_model_choice(win, *args, **kw)
+        win._ensure_target_work = lambda **kw: MainWindow._ensure_target_work(win, **kw)
+        win._stage_fresh_chat_for_provider_switch = lambda: MainWindow._stage_fresh_chat_for_provider_switch(win)
+        win._show_fresh_chat_ui = lambda *args, **kw: MainWindow._show_fresh_chat_ui(win, *args, **kw)
+        win._work_is_executing = lambda _wid: False
+
+        previous = _session(tmp_path, "other-chat", "/repo")
+        win._show_fresh_chat_ui(previous.project)
+        fresh_key = win._draft_key
+        draft = "An unsent prompt\n  with formatting."
+        win._composer.set_text(draft)
+
+        MainWindow._on_toolbar_model_changed(win, None, "gemini-4-neon")
+        assert win._selected_provider() == "google"
+        assert win._next_chat.work_id
+        assert win._composer.current_text() == draft
+        assert win._drafts.take(fresh_key) == ""
+
+        MainWindow._on_toolbar_model_changed(win, None, "opus")
+        assert win._composer.current_text() == draft
+
+        # Leaving this Work for a deliberate New Chat in the same folder
+        # does not resurrect a copy of the draft in the fresh chat slot.
+        win._show_fresh_chat_ui(previous.project)
+        assert win._composer.current_text() == ""
+    finally:
+        store.close()
 
 
 @pytest.mark.skipif(not _HAVE_DISPLAY, reason="no display available")

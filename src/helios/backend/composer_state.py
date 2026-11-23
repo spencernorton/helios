@@ -43,11 +43,10 @@ class DraftBook:
             self._d.pop(key, None)
 
     def take(self, key: str, *, fallback_key: str = "") -> str:
-        if key in self._d:
-            return self._d[key]
-        if fallback_key and fallback_key in self._d:
-            val = self._d.pop(fallback_key)
+        """Read a draft, retiring the old slot if its identity has changed."""
+        if fallback_key and fallback_key != key and fallback_key in self._d:
+            prior = self._d.pop(fallback_key)
             if key:
-                self._d[key] = val
-            return val
-        return ""
+                return self._d.setdefault(key, prior)
+            return prior
+        return self._d.get(key, "")
