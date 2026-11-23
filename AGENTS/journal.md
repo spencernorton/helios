@@ -1,5 +1,17 @@
 # Helios — Session Journal
 
+## 2026-11-23 — Release 0.117.0: agent-launched filter plus the live host fixes
+
+- Integrates the four local-only commits that were already running on the
+  maintainer's host (Messages draft, Gemini slot admission, model picker
+  versions/default model, Claude catalog visibility) on top of #74 (the
+  Agent-launched session filter), so a release built from `main` no longer
+  regresses the installed package. Supersedes the "local only / GitHub auth
+  missing" note in the model-picker entry below: these commits are now on
+  GitHub via this PR.
+- Version 0.116.1 → 0.117.0 in `pyproject.toml`, `src/helios/__init__.py`,
+  `llms.txt` and `docs/agent-setup.md`; CHANGELOG entry added.
+
 ## 2026-11-23 — Keep the Claude catalog and new-chat defaults consistent
 
 - Stop filtering the current Claude aliases from the main window. Group
