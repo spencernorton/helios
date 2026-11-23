@@ -194,7 +194,7 @@ from helios.widgets.activity_indicator import (
     STATE_IDLE,
 )
 from helios.widgets.agent_dock import AgentDock
-from helios.widgets.browser_pane import BrowserPane
+from helios.widgets.browser_pane import SessionBrowser
 from helios.widgets.chat_toolbar import (
     DEFAULT_EFFORT,
     DEFAULT_MODEL,
@@ -803,13 +803,11 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         # Browser pane: agents open reports and dev servers here (Ctrl+Shift+B).
         # A Paned rather than another sidebar page — a report needs width the
         # 420px right column cannot give it, and the split is resizable.
-        self._browser = BrowserPane(
-            on_reveal=lambda: self._browser_btn.set_active(True),
-            on_close=lambda: self._browser_btn.set_active(False),
+        self._browser = SessionBrowser(
+            on_shown=lambda shown: self._browser_btn.set_active(shown),
+            attach=lambda path: self._composer.add_attachments([path]),
             cwd=lambda: self._current_project_cwd() or str(getattr(self._driver, "_cwd", "") or ""),
         )
-        if self._browser.available:
-            self._browser.connect("attach", lambda _p, path: self._composer.add_attachments([path]))
         self._browser.set_visible(False)
         self._browser_paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         self._browser_paned.set_start_child(self._main_stack)
@@ -3381,6 +3379,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                 )
                 self._pending_goal = None
             self._next_chat = stage_work(target, work_id)
+            MainWindow._bind_browser_work(self, work_id)
             return work_id
         except Exception as exc:
             _log.warning("could not ensure Work for model switch: %s", exc)
@@ -3922,6 +3921,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             resumed_id,
             new_provider if resumed_id else "",
         )
+        MainWindow._select_browser_session(self, self._next_chat)
 
         goal = session_goals.get_goal(work_id)
         preview_manifest = coordinator.preview_continuity_manifest(
@@ -4454,6 +4454,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             )
             work = coordinator.select_lead(work.work_id, self._selected_provider())
             self._next_chat = stage_work(target, work.work_id)
+            MainWindow._bind_browser_work(self, work.work_id)
             participant = coordinator.bind_participant(
                 work.work_id,
                 self._selected_provider(),
@@ -4804,7 +4805,30 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             width = self._browser_paned.get_width() or 1000
             saved = int(self._ui_state.get("browser_paned", 0) or 0)
             self._browser_paned.set_position(saved if 200 < saved < width - 200 else width // 2)
-        self._browser.set_visible(shown)
+        self._browser.set_shown(shown)
+
+    @staticmethod
+    def _browser_target_identity(target: ChatTarget | None) -> tuple[str, str, str]:
+        if target is None:
+            return "", "", ""
+        project = target.project
+        origin = ""
+        if getattr(project, "read_only", False):
+            origin = str(getattr(project, "origin", "") or "remote")
+        work_id = "" if origin else str(getattr(target, "work_id", "") or "")
+        return str(target.resume_id or ""), origin, work_id
+
+    def _bind_browser_work(self, work_id: str) -> None:
+        browser = getattr(self, "_browser", None)
+        if browser is not None and work_id:
+            browser.bind_work(work_id)
+
+    def _select_browser_session(self, target: ChatTarget | None = None) -> None:
+        browser = getattr(self, "_browser", None)
+        if browser is None:
+            return
+        session_id, origin, work_id = MainWindow._browser_target_identity(target)
+        browser.select_session(session_id, origin=origin, work_id=work_id)
 
     def _register_browser_bus(self) -> None:
         """Export the pane on the session bus and tell drivers how to reach it."""
@@ -4849,11 +4873,11 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             # never from the payload; an unknown caller gets nothing.
             session = browser_tools.session_for(args.pop("_token", None))
             args = {k: v for k, v in args.items() if not str(k).startswith("_")}
-            if session is None:
-                reply({"ok": False, "error": "Unknown Helios session."})
+            if session is None or session[2] is None:
+                reply({"ok": False, "error": "Unknown Helios browser session."})
                 return
-            args["_cwd"], args["_agent"] = session
-            self._browser.handle_call(tool, args, reply)
+            args["_cwd"], args["_agent"], scope = session
+            self._browser.handle_call(scope, tool, args, reply)
 
     def _save_window_layout(self) -> None:
         """Persist window size + splitter positions. Cheap; called on close."""
@@ -4945,6 +4969,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         # precede every return below, including the `session is None` one.
         self._drafts.stash(self._draft_key, self._composer.current_text())
         if session is None:
+            MainWindow._select_browser_session(self)
             self._draft_key = ""
             self._stop_following()
             # Take the pooled-session banner down; it outlived the selection.
@@ -5158,6 +5183,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             )
         else:
             self._next_chat = route.target
+        MainWindow._select_browser_session(self, self._next_chat)
         self._sync_assistant_labels()
         if route.live_driver is not None:
             # Bound to a live driver — its events drive the view; stop any
@@ -5349,6 +5375,9 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             resume_id,
             self._selected_provider() if resume_id else "",
         )
+        if continuing_work:
+            MainWindow._bind_browser_work(self, work_id)
+        MainWindow._select_browser_session(self, self._next_chat)
         key = draft_key(self._next_chat)
         if continuing_work:
             MainWindow._rekey_visible_draft(self, key)
@@ -5961,6 +5990,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
                         cwd=target.project.cwd,
                     )
                     self._next_chat = stage_work(target, work.work_id)
+                    MainWindow._bind_browser_work(self, work.work_id)
                     if not self._stage_selected_work_participant():
                         return False
                 except Exception as exc:
@@ -6227,6 +6257,19 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             driver._helios_staged_effort_key = str(getattr(driver, "effort_key", spawn_effort_key) or "")
             driver._helios_staged_workflow_mode = spawn_workflow_mode
             driver._helios_requested_model = self._model
+            browser = getattr(self, "_browser", None)
+            if browser is not None:
+                session_id, origin, work_id = MainWindow._browser_target_identity(target)
+                if target is self._next_chat:
+                    if work_id:
+                        browser.bind_work(work_id)
+                    if not browser.matches_target(session_id, origin=origin, work_id=work_id):
+                        MainWindow._select_browser_session(self, target)
+                    driver._helios_browser_scope = browser.scope
+                else:
+                    driver._helios_browser_scope = browser.scope_for(
+                        session_id, origin=origin, work_id=work_id,
+                    )
             driver._helios_identity_confirmed = False
             # A resume is exact, not a hint.  The runtime must report this
             # same native identity before Helios can bind or persist it.
@@ -8347,6 +8390,10 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             if not isinstance(drv, (GeminiCliDriver, MuseServeDriver, KimiAcpDriver)):
                 MainWindow._accept_identity_pending_user(self, drv)
             self._driver_manager.register_started(drv, session_id)
+            browser = getattr(self, "_browser", None)
+            scope = getattr(drv, "_helios_browser_scope", None)
+            if browser is not None and scope is not None:
+                browser.bind_session(session_id, scope, work_id=str(work_id or ""))
             permission_mode = str(
                 getattr(drv, "permission_mode", "")
                 or getattr(drv, "_helios_staged_permission_mode", "")

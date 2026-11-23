@@ -584,6 +584,7 @@ class CodexAppServerDriver(CodexCliDriver):
         resume_id = self._app_acc.thread_id
         method = "thread/resume" if resume_id else "thread/start"
         params = build_thread_params(
+            browser_scope=getattr(self, "_helios_browser_scope", None),
             cwd=self._cwd,
             model=self._model,
             permission_mode=self._permission_mode,

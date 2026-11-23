@@ -926,7 +926,9 @@ class OpenRouterDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object)
         estate = None
         try:
             try:
-                browser = browser_tools.server_entry(self._cwd, "OpenRouter")
+                browser = browser_tools.server_entry(
+                    self._cwd, "OpenRouter", scope=getattr(self, "_helios_browser_scope", None),
+                )
                 extra = {"extra": [ServerConfig(
                     browser_tools.MCP_SERVER_NAME, browser["command"], tuple(browser["args"]),
                 )]} if browser else {}

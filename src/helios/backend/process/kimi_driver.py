@@ -381,7 +381,9 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
             raise KimiDriverSpawnError("Could not initialize `kimi acp`.")
 
     def _begin_session(self) -> None:
-        browser = browser_tools.server_entry(self._cwd, "Kimi")
+        browser = browser_tools.server_entry(
+            self._cwd, "Kimi", scope=getattr(self, "_helios_browser_scope", None),
+        )
         self._mcp_servers = [{"name": browser_tools.MCP_SERVER_NAME, "type": "stdio", **browser}] if browser else []
         try:
             from helios.backend.estate_config import load_selected

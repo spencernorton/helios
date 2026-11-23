@@ -41,7 +41,7 @@ INSTRUCTIONS = (
     "folder: absolute file paths do not load."
 )
 
-_TAB = {"type": "string", "description": "Tab id from browser_open or browser_tabs; defaults to the selected tab."}
+_TAB = {"type": "string", "description": "Tab id in this chat from browser_open or browser_tabs. Defaults to this chat’s selected tab."}
 
 TOOLS = [
     {
@@ -146,14 +146,16 @@ TOOLS = [
 TOOL_NAMES = frozenset(tool["name"] for tool in TOOLS)
 
 _bus_address = ""
-#: token -> (cwd, agent label). The window trusts these, never the caller's word.
-_sessions: dict[str, tuple[str, str]] = {}
+# The scope is assigned by the window that starts the conversation.
+_sessions: dict[str, tuple[str, str, object | None]] = {}
 
 
 def publish(bus_address: str) -> None:
     """Called by the window once the pane's D-Bus object is registered."""
     global _bus_address
     _bus_address = bus_address or ""
+    if not _bus_address:
+        _sessions.clear()
 
 
 def launcher_path() -> Path:
@@ -162,20 +164,19 @@ def launcher_path() -> Path:
     return repo if repo.is_file() else PACKAGED_LAUNCHER
 
 
-def server_entry(cwd: str, agent: str) -> dict | None:
+def server_entry(cwd: str, agent: str, *, scope: object | None = None) -> dict | None:
     """``{"command", "args"}`` for one provider session, or None if unavailable.
 
-    The session's folder decides which files are free, so it is bound here to
-    a token rather than sent by the caller: any process on the session bus can
-    call the pane, but only tokens Helios issued name a folder.
+    Bind both the session's folder and its browser scope to the token. Tool
+    callers cannot choose either by editing their arguments.
     """
     launcher = launcher_path()
     if not _bus_address or not launcher.is_file():
         return None
     token = secrets.token_urlsafe(18)
-    _sessions[token] = (cwd or "", agent)
+    _sessions[token] = (cwd or "", agent, scope)
     return {"command": str(launcher), "args": ["--bus", _bus_address, "--token", token]}
 
 
-def session_for(token: object) -> tuple[str, str] | None:
+def session_for(token: object) -> tuple[str, str, object | None] | None:
     return _sessions.get(token) if isinstance(token, str) else None
