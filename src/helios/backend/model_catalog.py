@@ -62,7 +62,10 @@ _self = bind_state_paths(__name__, _CATALOG_CACHE="model-catalog.json")
 # Bump whenever the Anthropic picker policy changes, so a catalog cached under
 # the old policy is rebuilt instead of served. rev 2 restores the 1M aliases and
 # the settings-owned default that rev 1 (P0 containment) filtered out.
-_ANTHROPIC_POLICY_REV = 2
+_ANTHROPIC_POLICY_REV = 3
+# rev 3 names alias rows after the version they resolve to ("Fable 5.2", not
+# "Fable (latest · 1M context)") and drops a plain alias whose `[1m]` twin
+# exists: on the 5.x families both resolve to the same 1M model.
 
 # Priority order for display; also the seed of families known to be real.
 KNOWN_FAMILIES: tuple[str, ...] = ("fable", "opus", "sonnet", "haiku")
@@ -106,16 +109,16 @@ class ModelEntry:
     is_default: bool = False
 
 
+# Tooltip for an alias row: the label names today's version, the id floats.
+_ALIAS_HINT = "Always the newest %s release"
+
 # Last-known-good list, used only when the binary can't be found/scanned.
 # Mirrors what discovery produces today so the picker never goes empty.
 FALLBACK_ANTHROPIC: list[ModelEntry] = [
-    ModelEntry("fable[1m]", "Fable (latest · 1M context)", "Latest"),
-    ModelEntry("fable", "Fable (latest)", "Latest"),
-    ModelEntry("opus[1m]", "Opus (latest · 1M context)", "Latest"),
-    ModelEntry("opus", "Opus (latest)", "Latest"),
-    ModelEntry("sonnet[1m]", "Sonnet (latest · 1M context)", "Latest"),
-    ModelEntry("sonnet", "Sonnet (latest)", "Latest"),
-    ModelEntry("haiku", "Haiku (latest)", "Latest"),
+    ModelEntry("fable[1m]", "Fable 5", "Latest", description=_ALIAS_HINT % "Fable"),
+    ModelEntry("opus[1m]", "Opus 4.8", "Latest", description=_ALIAS_HINT % "Opus"),
+    ModelEntry("sonnet[1m]", "Sonnet 4.6", "Latest", description=_ALIAS_HINT % "Sonnet"),
+    ModelEntry("haiku", "Haiku 4.5", "Latest", description=_ALIAS_HINT % "Haiku"),
     ModelEntry("", "Default (from Claude settings)", "Other"),
     ModelEntry("claude-fable-5", "Fable 5", "Fable"),
     ModelEntry("claude-opus-4-8", "Opus 4.8", "Opus"),
@@ -284,16 +287,27 @@ def build_anthropic_entries(scan: dict, help_aliases: set[str]) -> list[ModelEnt
     if not families:
         return list(FALLBACK_ANTHROPIC)
 
+    pinned = clean_pinned_ids(scan.get("ids", []), families)
+    # clean_pinned_ids sorts newest-first within a family, so the first pin
+    # seen per family is the version its floating alias resolves to today.
+    newest: dict[str, _PinnedId] = {}
+    for p in pinned:
+        newest.setdefault(p.family, p)
+
     entries: list[ModelEntry] = []
     for fam in families:
         name = fam.capitalize()
-        if fam in onem:
-            entries.append(ModelEntry(f"{fam}[1m]", f"{name} (latest · 1M context)", "Latest"))
-        entries.append(ModelEntry(fam, f"{name} (latest)", "Latest"))
+        head = newest.get(fam)
+        label = f"{name} {'.'.join(str(v) for v in head.version)}" if head else name
+        # One row per family. The `[1m]` spelling is kept as the id (it is
+        # what sessions and the app default persist) but never shown: on the
+        # current families the plain alias resolves to the same 1M model.
+        alias = f"{fam}[1m]" if fam in onem else fam
+        entries.append(ModelEntry(alias, label, "Latest", description=_ALIAS_HINT % name))
 
     entries.append(ModelEntry("", "Default (from Claude settings)", "Other"))
 
-    for p in clean_pinned_ids(scan.get("ids", []), families):
+    for p in pinned:
         entries.append(ModelEntry(p.id, _label_for_pinned(p), p.family.capitalize()))
     return entries
 
@@ -336,7 +350,7 @@ def anthropic_entries(*, force: bool = False) -> list[ModelEntry]:
         "fingerprint": fp,
         "anthropic_policy_rev": _ANTHROPIC_POLICY_REV,
         "scanned_at": int(time.time()),
-        "entries": [[e.id, e.label, e.group] for e in entries],
+        "entries": [[e.id, e.label, e.group, e.description] for e in entries],
     })
     _log.info("model catalog rescanned: %d entries from %s", len(entries), binary)
     return entries
@@ -346,7 +360,10 @@ def _entries_from_cache(rows: list) -> list[ModelEntry]:
     out = []
     for r in rows:
         try:
-            out.append(ModelEntry(str(r[0]), str(r[1]), str(r[2])))
+            out.append(ModelEntry(
+                str(r[0]), str(r[1]), str(r[2]),
+                description=str(r[3]) if len(r) > 3 else "",
+            ))
         except (IndexError, TypeError):
             continue
     return out or list(FALLBACK_ANTHROPIC)
@@ -823,6 +840,10 @@ def collapse_latest_twins(
     current: list[ModelEntry] = []
     older: list[ModelEntry] = []
     seen_families: set[str] = set()
+    # Label of the version each up-front alias row resolves to ("Fable 5.2").
+    # The matching pinned id is the same model, not an older one, so it must
+    # not be filed under "Older models" (it stays reachable through search).
+    current_labels: set[str] = set()
     for entry in entries:
         if entry.group == "Latest":
             family = entry.id.removesuffix("[1m]")
@@ -831,12 +852,14 @@ def collapse_latest_twins(
             else:
                 seen_families.add(family)
                 current.append(entry)
+                current_labels.add(entry.label)
         elif entry.group == "Other":
             current.append(entry)
         else:
             older.append(entry)
     if not current:
         return list(entries), []
+    older = [entry for entry in older if entry.label not in current_labels]
     return current, older
 
 

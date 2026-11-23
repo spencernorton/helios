@@ -95,8 +95,9 @@ def _accent_rgb(is_dark: bool) -> tuple[float, float, float]:
 # 25 total rows, which hid it exactly on smaller multi-provider setups.)
 
 # Anthropic first-tier splitting lives in
-# model_catalog.collapse_latest_twins: one Latest row per family up front,
-# its [1m]/bare twin and every pinned version behind the disclosure.
+# model_catalog.collapse_latest_twins: one row per family up front, named
+# after the version it resolves to; older pinned versions behind the
+# disclosure.
 
 # A provider whose catalog is already curated (Codex App Server returns a
 # handful of agent models) shows this many rows before the rest fold away.
@@ -400,9 +401,15 @@ class ChatToolbar(Gtk.Box):
             return
         self._model_alias = alias
         label = next(
-            (e.label for e in self._choices if e.id == alias), alias or "Default"
+            (e.label for e in self._choices if e.id == alias), None
         )
-        self._model_label.set_label(label)
+        if label is None and alias and not alias.endswith("[1m]"):
+            # A plain alias persisted before rev 3 of the catalog ("opus")
+            # names the same model as its listed `[1m]` row.
+            label = next(
+                (e.label for e in self._choices if e.id == f"{alias}[1m]"), None
+            )
+        self._model_label.set_label(label or alias or "Default")
         # The unified picker lists all available models grouped by provider.
         # Switching models updates the current provider filter for permissions
         # and execution controls.
@@ -1456,7 +1463,15 @@ class ChatToolbar(Gtk.Box):
             ),
         )
         outer.append(search)
-        popover.connect("show", lambda *_a: (search.set_text(""), search.grab_focus()))
+        def _on_show(*_a) -> None:
+            # The ✓ marker is baked into the rows when they are built, so
+            # rebuild on every open: otherwise it stays on whichever model was
+            # selected when the popover was built while the chip shows another.
+            search.set_text("")
+            self._fill_model_rows(box, popover, "")
+            search.grab_focus()
+
+        popover.connect("show", _on_show)
         outer.append(scroller)
         popover.set_child(outer)
         self._model_btn.set_popover(popover)
@@ -1608,7 +1623,14 @@ class ChatToolbar(Gtk.Box):
                 box.append(header)
                 last_group = group
 
-            selected = alias == self._model_alias
+            current = self._model_alias
+            selected = alias == current or (
+                # A plain alias saved before catalog rev 3 ("opus") is the
+                # model behind its listed `[1m]` row.
+                bool(current)
+                and alias == f"{current}[1m]"
+                and all(e.id != current for e in self._choices)
+            )
             if selected:
                 # Without a marker the current model is indistinguishable
                 # in a long list — the main navigation complaint. A label

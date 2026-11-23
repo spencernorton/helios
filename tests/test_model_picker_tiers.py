@@ -30,10 +30,12 @@ OPENROUTER = model_catalog.PROVIDER_OPENROUTER
 
 def _catalog() -> list[ModelEntry]:
     return [
-        ModelEntry("fable[1m]", "Fable (latest · 1M context)", "Latest"),
-        ModelEntry("opus", "Opus (latest)", "Latest"),
-        ModelEntry("sonnet", "Sonnet (latest)", "Latest"),
+        ModelEntry("fable[1m]", "Fable 5", "Latest"),
+        ModelEntry("opus", "Opus 4.8", "Latest"),
+        ModelEntry("sonnet", "Sonnet 4.6", "Latest"),
         ModelEntry("", "Default (from Claude settings)", "Other"),
+        ModelEntry("claude-fable-5", "Fable 5", "Fable"),
+        ModelEntry("claude-opus-4-8", "Opus 4.8", "Opus"),
         ModelEntry("claude-opus-4-5", "Opus 4.5", "Opus"),
         ModelEntry("claude-sonnet-4-5", "Sonnet 4.5", "Sonnet"),
         ModelEntry("gpt-5.6-sol", "GPT-5.6 Sol", "OpenAI", OPENAI),
@@ -66,6 +68,8 @@ def test_claude_picker_offers_no_openai_or_openrouter_rows():
         "opus",
         "sonnet",
         "",
+        "claude-fable-5",
+        "claude-opus-4-8",
         "claude-opus-4-5",
         "claude-sonnet-4-5",
     ]
@@ -86,6 +90,8 @@ def test_claude_pinned_versions_fold_behind_the_disclosure():
     # Aliases (incl. the 1M variant and the settings-owned default) stay up
     # front; only the pinned dated versions fold away.
     assert current == ["fable[1m]", "opus", "sonnet", ""]
+    # The pinned twin of each up-front row (Fable 5, Opus 4.8) is the newest
+    # model, not an older one — it must not sit under "Older models".
     assert older == ["claude-opus-4-5", "claude-sonnet-4-5"]
 
 

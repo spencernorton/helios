@@ -115,6 +115,7 @@ from helios.backend.project_perms import (
     sanitize_global_default,
 )
 from helios.backend.ui_state import (
+    DEFAULT_MODEL_KEY,
     configured_default_cwd,
     default_cwd,
     migrate_effort_level,
@@ -563,7 +564,13 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         self._pending_switch_qid_seq = -1
         # Default to the latest Fable with 1M context. The `fable` alias tracks
         # the newest Fable automatically, so this stays current as models ship.
-        self._model = self._ui_state.get("model", DEFAULT_MODEL) or DEFAULT_MODEL
+        # The Settings default (when configured) owns the first fresh chat;
+        # otherwise fall back to the last model used.
+        self._model = (
+            self._ui_state.get(DEFAULT_MODEL_KEY, "")
+            or self._ui_state.get("model", DEFAULT_MODEL)
+            or DEFAULT_MODEL
+        )
         self._effort_key: str = migrate_effort_level(self._ui_state)
         _saved_openai_effort = str(
             self._ui_state.get("effort_openai", "") or ""
@@ -5391,7 +5398,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
 
     # --- live chat ---
 
-    def _start_new_chat(self) -> None:
+    def _start_new_chat(self, *, use_default_model: bool = True) -> None:
         """Header-button action: start a fresh chat in the configured default
         workspace.
 
@@ -5418,6 +5425,8 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         except OSError as e:
             self._toast(f"Couldn't prepare {default_cwd()}: {e}")
             return
+        if use_default_model:
+            MainWindow._apply_default_model_for_new_chat(self)
         self._show_fresh_chat_ui(project)
         self._composer.grab_input_focus()
 
@@ -5436,7 +5445,8 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             self._sync_provider_toggle()
             return
         self._apply_model_choice(alias, quiet=True)
-        self._start_new_chat()
+        # An explicit provider choice outranks the Settings default.
+        self._start_new_chat(use_default_model=False)
 
     def _start_new_chat_in_worktree(self) -> None:
         """Opt-in isolation: a fresh worktree of the current chat's repository
@@ -5465,6 +5475,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             except OSError as exc:
                 self._toast(f"Couldn't use {path}: {exc}")
                 return False
+            MainWindow._apply_default_model_for_new_chat(self)
             self._show_fresh_chat_ui(project)
             self._composer.grab_input_focus()
             self._toast(f"New chat in worktree {os.path.basename(path)}.")
@@ -5495,6 +5506,7 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             except OSError as e:
                 self._toast(f"Couldn't use {path}: {e}")
                 return
+            MainWindow._apply_default_model_for_new_chat(self)
             self._show_fresh_chat_ui(project)
             self._composer.grab_input_focus()
 
@@ -10542,7 +10554,9 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
             return
         dlg = SettingsDialog(
             self._permission_mode,
-            self._model,
+            # Settings edits the new-chat default, not the visible chat's
+            # model; before one is configured, seed it with the current pick.
+            self._ui_state.get(DEFAULT_MODEL_KEY, "") or self._model,
             on_codex_credentials_changed=self._on_codex_credentials_changed,
             on_openrouter_credentials_changed=self._on_openrouter_credentials_changed,
         )
@@ -10869,13 +10883,33 @@ class MainWindow(GoalWorkMixin, Adw.ApplicationWindow):
         # A changed global fallback immediately affects any selected
         # conversation that has no explicit conversation-owned mode.
         self._sync_execution_control()
-        # Keep toolbar label + provider toggle + per-provider memory in sync;
-        # quiet=True because the toast below already covers it.
-        self._apply_model_choice(model, quiet=True)
+        # The default is for NEW chats. Persist it under its own key so later
+        # picker changes cannot overwrite it; only switch the visible chat when
+        # it is still a fresh, unbound one (a running conversation keeps its
+        # model — changing that is the picker's job).
+        self._ui_state.set(DEFAULT_MODEL_KEY, model)
+        if getattr(self, "_driver", None) is None:
+            self._apply_model_choice(model, quiet=True)
         self._toast(
             f"Chat defaults saved — {MODE_LABELS.get(permission_mode, permission_mode)} "
-            f"permissions, model {model or 'default'}."
+            f"permissions, new chats use {MainWindow._model_display_label(self, model)}."
         )
+
+    def _model_display_label(self, model: str) -> str:
+        entry = getattr(self, "_catalog_entries_by_id", {}).get(model)
+        return entry.label if entry is not None else (model or "the Claude settings default")
+
+    def _apply_default_model_for_new_chat(self) -> None:
+        """Every New chat entry point opens on the Settings default model.
+
+        Unconfigured (never saved in Settings) keeps the old behaviour of
+        following the last-used model. A default whose provider cannot run
+        right now is left to the existing send-time guards, exactly like the
+        sticky model restored at startup."""
+        store = getattr(self, "_ui_state", None)
+        default = str(store.get(DEFAULT_MODEL_KEY, "") or "") if store is not None else ""
+        if default and default != getattr(self, "_model", None):
+            self._apply_model_choice(default, quiet=True)
 
     # --- close ---
 

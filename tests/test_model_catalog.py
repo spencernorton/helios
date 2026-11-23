@@ -113,12 +113,18 @@ def test_build_entries_shape(fake_binary: Path):
     entries = mc.build_anthropic_entries(scan, help_aliases={"fable", "opus", "sonnet"})
     ids = [e.id for e in entries]
     labels = {e.id: e.label for e in entries}
-    # 1M alias precedes the standard alias for every family that advertises it.
-    assert ids[0] == "fable[1m]"
-    assert ids[1] == "fable"
-    assert "fable" in ids and "haiku" in ids
+    # One alias row per family: the 1M spelling where the family advertises
+    # it, never also its plain twin (same model, read as a duplicate).
+    assert ids[:4] == ["fable[1m]", "opus[1m]", "sonnet[1m]", "haiku"]
+    assert "fable" not in ids and "opus" not in ids
     # haiku has no [1m] alias in the fixture, so it must not gain a fake one.
     assert "haiku[1m]" not in ids
+    # Alias rows are named after the version they resolve to, with no
+    # "latest"/"1M context" decoration.
+    assert labels["fable[1m]"] == "Fable 5"
+    assert labels["opus[1m]"] == "Opus 4.8"
+    assert labels["haiku"] == "Haiku 4.5"
+    assert all("1M" not in e.label and "latest" not in e.label for e in entries)
     assert "" in ids  # the settings-owned default stays selectable
     assert labels["claude-fable-5"] == "Fable 5"
     assert labels["claude-opus-4-8"] == "Opus 4.8"
@@ -143,6 +149,7 @@ def test_anthropic_entries_cache_roundtrip(tmp_path: Path, monkeypatch, fake_bin
 
     first = mc.anthropic_entries()
     assert first[0].id == "fable[1m]"
+    assert first[0].description  # alias hint survives the cache round trip
     cache = json.loads((tmp_path / "model-catalog.json").read_text())
     assert cache["fingerprint"]["size"] == fake_binary.stat().st_size
     assert cache["anthropic_policy_rev"] == mc._ANTHROPIC_POLICY_REV
@@ -150,7 +157,7 @@ def test_anthropic_entries_cache_roundtrip(tmp_path: Path, monkeypatch, fake_bin
     # Second call: cache hit (poison the scanner to prove it isn't called).
     monkeypatch.setattr(mc, "scan_claude_binary", lambda *_: (_ for _ in ()).throw(AssertionError("rescan!")))
     second = mc.anthropic_entries()
-    assert [e.id for e in second] == [e.id for e in first]
+    assert second == first
 
     # Binary "updated" → fingerprint mismatch → rescan happens.
     fake_binary.write_bytes(FAKE_BINARY + b' claude-opus-4-9 ')

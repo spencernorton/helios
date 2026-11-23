@@ -130,7 +130,7 @@ def test_initial_model_choices_preserve_unknown_selected_model():
     choices = dlg._initial_model_choices("custom-provider-model")
 
     assert choices[0] == ("custom-provider-model", "custom-provider-model")
-    assert ("fable", "Fable (latest)") in choices
+    assert ("fable[1m]", "Fable 5") in choices
 
 
 def test_initial_model_choices_keep_a_persisted_1m_model():

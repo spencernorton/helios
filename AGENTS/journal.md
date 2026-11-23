@@ -1,5 +1,34 @@
 # Helios — Session Journal
 
+## 2026-11-23 — Model picker: real Claude versions, working default model
+
+- Settings → Defaults → Model was a no-op: it wrote the same `model` key the
+  toolbar picker overwrites on every pick, and New chat never consulted it,
+  so a new chat reopened on whatever was used last. New
+  `ui_state.DEFAULT_MODEL_KEY` (`default_model`) owns new chats: every
+  New-chat entry point (header button, Ctrl+N, worktree, Ctrl+Shift+N folder)
+  applies it via `MainWindow._apply_default_model_for_new_chat`; the
+  provider-specific "New GPT chat" style entries still win. Unconfigured keeps
+  the old last-used behaviour. Saving Settings switches only a fresh, unbound
+  chat — a running conversation keeps its model.
+- Claude rows now name the version they resolve to ("Fable 5.2",
+  "Opus 5.5", "Sonnet 5.5", "Haiku 5.5") instead of "Fable (latest · 1M
+  context)"; the id is still `fable[1m]` etc. The plain-alias twin is no
+  longer emitted where a `[1m]` twin exists (same 1M model on 5.x — see
+  `_LATEST_1M_ALIASES`). Catalog policy rev 2 → 3 forces a rescan; the cache
+  row gains the description column. Versions come from the newest pinned id
+  per family in the binary scan, the same source the pinned rows already use.
+- "Older models" no longer holds the newest models: the pinned twin of each
+  up-front row is dropped from the disclosure (still found by search).
+- The ✓ marker was baked in at popover build time, so it stuck on the model
+  selected when the rows were built while the chip showed another. Rows now
+  rebuild on every popover open; a persisted plain alias (`opus`) ticks and
+  labels its `[1m]` row.
+- Verified with a headless probe rendering the picker from a copy of the real
+  `~/.helios` state. Built on the unpushed `codex/helios-gemini-draft-fix`
+  commits; GitHub auth still missing on Apollo, so branch
+  `claude/model-picker-fixes` is local only.
+
 ## 2026-11-23 — Honor Gemini session capacity before starting a driver
 
 - The background cache's soft limit counted only bound sessions and
