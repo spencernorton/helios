@@ -32,7 +32,7 @@ def test_oversize_string_is_capped_and_says_so() -> None:
     dropped = len(payload) - S.MAX_DISPLAY_CHARS
     assert out.startswith("x" * S.MAX_DISPLAY_CHARS)
     assert f"({dropped} more characters not rendered here" in out
-    assert out.endswith("read the entry in full with scratch_read)")
+    assert out.endswith("use Copy full entry above)")
     assert len(out) < len(payload)
 
 
@@ -51,3 +51,19 @@ def test_unserialisable_payload_falls_back_to_str_and_is_still_capped() -> None:
     out = S.format_data({Boom(): 1})
     assert "more characters not rendered here" in out
     assert len(out) < 200 * 1024
+
+
+def test_format_full_data_preserves_oversize_unicode_and_structured_values() -> None:
+    payload = {
+        "title": "héllo 🌍 日本語",
+        "body": "z" * (200 * 1024),
+    }
+    full = S.format_full_data(payload)
+    preview = S.format_data(payload)
+
+    assert "héllo 🌍 日本語" in full
+    assert "z" * (200 * 1024) in full
+    assert "not rendered here" not in full
+    assert len(full) > S.MAX_DISPLAY_CHARS
+    assert len(preview) < len(full)
+    assert preview.endswith("use Copy full entry above)")

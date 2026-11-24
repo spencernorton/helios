@@ -331,9 +331,13 @@ class SessionList(Gtk.Box):
         # Pool rows are skipped: they're archive copies on a slow mount and
         # always idle.
         self._status_tick_running = False
-        # Reload generation whose POOL chips have been resolved; -1 so the
-        # first tick includes them.
-        self._pool_provider_gen = -1
+        # Pool rows whose provider chips have been resolved in the current
+        # reload generation (session_id -> ProviderResolution). Cleared on
+        # reload() so pool transcripts keep their once-per-reload stat cadence
+        # while newly revealed pool rows resolve immediately per row.
+        self._pool_resolved_providers: dict[
+            str, session_providers.ProviderResolution
+        ] = {}
         self._status_timer_id = GLib.timeout_add(
             self._STATUS_REFRESH_MS, self._tick_status
         )
@@ -383,6 +387,7 @@ class SessionList(Gtk.Box):
         noise. When the setting is off, previously merged pool rows are
         dropped too, so flipping the toggle takes effect on the next reload."""
         self._reload_gen += 1
+        self._pool_resolved_providers.clear()
         gen = self._reload_gen
         # Hide sidecar-only ghost rows (CLI-written ai-title/last-prompt stubs
         # with no conversation). Always keep: sessions Helios is actively driving
@@ -1015,9 +1020,10 @@ class SessionList(Gtk.Box):
         # freshly built row's initial chip, never consulted for routing, and
         # the next _apply_status_updates overwrites it unconditionally. A
         # session appearing for the first time correctly gets None ("…").
-        prior_providers = {
-            sid: row.provider_resolution for sid, row in self._rows_by_id.items()
-        }
+        prior_providers = dict(self._pool_resolved_providers)
+        for sid, row in self._rows_by_id.items():
+            if row.provider_resolution is not None or sid not in prior_providers:
+                prior_providers[sid] = row.provider_resolution
         while (row := self._listbox.get_first_child()) is not None:
             self._listbox.remove(row)
 
@@ -1295,19 +1301,20 @@ class SessionList(Gtk.Box):
         # that file changes.
         #
         # Statuses stay LOCAL-only: pool rows are static archives on a slow
-        # CIFS mount. Pool CHIPS keep their pre-existing once-per-reload
-        # cadence for the same reason — resolve_provider stats the transcript
-        # unconditionally, ahead of that lru_cache, so a 2s timer would put one
-        # stat per pool row on the shared mount forever. _pool_provider_gen is
-        # advanced in _apply_status_updates, not here, so a tick whose results
-        # are discarded is retried instead of counted.
-        include_pool = self._pool_provider_gen != gen
+        # CIFS mount. Pool CHIPS keep a once-per-reload cadence tracked per row
+        # (not globally per generation) — resolve_provider stats the transcript
+        # unconditionally ahead of its lru_cache, so already-resolved pool rows
+        # are skipped until the next reload(), while pool rows exposed later by
+        # a filter change or delayed pool scan still resolve on the next tick.
         provider_rows = [
             (sid, row.session)
             for sid, row in self._rows_by_id.items()
             if sid != PENDING_STAGED_ID
             and sid == row.session.session_id
-            and (include_pool or not row.session.project.read_only)
+            and (
+                not row.session.project.read_only
+                or sid not in self._pool_resolved_providers
+            )
         ]
         rows = [
             (sid, sess)
@@ -1352,23 +1359,6 @@ class SessionList(Gtk.Box):
         # List rebuilt while the worker ran → its statuses are stale.
         if self._destroyed or gen != self._reload_gen:
             return False
-        # Only burn the generation if this tick actually RESOLVED a pool row.
-        # _reload_gen advances solely in reload(); every other render path
-        # (_apply_pool_sessions, _on_filter_changed, _set_filter,
-        # set_live_session_ids) re-renders on the same one. So a tick that ran
-        # before the CIFS scan landed — i.e. with no pool rows in
-        # _rows_by_id — used to mark the generation done, and every pool row
-        # arriving afterwards was excluded from provider_rows for the life of
-        # that generation, leaving its chip at "…" permanently. Cold start hits
-        # this every time: reload(rescan_pool=True) renders with
-        # _pool_sessions == [] and kicks a tick, and the scan lands seconds
-        # later on the same generation.
-        if any(
-            (row := self._rows_by_id.get(sid)) is not None
-            and row.session.project.read_only
-            for sid in providers
-        ):
-            self._pool_provider_gen = gen
         provider = getattr(self, "_working_ids_provider", None)
         working = provider() if provider is not None else set()
         for sid, status in updates.items():
@@ -1384,6 +1374,8 @@ class SessionList(Gtk.Box):
         for sid, resolution in providers.items():
             row = self._rows_by_id.get(sid)
             if row is not None:
+                if row.session.project.read_only:
+                    self._pool_resolved_providers[sid] = resolution
                 row.update_provider(resolution)
         return False  # one-shot idle callback
 

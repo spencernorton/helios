@@ -73,6 +73,14 @@ class SharedContextPane(Gtk.Box):
         text_col.append(self._subtitle)
         header.append(text_col)
 
+        self._copy_btn = Gtk.Button.new_from_icon_name("edit-copy-symbolic")
+        self._copy_btn.add_css_class("flat")
+        self._copy_btn.set_valign(Gtk.Align.CENTER)
+        self._copy_btn.set_tooltip_text("Copy full entry")
+        self._copy_btn.set_visible(False)
+        self._copy_btn.connect("clicked", self._on_copy_full_clicked)
+        header.append(self._copy_btn)
+
         self._handoff_btn = Gtk.Button.new_from_icon_name("document-send-symbolic")
         self._handoff_btn.add_css_class("flat")
         self._handoff_btn.set_valign(Gtk.Align.CENTER)
@@ -148,6 +156,12 @@ class SharedContextPane(Gtk.Box):
         self._detail_meta.add_css_class("dim-label")
         self._detail_meta.set_wrap(True)
         detail_box.append(self._detail_meta)
+        self._copy_status = Gtk.Label(xalign=0)
+        self._copy_status.add_css_class("caption")
+        self._copy_status.add_css_class("dim-label")
+        self._copy_status.set_wrap(True)
+        self._copy_status.set_visible(False)
+        detail_box.append(self._copy_status)
         self._detail_summary = Gtk.Label(xalign=0)
         self._detail_summary.set_wrap(True)
         self._detail_summary.set_selectable(True)
@@ -181,6 +195,9 @@ class SharedContextPane(Gtk.Box):
         self._last_loaded = 0.0
         self._loading = False
         self._gen = 0
+        self._detail_key_name = ""
+        self._copy_gen = 0
+        self._copy_feedback_id = 0
         self.set_handoff_target(None)
 
         # First fetch when the pane actually becomes visible; later maps
@@ -193,6 +210,8 @@ class SharedContextPane(Gtk.Box):
             return
         self._destroyed = True
         self._gen += 1
+        self._copy_gen += 1
+        self._cancel_copy_feedback()
         self._loading = False
 
     # ── Hand-off ─────────────────────────────────────────────────────
@@ -315,10 +334,39 @@ class SharedContextPane(Gtk.Box):
 
     # ── Detail view ──────────────────────────────────────────────────
 
+    def _cancel_copy_feedback(self) -> None:
+        if self._copy_feedback_id:
+            try:
+                GLib.source_remove(self._copy_feedback_id)
+            except Exception:
+                pass
+            self._copy_feedback_id = 0
+
+    def _reset_copy_button(self) -> bool:
+        self._copy_feedback_id = 0
+        if not self._destroyed:
+            self._copy_btn.set_icon_name("edit-copy-symbolic")
+            self._copy_btn.set_tooltip_text("Copy full entry")
+        return False
+
+    def _write_clipboard(self, text: str) -> None:
+        clipboard = self.get_clipboard()
+        if clipboard is not None:
+            clipboard.set(text)
+
     def _show_list(self) -> None:
         if self._destroyed:
             return
+        self._copy_gen += 1
+        self._detail_key_name = ""
+        self._cancel_copy_feedback()
         self._back_btn.set_visible(False)
+        self._copy_btn.set_visible(False)
+        self._copy_btn.set_sensitive(True)
+        self._copy_btn.set_icon_name("edit-copy-symbolic")
+        self._copy_btn.set_tooltip_text("Copy full entry")
+        self._copy_status.set_label("")
+        self._copy_status.set_visible(False)
         self._stack.set_visible_child_name("list")
 
     def _on_row_activated(self, _box: Gtk.ListBox, row: Gtk.ListBoxRow) -> None:
@@ -328,10 +376,19 @@ class SharedContextPane(Gtk.Box):
         if entry is None:
             return
         key = entry.key
+        self._copy_gen += 1
+        self._detail_key_name = key
+        self._cancel_copy_feedback()
         self._detail_key.set_label(key)
         self._detail_meta.set_label("loading…")
         self._detail_summary.set_label(entry.summary)
         self._detail_data.get_buffer().set_text("")
+        self._copy_btn.set_icon_name("edit-copy-symbolic")
+        self._copy_btn.set_tooltip_text("Copy full entry")
+        self._copy_btn.set_sensitive(True)
+        self._copy_btn.set_visible(True)
+        self._copy_status.set_label("")
+        self._copy_status.set_visible(False)
         self._back_btn.set_visible(True)
         self._stack.set_visible_child_name("detail")
         gen = self._gen
@@ -339,15 +396,23 @@ class SharedContextPane(Gtk.Box):
         def worker() -> None:
             try:
                 full = scratchpad.read_entry(key)
+                preview = scratchpad.format_data(full.data)
                 err = ""
             except scratchpad.ScratchpadError as e:
-                full, err = None, str(e)
+                full, preview, err = None, "", str(e)
             if not self._destroyed:
-                GLib.idle_add(self._apply_detail, key, full, err, gen)
+                GLib.idle_add(self._apply_detail, key, full, err, gen, preview)
 
         threading.Thread(target=worker, name="helios-scratch-read", daemon=True).start()
 
-    def _apply_detail(self, key: str, full, err: str, gen: int) -> bool:
+    def _apply_detail(
+        self,
+        key: str,
+        full,
+        err: str,
+        gen: int,
+        preview: str | None = None,
+    ) -> bool:
         # Stale if the list was refreshed or the user opened another entry.
         if (
             self._destroyed
@@ -361,7 +426,68 @@ class SharedContextPane(Gtk.Box):
         self._detail_meta.set_label(_meta_line(full))
         if full.summary:
             self._detail_summary.set_label(full.summary)
-        self._detail_data.get_buffer().set_text(scratchpad.format_data(full.data))
+        text = preview if preview is not None else scratchpad.format_data(full.data)
+        self._detail_data.get_buffer().set_text(text)
+        return False
+
+    def _on_copy_full_clicked(self, *_args) -> None:
+        if self._destroyed or self._stack.get_visible_child_name() != "detail":
+            return
+        key = self._detail_key_name
+        if not key:
+            return
+        self._copy_gen += 1
+        cgen = self._copy_gen
+        gen = self._gen
+        self._cancel_copy_feedback()
+        self._copy_btn.set_sensitive(False)
+        self._copy_status.set_label("Fetching full entry…")
+        self._copy_status.set_visible(True)
+
+        def worker() -> None:
+            try:
+                full = scratchpad.read_entry(key)
+                text = scratchpad.format_full_data(full.data)
+                err = ""
+            except scratchpad.ScratchpadError as e:
+                text, err = "", str(e)
+            if not self._destroyed:
+                GLib.idle_add(self._apply_copy_full, key, text, err, gen, cgen)
+
+        threading.Thread(target=worker, name="helios-scratch-copy", daemon=True).start()
+
+    def _apply_copy_full(
+        self, key: str, text: str, err: str, gen: int, cgen: int
+    ) -> bool:
+        if (
+            self._destroyed
+            or gen != self._gen
+            or cgen != self._copy_gen
+            or self._stack.get_visible_child_name() != "detail"
+            or self._detail_key_name != key
+        ):
+            return False
+        self._copy_btn.set_sensitive(True)
+        if err:
+            self._copy_btn.set_icon_name("edit-copy-symbolic")
+            self._copy_btn.set_tooltip_text("Copy full entry")
+            self._copy_status.set_label(
+                f"Could not copy full entry: {err}. Refresh or try again."
+            )
+            self._copy_status.set_visible(True)
+            return False
+        if not text:
+            self._copy_status.set_label("This entry has no payload to copy.")
+            self._copy_status.set_visible(True)
+            return False
+        self._write_clipboard(text)
+        self._copy_btn.set_icon_name("object-select-symbolic")
+        self._copy_btn.set_tooltip_text("Copied full entry")
+        self._copy_status.set_label(
+            f"Copied full entry ({len(text):,} characters)."
+        )
+        self._copy_status.set_visible(True)
+        self._copy_feedback_id = GLib.timeout_add(2500, self._reset_copy_button)
         return False
 
 

@@ -249,3 +249,62 @@ def test_a_pool_free_tick_does_not_burn_the_generation(sidebar, tmp_path) -> Non
         "the pool row was never resolved — a pool-free tick burned the "
         f"generation and its chip stays at '…' forever. saw: {seen}"
     )
+
+
+def test_pool_row_exposed_after_same_generation_resolves_without_restatting_prior_pool_row(
+    sidebar, tmp_path
+) -> None:
+    """Revealing a different pool row on the same reload generation must resolve
+    the newly shown row without re-statting already-resolved pool rows."""
+    seen: list[list[str]] = []
+    real = session_providers.resolve_provider
+
+    def spy(session_id, transcript_path=None, **kw):
+        seen[-1].append(session_id)
+        return real(session_id, transcript_path, **kw)
+
+    pool_a = _session(tmp_path, "pool-alpha", "helios-codex", read_only=True)
+    pool_b = _session(tmp_path, "pool-beta", "helios-codex", read_only=True)
+    sidebar._local_sessions = [_session(tmp_path, "localrow", "helios-codex")]
+    sidebar._pool_sessions = [pool_a]
+    sidebar._render(preserve_selection=False)
+
+    SL.session_providers.resolve_provider = spy
+    try:
+        # Tick 1 resolves localrow + pool-alpha.
+        seen.append([])
+        sidebar._status_tick_running = False
+        sidebar._tick_status()
+        assert _pump(lambda: not sidebar._status_tick_running), "tick 1 never landed"
+        assert sorted(seen[0]) == ["localrow", "pool-alpha"]
+        assert sidebar._rows_by_id["pool-alpha"]._provider_lbl.get_label() == "GPT"
+
+        # Same reload generation: filter/pool update now exposes pool-beta too.
+        sidebar._pool_sessions = [pool_a, pool_b]
+        sidebar._render(preserve_selection=True)
+        assert sidebar._rows_by_id["pool-alpha"]._provider_lbl.get_label() == "GPT"
+        assert sidebar._rows_by_id["pool-beta"]._provider_lbl.get_label() == "…"
+
+        # Tick 2 resolves pool-beta and skips already-resolved pool-alpha.
+        seen.append([])
+        sidebar._status_tick_running = False
+        sidebar._tick_status()
+        assert _pump(lambda: not sidebar._status_tick_running), "tick 2 never landed"
+        assert sorted(seen[1]) == ["localrow", "pool-beta"]
+        assert sidebar._rows_by_id["pool-beta"]._provider_lbl.get_label() == "GPT"
+
+        # Hide pool-alpha, then reveal it again in the same generation: its chip
+        # restores immediately from per-row state with zero extra CIFS stat.
+        sidebar._pool_sessions = [pool_b]
+        sidebar._render(preserve_selection=True)
+        sidebar._pool_sessions = [pool_a, pool_b]
+        sidebar._render(preserve_selection=True)
+        assert sidebar._rows_by_id["pool-alpha"]._provider_lbl.get_label() == "GPT"
+
+        seen.append([])
+        sidebar._status_tick_running = False
+        sidebar._tick_status()
+        assert _pump(lambda: not sidebar._status_tick_running), "tick 3 never landed"
+        assert seen[2] == ["localrow"]
+    finally:
+        SL.session_providers.resolve_provider = real
