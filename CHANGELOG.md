@@ -4,6 +4,11 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.121.0 — 2026-11-23
+
+### Architecture
+- **Further `main_window.py` decomposition:** extracted model catalog, provider toggle/memory, OpenRouter credit refresh, and in-place model/provider switching into `window_models.py` (`WindowModelsMixin`), and extracted execution-target resolution, permission/effort/workflow controls, and durable execution attempt accounting into `window_execution.py` (`WindowExecutionMixin`). Reduces `main_window.py` by ~3,150 additional lines (~10,659 to ~7,507 lines) while preserving MRO compatibility and test monkeypatch hooks.
+
 ## 0.120.0 — 2026-11-23
 
 ### Reliability
