@@ -11,7 +11,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
 from helios.backend.slash_commands import (
     SlashCommand,
@@ -115,6 +115,9 @@ class Composer(Gtk.Box):
         self._assistant_label = "Claude"
         self._placeholder = Gtk.Label(label=self._default_placeholder_text())
         self._placeholder.set_xalign(0)
+        # The busy hint is long; in a narrow window it ran on under the
+        # spinner and Stop button instead of stopping at the text area.
+        self._placeholder.set_ellipsize(Pango.EllipsizeMode.END)
         self._placeholder.add_css_class("helios-composer-placeholder")
         self._placeholder.add_css_class("dim-label")
         self._placeholder.set_halign(Gtk.Align.START)

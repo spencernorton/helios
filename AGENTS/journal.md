@@ -1,5 +1,43 @@
 # Helios — Session Journal
 
+## 2026-11-24 — A conversation keeps its own model; composer text area (0.121.2)
+
+- Reported: a live Opus chat "went to Fable". Evidence from the Work store:
+  attempt 1 `opus[1m]`, attempt 2 `fable[1m]`, with a `/model fable[1m]` in
+  the native transcript and no picker use in that chat.
+- Cause: `_on_session_selected` called `_adopt_session_provider(provider)`,
+  which applies `_provider_models[provider]` (last model used with that
+  provider anywhere; another chat had moved it to Fable) or returns early
+  when the provider already matches. `_driver_model_is_stale` then compared
+  the header against `driver._helios_requested_model` and `_ensure_driver`
+  issued the live `set_model`. `resolve_native_work(..., model=self._model)`
+  also stamped the header's model into participant metadata on every
+  selection. Only multi-leg Works restored `tail_leg.model`.
+- Fix: `WindowModelsMixin._restore_conversation_model` (live driver's
+  requested model → active binding's `model` → leave the adopted one) runs
+  right after adoption and before the Work lookup, and again after the two
+  late-catalog adoptions (`_apply_model_catalog`, send-time). Non-Claude cold
+  models must still be in the catalog; a `_pending_model_switch` for the same
+  Work keeps the header.
+- Composer: GtkTextView's own node carries `view` and paints
+  `@view_bg_color`; libadwaita already clears `textview > text`, so
+  `.helios-composer-text text { background: transparent }` did nothing and
+  the box showed inside the card. Same latent rule on `.helios-shared-data`.
+  Both now clear the node; `test_css_invariants.py` guards the pattern.
+  Placeholder label ellipsizes.
+- Cross-engine review (GPT) found two gaps, both closed: a cold non-Claude
+  conversation opened on the provider already on screen before its catalog
+  lands left no pending adoption, so it was never restored
+  (`_deferred_conversation_model` + `_retry_deferred_conversation_model`,
+  retried in `_apply_model_catalog` and awaited at send time); and a queued
+  cross-provider switch whose header a reselection had reverted sent its
+  queued texts under the source provider
+  (`_complete_pending_model_switch_if_ready` now re-applies
+  `pending.to_model` first). Not changed: the header still shows the source
+  model between that reselection and the switch landing.
+- Tests: `tests/test_conversation_keeps_its_model.py` (unit + the reported
+  sequence through `_on_session_selected`, fails without the fix).
+
 ## 2026-11-23 — Release 0.117.0: agent-launched filter plus the live host fixes
 
 - Integrates the four local-only commits that were already running on the

@@ -216,6 +216,32 @@ def _applied_classes() -> tuple[set[str], set[str]]:
     return literals, prefixes
 
 
+def test_transparent_text_views_clear_their_own_node() -> None:
+    """A text view meant to sit on its parent's ground must clear itself.
+
+    A GtkTextView carries the `view` class, so the widget's own node paints
+    @view_bg_color; libadwaita already leaves the `text` child clear. A rule
+    that clears only `<class> text` therefore changes nothing: the composer
+    drew an opaque square box inside its rounded card until 2026-11.
+    """
+    transparent = re.compile(r"background(?:-color)?\s*:\s*transparent")
+    own_node: set[str] = set()
+    text_child: set[str] = set()
+    for selector, declarations in _rules(_body()):
+        if not transparent.search(declarations):
+            continue
+        for part in (piece.strip() for piece in selector.split(",")):
+            child = re.fullmatch(r"(\.helios-[\w-]+) text", part)
+            if child:
+                text_child.add(child.group(1))
+            elif re.fullmatch(r"\.helios-[\w-]+", part):
+                own_node.add(part)
+    assert ".helios-composer-text" in text_child, "the composer rule moved; update this guard"
+    assert text_child <= own_node, (
+        f"cleared on `text` only, so still opaque: {sorted(text_child - own_node)}"
+    )
+
+
 def test_every_styled_helios_class_has_a_python_caller() -> None:
     """The invariant both halves of T-2 violated.
 
