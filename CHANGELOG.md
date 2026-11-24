@@ -4,6 +4,10 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.119.0 — 2026-11-23
+
+- **Incremental `MainWindow` modularization:** Extracted three cohesive, behavior-preserving controller mixins out of `main_window.py` following the `GoalWorkMixin` pattern: `WindowBrowserMixin` (`window_browser.py`), `WindowRecoveryMixin` (`window_recovery.py`), and `WindowCheckpointsMixin` (`window_checkpoints.py`), reducing `main_window.py` by over 680 lines with unchanged runtime and test contracts.
+
 ## 0.118.1 — 2026-11-23
 
 - **Non-blocking checkpoint persistence & bounded retention:** Moved `checkpoints.json` writes onto a serialized background worker (`checkpoints.record_async` / `forget_many_async` / `flush`), switched to compact JSON with a 150-session recency cap, and pruned checkpoints and title cache entries when sessions are deleted.
