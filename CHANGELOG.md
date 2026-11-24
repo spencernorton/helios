@@ -13,6 +13,11 @@ source (`source.tar.gz`) and `SHA256SUMS.txt`.
 - **"Claude Code default":** the empty-id row formerly labelled "Default (from Claude settings)" — easily read as Helios's own Settings default — is renamed, explains that it omits `--model`, and closes Claude's More list.
 - **OpenRouter:** its list is exactly the Settings shortlist, kept in step with picker edits. With nothing ticked the catalog stays under More instead of filling the list with several hundred rows.
 - **Settings:** Providers → *Model picker · Shown models* (a second checklist with different semantics) is replaced by *Model picker*, which explains what each list shows and resets every provider's curation.
+## 0.121.1 — 2026-11-24
+
+### Fixes
+- **Sidebar pool provider chips:** track pool-row provider chip resolution per row (instead of once globally per reload generation) in `widgets/session_list.py`. Pool rows newly revealed by a filter change or delayed pool scan now resolve on the next status tick while already-resolved pool rows keep their once-per-reload stat cadence and restore their chip instantaneously on filter toggles.
+- **Shared Context full-entry copy:** added an asynchronous, bounded *Copy full entry* action to `widgets/shared_context_pane.py` (with `scratchpad.format_full_data` and a 16 MB HTTP read cap) so users can copy complete uncapped Unicode/structured payloads without stalling GTK while keeping the 64 KB detail preview cap and surfacing honest recoverable status on missing/expired entries.
 
 ## 0.121.0 — 2026-11-23
 
