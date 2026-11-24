@@ -273,6 +273,63 @@ def test_settings_shortlist_edits_override_picker_curation(state):
     assert not s.customized
 
 
+def native_catalogs() -> list[ModelEntry]:
+    """Id shapes the Gemini, Muse and Kimi CLIs really report."""
+    google, muse, kimi = (
+        model_catalog.PROVIDER_GOOGLE, model_catalog.PROVIDER_MUSE, model_catalog.PROVIDER_KIMI,
+    )
+    return [
+        ModelEntry("gemini-4-neon", "Gemini 4 Neon", "Google", google),
+        ModelEntry("gemini-pro-orchestrator", "Orchestrator (Carbon)", "Google", google),
+        ModelEntry("gemini-3.8-flash", "Gemini 3.8 Flash", "Google", google),
+        ModelEntry("muse-wonder-1.0", "muse-wonder-1.0", "Muse", muse),
+        ModelEntry("muse-spark-1.3", "muse-spark-1.3", "Muse", muse),
+        # Kimi ids carry a slash, like OpenRouter's vendor/model ids.
+        ModelEntry("kimi-code/kimi-for-coding", "K2.8 Preview", "Kimi", kimi),
+        ModelEntry("kimi-code/k3.1-pro", "K3.1 Pro", "Kimi", kimi),
+    ]
+
+
+@pytest.mark.parametrize("provider, first, second", [
+    (model_catalog.PROVIDER_GOOGLE, "gemini-4-neon", "gemini-pro-orchestrator"),
+    (model_catalog.PROVIDER_MUSE, "muse-wonder-1.0", "muse-spark-1.3"),
+    (model_catalog.PROVIDER_KIMI, "kimi-code/kimi-for-coding", "kimi-code/k3.1-pro"),
+])
+def test_gemini_muse_and_kimi_lists_curate_like_any_other(state, provider, first, second):
+    entries = native_catalogs() + openrouter() + claude()
+    state.set(ui_state.OPENROUTER_PICKER_KEY, ["z-ai/glm-5.2"])
+    before = {
+        s.provider: s.main_ids
+        for s in model_picker.stored_sections(entries, state=state)
+    }
+    # The whole catalog is listed until something is hidden.
+    whole = [e.id for e in native_catalogs() if e.provider == provider]
+    assert before[provider] == whole
+    assert section(entries, state, provider).more == ()
+
+    model_picker.hide_model(section(entries, state, provider), second, state=state)
+    s = section(entries, state, provider)
+    assert second not in s.main_ids
+    assert ids(s.more) == [second]
+
+    model_picker.add_model(section(entries, state, provider), second, state=state)
+    model_picker.move_model(section(entries, state, provider), second, 0, state=state)
+    assert section(entries, state, provider).main_ids[:2] == [second, first]
+
+    # No other provider's list moved (Kimi's slash ids are not OpenRouter's).
+    after = {
+        s.provider: s.main_ids
+        for s in model_picker.stored_sections(entries, state=state)
+    }
+    assert {p: v for p, v in after.items() if p != provider} == {
+        p: v for p, v in before.items() if p != provider
+    }
+    assert state.get(ui_state.OPENROUTER_PICKER_KEY) == ["z-ai/glm-5.2"]
+
+    model_picker.reset_provider(provider, state=state)
+    assert section(entries, state, provider).main_ids == whole
+
+
 def test_hand_edited_state_is_tolerated(state):
     state.set(ui_state.HIDDEN_MODELS_KEY, "haiku")
     state.set(ui_state.MODEL_ORDER_KEY, ["haiku", 7, None, "haiku"])

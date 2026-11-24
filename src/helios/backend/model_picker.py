@@ -4,8 +4,9 @@ Every provider's catalog splits into two tiers:
 
 * **Your list** — shown up front. Until the user curates a provider it is that
   provider's *current* models: the floating alias of each Claude family (named
-  after the version it resolves to today), the first rows Codex, Gemini, Muse
-  and Kimi report, or the OpenRouter shortlist ticked in Settings (none until
+  after the version it resolves to today), every row Codex, Gemini, Muse and
+  Kimi report (the first eight of a longer catalog), or the OpenRouter
+  shortlist ticked in Settings (none until
   something is ticked: nobody picks from several hundred rows). Models the
   user adds join it and models the user hides leave it.
 * **More** — everything else the provider offers: older pinned versions,

@@ -1,5 +1,26 @@
 # Helios — Session Journal
 
+## 2026-11-24 — Model picker follow-up: real Gemini/Muse/Kimi catalogs
+
+- The first before/after preview drew one placeholder row each for Gemini,
+  Muse and Kimi, which read as "these providers cannot show or hide other
+  models". The rules already covered them; the real catalogs (8 / 5 / 6
+  models) list in full and curate like any other. Lesson: render previews
+  from the app's own discovery, never hand-written rows.
+- Real data exposed one flaw: edit-mode rows cut "Orchestrator (Neon)",
+  "(Carbon)" and "(Argon)" to the same text. Rows are wider
+  (`_PICK_ROW_WIDTH` 252, `_EDIT_ROW_WIDTH` 316) and every row's tooltip now
+  leads with the full name.
+- New parametrized test curates real id shapes (`gemini-*`, `muse-*`,
+  `kimi-code/*`) and checks Kimi's slash ids never touch OpenRouter's list.
+- Not changed, recorded for a decision: `agy models` also lists
+  `claude-opus-5-5`, `claude-sonnet-5-5` and `gpt-oss-120b`.
+  `google_env._MODEL_ID` drops every non-`gemini-` id and
+  `gemini_driver` refuses to start one, so Helios shows 8 of Antigravity's
+  11 models. Lifting that means `google:`-prefixed ids (the bare Claude ids
+  collide with the Anthropic catalog) through the driver and model memory.
+- Backend lane 2129 passed; native Xvfb suite 3827 passed.
+
 ## 2026-11-24 — Model picker: two tiers, curation from the dropdown (0.122.0)
 
 - Problem: the Claude section drew a header + divider per family (four

@@ -195,6 +195,17 @@ def test_drop_places_the_row_in_the_gap_it_was_dropped_on(toolbar):
     assert not toolbar._drop_model_at(f"{ANTHROPIC}\nhaiku", OPENAI, 0)
 
 
+def test_tooltip_leads_with_the_full_name(toolbar):
+    # A long name can be cut short in the row; the tooltip always has it.
+    _fill(toolbar)
+    picks = [
+        w for w in _widgets(toolbar)
+        if isinstance(w, Gtk.Button) and w.has_css_class("helios-model-pick")
+    ]
+    assert picks[0].get_tooltip_text().splitlines()[0] == "Fable 5.2"
+    assert picks[4].get_tooltip_text() == "GPT-6.2 Sol"
+
+
 def test_search_marks_rows_by_tier(toolbar):
     _fill(toolbar, "opus")
     actions = [

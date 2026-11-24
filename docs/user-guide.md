@@ -96,8 +96,9 @@ composer.
 
 **The model picker.** Each provider gets one section that starts with *your
 list*: the newest model of every Claude family (each row is named after the
-version its alias resolves to today), the first models Codex, Gemini, Muse
-and Kimi report, and the OpenRouter models ticked in Settings → Providers.
+version its alias resolves to today), every model Codex, Gemini, Muse and
+Kimi report (the first eight when a catalogue is longer), and the OpenRouter
+models ticked in Settings → Providers.
 Everything else the provider offers — older pinned versions, models you hid,
 and *Claude Code default* (no `--model`, so Claude Code uses its own
 `/model` or `settings.json` choice) — folds under *More <provider> models*.

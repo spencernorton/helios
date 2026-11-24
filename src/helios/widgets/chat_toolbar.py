@@ -98,6 +98,8 @@ def _accent_rgb(is_dark: bool) -> tuple[float, float, float]:
 # user's hide/add/reorder edits persist all live in helios.backend.model_picker.
 
 _EDIT_TOOLTIP = "Hide, add and reorder models"
+_PICK_ROW_WIDTH = 252
+_EDIT_ROW_WIDTH = 316
 _EDIT_HINT = (
     "Your list holds each provider's current models plus any you add; older "
     "and hidden ones wait under More. Drag a handle or use the arrows to "
@@ -1707,13 +1709,16 @@ class ChatToolbar(Gtk.Box):
         reorderable = editing and listed and index >= 0 and count > 1
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
         row.add_css_class("helios-model-row")
-        row.set_size_request(236, -1)
+        # Wide enough that names differing only at the end ("Orchestrator
+        # (Neon)" / "(Carbon)") stay apart; edit mode adds three controls.
+        row.set_size_request(_EDIT_ROW_WIDTH if editing else _PICK_ROW_WIDTH, -1)
 
         is_selected = entry.id == selected
         # Without a marker the current model is indistinguishable in a long
         # list. A label prefix, not set_icon_name: the icon replaces the text.
         text = f"✓ {entry.label}" if is_selected else entry.label
-        tooltip = _model_tooltip(entry)
+        # The name leads the tooltip: a long one may still be cut short.
+        tooltip = "\n".join(filter(None, (entry.label, _model_tooltip(entry))))
 
         if editing:
             if reorderable:

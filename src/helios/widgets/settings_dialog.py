@@ -1517,8 +1517,9 @@ class SettingsDialog(Adw.PreferencesDialog):
         group.set_title("Model picker")
         group.set_description(
             "Each provider in the chat picker starts with its current models: "
-            "the newest of every Claude family, the first models Codex, "
-            "Gemini, Muse and Kimi offer, and your OpenRouter shortlist. "
+            "the newest of every Claude family, every model Codex, Gemini, "
+            "Muse and Kimi offer (the first eight of a longer catalog), and "
+            "your OpenRouter shortlist. "
             "Older versions and anything you hide fold under More, and the "
             "filter box searches everything. Hover a model in the picker to "
             "hide or add it; the pencil button reorders. Hidden models also "
