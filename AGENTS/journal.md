@@ -1,5 +1,38 @@
 # Helios — Session Journal
 
+## 2026-11-24 — Model picker: two tiers, curation from the dropdown (0.122.0)
+
+- Problem: the Claude section drew a header + divider per family (four
+  headers for four rows) and an "Other" group whose only row was the empty-id
+  settings sentinel, labelled "Default (from Claude settings)" — easily read
+  as Helios's own Settings default. Curation lived in a Settings checklist
+  ("Shown models") whose tick meant "not hidden", not "shown up front".
+- New GTK-free `backend/model_picker.py` owns the rules: per provider, *your
+  list* (Claude `Latest` aliases; first 8 for Codex/Gemini/Muse/Kimi; exactly
+  the OpenRouter shortlist) then *More* (everything else; Claude alias twins
+  dropped unless selected; `""` last). Curation = `hidden_models` (defaults
+  moved to More) + new `model_order` (presence promotes, position orders;
+  first curation of a provider materializes its whole list there).
+- OpenRouter's list is now exactly the shortlist — an empty shortlist lists
+  none up front (was: the whole catalog), because hiding the last shortlisted
+  model otherwise dumped several hundred rows into the list. Picker edits and
+  Settings ticks are kept in step (`sync_openrouter_shortlist`).
+- Toolbar: one header per provider, ~26px rows, lazy-built "More <provider>
+  models (N)" expanders (open when holding the selection), hover hide/add,
+  pencil → edit mode (drag handle, ↑/↓, per-provider Reset; names are labels
+  so a stray click cannot switch model). Rebuilds go through idle so a
+  clicked control is never destroyed inside its own signal.
+- Settings → Providers → "Model picker" replaces the checklist with an
+  explanation + reset-all. `prune_model_order` keeps `""`.
+- Cross-engine review (GPT) caught two: `_save` dropped placed ids the
+  current catalog lacked (curating under the fallback list lost them for
+  good) — now kept until reset/prune; and `.helios-model-more > title` never
+  matched because GTK4 nests `expander-widget > box > title` (the old
+  "Older models" rule had the same dead selector).
+- Tests: `test_model_picker_layout.py` (backend rules), rewritten
+  `test_model_picker_tiers.py` (widget). Backend lane 2126 passed; native
+  Xvfb suite 3823 passed.
+
 ## 2026-11-23 — Release 0.117.0: agent-launched filter plus the live host fixes
 
 - Integrates the four local-only commits that were already running on the

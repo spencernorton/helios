@@ -4,6 +4,16 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.122.0 — 2026-11-24
+
+### Model picker
+- **Condensed provider sections:** one header per provider and compact rows. The Claude section no longer draws a header and divider for every family (four headers for four rows), and the "Other" group is gone.
+- **Two tiers per provider:** *your list* up front (the newest model of each Claude family, the first models Codex, Gemini, Muse and Kimi report, the OpenRouter shortlist) and a folded *More <provider> models (N)* holding older versions, hidden models and the settings sentinel. The disclosure holding the current selection opens on its own; the filter box searches both tiers. Rules live GTK-free in `backend/model_picker.py`.
+- **Curate from the dropdown:** hover a row to hide it (it moves to More) or add it from More; the pencil button switches to edit mode with drag handles, ↑/↓ buttons and a per-provider *Reset*. Order persists in the new `model_order` ui-state key beside `hidden_models`.
+- **"Claude Code default":** the empty-id row formerly labelled "Default (from Claude settings)" — easily read as Helios's own Settings default — is renamed, explains that it omits `--model`, and closes Claude's More list.
+- **OpenRouter:** its list is exactly the Settings shortlist, kept in step with picker edits. With nothing ticked the catalog stays under More instead of filling the list with several hundred rows.
+- **Settings:** Providers → *Model picker · Shown models* (a second checklist with different semantics) is replaced by *Model picker*, which explains what each list shows and resets every provider's curation.
+
 ## 0.121.0 — 2026-11-23
 
 ### Architecture

@@ -1415,6 +1415,91 @@ button:hover .helios-execution-plan {
     background-color: alpha(@accent_color, 0.10);
 }
 
+/* Model picker rows are dense on purpose: one header per provider and a
+   ~26px row, so four Claude families read as one block instead of four. */
+.helios-model-popover .helios-model-section-title {
+    font-size: 0.78em;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    margin: 6px 8px 2px 8px;
+}
+
+.helios-model-popover button.helios-model-pick {
+    padding: 3px 8px;
+    min-height: 24px;
+    border-radius: 7px;
+}
+
+.helios-model-popover .helios-model-name {
+    padding: 3px 4px;
+    min-height: 24px;
+}
+
+.helios-model-popover .helios-model-name.helios-model-selected {
+    font-weight: 700;
+}
+
+.helios-model-popover button.helios-model-row-action,
+.helios-model-popover button.helios-model-move,
+.helios-model-popover button.helios-model-edit-toggle {
+    padding: 3px;
+    min-width: 24px;
+    min-height: 24px;
+    border-radius: 6px;
+}
+
+/* Hide/add is revealed on the row under the pointer or keyboard focus, and
+   always while editing — a quiet list until you reach for it. */
+.helios-model-popover .helios-model-row-action {
+    opacity: 0;
+    transition: opacity 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.helios-model-popover .helios-model-row:hover .helios-model-row-action,
+.helios-model-popover .helios-model-row:focus-within .helios-model-row-action,
+.helios-model-popover.helios-model-editing .helios-model-row-action {
+    opacity: 0.7;
+}
+
+.helios-model-popover .helios-model-row .helios-model-row-action:hover,
+.helios-model-popover .helios-model-row .helios-model-row-action:focus-visible {
+    opacity: 1;
+}
+
+.helios-model-popover button.helios-model-move:disabled {
+    opacity: 0.25;
+}
+
+.helios-model-popover .helios-model-drag-handle {
+    opacity: 0.5;
+    margin: 0 2px 0 4px;
+    min-width: 16px;
+}
+
+.helios-model-popover .helios-model-drag-handle:hover {
+    opacity: 0.9;
+}
+
+.helios-model-popover .helios-model-drag-spacer {
+    min-width: 22px;
+}
+
+.helios-model-popover button.helios-model-section-reset {
+    padding: 0 6px;
+    min-height: 20px;
+    font-size: 0.78em;
+    margin-right: 4px;
+}
+
+.helios-model-popover .helios-model-subgroup {
+    font-size: 0.75em;
+    margin: 4px 8px 1px 8px;
+}
+
+.helios-model-popover .helios-model-edit-hint {
+    margin: 2px 10px 4px 10px;
+}
+
 
 /* ── Generic button/toggle hover smoothing ───────────────────── */
 
@@ -1733,11 +1818,13 @@ paned > separator:hover {
     transition: color 160ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* "Older models" disclosure in the model picker. Quiet by construction: it
-   exists so the current models are the only thing you normally read. */
-.helios-model-older > title {
-    font-size: 0.9em;
+/* "More <provider> models" disclosure in the model picker. Quiet by
+   construction: it exists so your list is the only thing you normally read.
+   GTK4 nests the title under a box: expander-widget > box > title. */
+.helios-model-more > box > title {
+    font-size: 0.85em;
     opacity: 0.7;
+    padding: 2px 6px;
 }
 
 /* Top reasoning stop (Max) — a quiet accent so the deepest, slowest setting

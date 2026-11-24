@@ -29,16 +29,17 @@ _self = bind_state_paths(__name__, _DEFAULT_PATH="ui-state.json")
 _LOCK = Lock()
 
 # Model ids the user ticked in Settings → Providers → OpenRouter. These are the
-# first tier of the OpenRouter model picker; the other several hundred stay
-# behind the "Older models" disclosure and the search box. Empty list = never
-# configured, in which case the picker shows the catalog unfiltered.
+# default list of the OpenRouter section of the model picker; the other several
+# hundred stay behind its "More" disclosure and the search box. Empty list =
+# nothing up front; the whole catalog waits under More.
 OPENROUTER_PICKER_KEY = "openrouter_picker_models"
 
-# Model ids the user hid in Settings → Providers → Shown models. Hidden models
-# disappear from every picker (chat + Settings default) except the model
-# already selected there; the Settings list itself always shows everything so
-# a hide is one untick away from restored. Empty list = show the full catalog.
+# The model picker's curation (see helios.backend.model_picker). Hidden ids
+# leave a provider's default list for its "More" disclosure, and stay out of
+# the Settings default-model dropdown unless already selected there. Ordered
+# ids are the user's list, in order: presence adds a model, position orders it.
 HIDDEN_MODELS_KEY = "hidden_models"
+MODEL_ORDER_KEY = "model_order"
 
 # The model Settings → Defaults names for new chats. Separate from the sticky
 # "model" key, which follows every picker change: sharing one key made the
@@ -118,30 +119,26 @@ def store() -> UiStateStore:
     return _global
 
 
-def prune_hidden_models(
+def _prune_model_ids(
+    key: str,
     valid_ids_by_provider: dict[str, set[str]],
     *,
-    state: UiStateStore | None = None,
+    state: UiStateStore | None,
+    keep_empty: bool,
 ) -> int:
-    """Drop obsolete model IDs from hidden_models for loaded providers only.
-
-    Providers absent from ``valid_ids_by_provider`` (or with an empty set)
-    are left untouched so a temporary discovery failure never unhides a
-    user's saved choices.
-    """
     if not valid_ids_by_provider:
         return 0
     from helios.backend import model_catalog
 
     target = state if state is not None else store()
-    raw = target.get(HIDDEN_MODELS_KEY, [])
+    raw = target.get(key, [])
     if not isinstance(raw, list) or not raw:
         return 0
     kept: list[str] = []
     removed = 0
     for item in raw:
         mid = str(item or "").strip()
-        if not mid:
+        if not mid and not keep_empty:
             removed += 1
             continue
         prov = model_catalog.provider_for(mid)
@@ -154,8 +151,36 @@ def prune_hidden_models(
         if mid not in kept:
             kept.append(mid)
     if removed or len(kept) != len(raw):
-        target.set(HIDDEN_MODELS_KEY, kept)
+        target.set(key, kept)
     return removed
+
+
+def prune_hidden_models(
+    valid_ids_by_provider: dict[str, set[str]],
+    *,
+    state: UiStateStore | None = None,
+) -> int:
+    """Drop obsolete model IDs from hidden_models for loaded providers only.
+
+    Providers absent from ``valid_ids_by_provider`` (or with an empty set)
+    are left untouched so a temporary discovery failure never unhides a
+    user's saved choices.
+    """
+    return _prune_model_ids(
+        HIDDEN_MODELS_KEY, valid_ids_by_provider, state=state, keep_empty=False,
+    )
+
+
+def prune_model_order(
+    valid_ids_by_provider: dict[str, set[str]],
+    *,
+    state: UiStateStore | None = None,
+) -> int:
+    """The same pruning for model_order. The empty Claude Code default id is a
+    real row there, so it is kept while the Claude catalog still offers it."""
+    return _prune_model_ids(
+        MODEL_ORDER_KEY, valid_ids_by_provider, state=state, keep_empty=True,
+    )
 
 
 # Working directory for new chats, set in Settings → Defaults.

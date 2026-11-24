@@ -25,7 +25,11 @@ from helios.backend.composer_state import draft_key
 from helios.backend.composite_transcript import HandoffBoundary, human_model_label
 from helios.backend.session_router import switch_work_participant
 from helios.backend.transcript import parse_transcript
-from helios.backend.ui_state import DEFAULT_MODEL_KEY, prune_hidden_models
+from helios.backend.ui_state import (
+    DEFAULT_MODEL_KEY,
+    prune_hidden_models,
+    prune_model_order,
+)
 from helios.backend.work_coordinator import tag_driver
 from helios.backend.workflow_modes import DEFAULT_WORKFLOW_MODE
 from helios.log import get_logger
@@ -276,7 +280,7 @@ class WindowModelsMixin:
         return False  # one-shot idle
 
     def _prune_obsolete_hidden_models(self, selectable: list) -> None:
-        """Prune obsolete hidden_models entries only for providers with live catalogs."""
+        """Prune obsolete hidden/ordered picker ids only for providers with live catalogs."""
         by_provider: dict[str, set[str]] = {}
         for entry in selectable:
             prov = getattr(entry, "provider", model_catalog.PROVIDER_ANTHROPIC)
@@ -291,8 +295,9 @@ class WindowModelsMixin:
         if by_provider:
             try:
                 prune_hidden_models(by_provider, state=self._ui_state)
+                prune_model_order(by_provider, state=self._ui_state)
             except Exception as exc:
-                _log.warning("could not prune obsolete hidden models: %s", exc)
+                _log.warning("could not prune obsolete picker models: %s", exc)
 
     def _refresh_openrouter_credits(self, *, throttle: bool = False) -> None:
         """Populate the usage panel's OpenRouter row from the saved key.

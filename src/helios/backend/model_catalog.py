@@ -41,7 +41,7 @@ import os
 import re
 import subprocess
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -62,10 +62,13 @@ _self = bind_state_paths(__name__, _CATALOG_CACHE="model-catalog.json")
 # Bump whenever the Anthropic picker policy changes, so a catalog cached under
 # the old policy is rebuilt instead of served. rev 2 restores the 1M aliases and
 # the settings-owned default that rev 1 (P0 containment) filtered out.
-_ANTHROPIC_POLICY_REV = 3
+_ANTHROPIC_POLICY_REV = 4
 # rev 3 names alias rows after the version they resolve to ("Fable 5.2", not
 # "Fable (latest · 1M context)") and drops a plain alias whose `[1m]` twin
 # exists: on the 5.x families both resolve to the same 1M model.
+# rev 4 renames the settings-owned default row from "Default (from Claude
+# settings)" in an "Other" group — easily read as Helios' own Settings default —
+# to "Claude Code default" with a tooltip saying what it does.
 
 # Priority order for display; also the seed of families known to be real.
 KNOWN_FAMILIES: tuple[str, ...] = ("fable", "opus", "sonnet", "haiku")
@@ -112,6 +115,18 @@ class ModelEntry:
 # Tooltip for an alias row: the label names today's version, the id floats.
 _ALIAS_HINT = "Always the newest %s release"
 
+#: The row whose empty id omits ``--model``, so Claude Code picks the model
+#: from its own settings (``/model``, ``settings.json``, ``ANTHROPIC_MODEL``).
+CLAUDE_CODE_DEFAULT = ModelEntry(
+    "",
+    "Claude Code default",
+    "Claude Code",
+    description=(
+        "Start Claude Code without --model, so it uses the model set in its "
+        "own settings (/model, settings.json or ANTHROPIC_MODEL)."
+    ),
+)
+
 # Last-known-good list, used only when the binary can't be found/scanned.
 # Mirrors what discovery produces today so the picker never goes empty.
 FALLBACK_ANTHROPIC: list[ModelEntry] = [
@@ -119,7 +134,7 @@ FALLBACK_ANTHROPIC: list[ModelEntry] = [
     ModelEntry("opus[1m]", "Opus 4.8", "Latest", description=_ALIAS_HINT % "Opus"),
     ModelEntry("sonnet[1m]", "Sonnet 4.6", "Latest", description=_ALIAS_HINT % "Sonnet"),
     ModelEntry("haiku", "Haiku 4.5", "Latest", description=_ALIAS_HINT % "Haiku"),
-    ModelEntry("", "Default (from Claude settings)", "Other"),
+    CLAUDE_CODE_DEFAULT,
     ModelEntry("claude-fable-5", "Fable 5", "Fable"),
     ModelEntry("claude-opus-4-8", "Opus 4.8", "Opus"),
     ModelEntry("claude-opus-4-7", "Opus 4.7", "Opus"),
@@ -277,7 +292,7 @@ def _label_for_pinned(p: _PinnedId) -> str:
 
 def build_anthropic_entries(scan: dict, help_aliases: set[str]) -> list[ModelEntry]:
     """Assemble picker rows from a binary scan: alias rows first (these are
-    the never-stale part), then the settings default, then pinned versions
+    the never-stale part), then the Claude Code default, then pinned versions
     grouped per family."""
     parsed_families = {p.family for p in
                        (_parse_pinned(i) for i in scan.get("ids", []))
@@ -305,7 +320,7 @@ def build_anthropic_entries(scan: dict, help_aliases: set[str]) -> list[ModelEnt
         alias = f"{fam}[1m]" if fam in onem else fam
         entries.append(ModelEntry(alias, label, "Latest", description=_ALIAS_HINT % name))
 
-    entries.append(ModelEntry("", "Default (from Claude settings)", "Other"))
+    entries.append(CLAUDE_CODE_DEFAULT)
 
     for p in pinned:
         entries.append(ModelEntry(p.id, _label_for_pinned(p), p.family.capitalize()))
@@ -813,22 +828,6 @@ def dedupe_entries(entries: Iterable[ModelEntry]) -> list[ModelEntry]:
     return unique
 
 
-def visible_entries(
-    entries: Iterable[ModelEntry],
-    hidden_ids: Iterable[str],
-    *,
-    keep_id: str = "",
-) -> list[ModelEntry]:
-    """Drop user-hidden models. The selected model (`keep_id`) and the
-    Claude settings-default sentinel ("") always stay — hiding must never
-    strand the current selection."""
-    hidden = {str(item) for item in hidden_ids if isinstance(item, str)}
-    return [
-        entry for entry in entries
-        if entry.id not in hidden or entry.id in (keep_id, "")
-    ]
-
-
 def picker_model_id(model_id: str, available_ids: Iterable[str]) -> str:
     """Match an existing saved Claude alias to its single picker row."""
     if model_id.isalpha():
@@ -839,38 +838,27 @@ def picker_model_id(model_id: str, available_ids: Iterable[str]) -> str:
     return model_id
 
 
-def collapse_latest_twins(
-    entries: list[ModelEntry], *, keep_id: str = "",
-) -> tuple[list[ModelEntry], list[ModelEntry]]:
-    """Group Claude by family and leave only earlier versions in Older models."""
-    current: dict[str, list[ModelEntry]] = {}
-    older: list[ModelEntry] = []
-    default: list[ModelEntry] = []
-    for entry in entries:
-        if entry.group == "Latest":
-            family = entry.id.removesuffix("[1m]").capitalize()
-            current.setdefault(family, [replace(entry, group=family)])
+def claude_alias_twins(entries: Iterable[ModelEntry]) -> set[str]:
+    """Pinned Claude ids naming the model an alias row already offers.
 
-    for entry in entries:
-        if entry.group == "Latest":
-            continue
-        if entry.group == "Other":
-            default.append(entry)
-            continue
-        rows = current.get(entry.group)
-        if rows is None:
-            current[entry.group] = [entry]
+    ``claude-fable-5-2`` and the ``fable[1m]`` row labelled "Fable 5.2" are the
+    same model today; listing both reads as a duplicate. Labels carry the
+    family name, so comparing them (date suffix ignored) is family-safe.
+    """
+    rows = list(entries)
+    alias_labels = {entry.label for entry in rows if entry.group == "Latest"}
+    twins: set[str] = set()
+    for entry in rows:
+        if entry.group == "Latest" or not entry.id:
             continue
         pin = _parse_pinned(entry.id)
-        label = entry.label.removesuffix(f" ({pin.date})") if pin and pin.date else entry.label
-        if entry.id == keep_id:
-            rows.append(entry)
-        elif label != rows[0].label:
-            older.append(entry)
-
-    families = [family.capitalize() for family in KNOWN_FAMILIES]
-    families.extend(family for family in current if family not in families)
-    return [entry for family in families for entry in current.get(family, [])] + default, older
+        label = entry.label
+        if pin and pin.date:
+            label = label.removesuffix(f" ({pin.date[:4]}-{pin.date[4:6]}-{pin.date[6:]})")
+            label = label.removesuffix(f" ({pin.date})")
+        if label in alias_labels:
+            twins.add(entry.id)
+    return twins
 
 
 # ── Cross-provider helpers ─────────────────────────────────────────────────
