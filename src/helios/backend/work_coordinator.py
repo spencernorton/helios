@@ -1146,6 +1146,25 @@ class WorkCoordinator:
             attempt_id, reason=reason
         )
 
+    def reconcile_provider_verified_attempt(
+        self,
+        attempt_id: str,
+        probe: Any,
+    ) -> ExecutionAttempt:
+        """Settle one orphaned attempt backed by authoritative provider-native proof."""
+
+        from helios.backend import attempt_reconciler
+        from helios.backend.work_store import WorkStoreError
+
+        attempt = self.store.get_execution_attempt(attempt_id)
+        if attempt is None:
+            raise WorkStoreError(f"unknown execution attempt: {attempt_id}")
+        return attempt_reconciler.reconcile_with_provider_evidence(
+            self.store,
+            attempt,
+            probe,
+        )
+
     def record_execution_dispatch(
         self,
         attempt_id: str,

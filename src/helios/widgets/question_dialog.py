@@ -292,12 +292,13 @@ def _present_approval(
         box.append(label)
     handled = False
 
-    def finish(answer: str | None) -> None:
+    def finish(answer: str | None, *, from_closed: bool = False) -> None:
         nonlocal handled
         if handled:
             return
         handled = True
-        dlg.close()
+        if not from_closed:
+            dlg.close()
         if answer is not None:
             on_answer(_format_answers([question], [[answer]]))
         else:
@@ -307,7 +308,7 @@ def _present_approval(
         finish(None if answer == "Deny" else answer)
 
     def on_closed(_dialog) -> None:
-        finish(None)
+        finish(None, from_closed=True)
 
     # FlowBox wraps complete, direct action buttons when the parent narrows.
     actions = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE,

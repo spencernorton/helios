@@ -8,6 +8,7 @@ while isolating recovery workflows into one auditable module.
 
 from __future__ import annotations
 
+import threading
 import time
 
 import gi
@@ -16,7 +17,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib  # noqa: E402
 
-from helios.backend import model_catalog
+from helios.backend import attempt_reconciler, model_catalog
 from helios.backend.project_perms import canonical_cwd
 from helios.log import get_logger
 from helios.widgets.activity_indicator import STATE_THINKING
@@ -142,30 +143,235 @@ class WindowRecoveryMixin:
         )
         banner.set_revealed(True)
 
+    def _probe_orphaned_attempts_async(self, work_id: str) -> None:
+        """Probe provider-native durable state off-thread after a driver exits.
+
+        Settles automatically ONLY when provider-native state authoritatively
+        proves a terminal outcome (never replaying prompts). Uncertain attempts
+        stay blocked and reveal the in-UI reconciliation banner.
+        """
+
+        if not work_id or getattr(self, "_destroyed", False):
+            return
+        orphaned = WindowRecoveryMixin._orphaned_attempts_for_work(self, work_id)
+        if not orphaned:
+            return
+        in_flight = getattr(self, "_probing_orphan_works", None)
+        if not isinstance(in_flight, set):
+            in_flight = set()
+            self._probing_orphan_works = in_flight
+        if work_id in in_flight:
+            return
+        in_flight.add(work_id)
+        snapshot = list(orphaned)
+
+        def _worker() -> None:
+            probes: list[attempt_reconciler.AttemptProbeResult] = []
+            for att in snapshot:
+                try:
+                    probes.append(attempt_reconciler.probe_attempt(att))
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning(
+                        "native state probe failed for %s: %s", att.attempt_id, exc
+                    )
+            GLib.idle_add(
+                WindowRecoveryMixin._apply_orphaned_attempt_probes,
+                self,
+                work_id,
+                probes,
+            )
+
+        threading.Thread(
+            target=_worker,
+            daemon=True,
+            name="helios-reconcile-probe",
+        ).start()
+
+    def _apply_orphaned_attempt_probes(
+        self,
+        work_id: str,
+        probes: list[attempt_reconciler.AttemptProbeResult],
+    ) -> bool:
+        """Apply confirmed provider-native probes on the GTK main loop."""
+        from helios.main_window import MainWindow
+
+        in_flight = getattr(self, "_probing_orphan_works", None)
+        if isinstance(in_flight, set):
+            in_flight.discard(work_id)
+        if getattr(self, "_destroyed", False):
+            return False
+
+        coordinator = getattr(self, "_work_coordinator", None)
+        verify_fn = getattr(coordinator, "reconcile_provider_verified_attempt", None)
+        still_orphaned = {
+            att.attempt_id: att
+            for att in WindowRecoveryMixin._orphaned_attempts_for_work(self, work_id)
+        }
+        settled_labels: list[str] = []
+        if callable(verify_fn):
+            for probe in probes:
+                if not probe.is_confirmed or probe.attempt_id not in still_orphaned:
+                    continue
+                try:
+                    verify_fn(probe.attempt_id, probe)
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning(
+                        "verified reconciliation skipped for %s: %s",
+                        probe.attempt_id,
+                        exc,
+                    )
+                    continue
+                label = model_catalog.PROVIDER_LABELS.get(
+                    probe.provider, probe.provider or "provider"
+                )
+                settled_labels.append(label)
+                _log.info(
+                    "reconciled orphaned %s attempt %s from %s (%s)",
+                    probe.provider,
+                    probe.attempt_id,
+                    probe.source,
+                    probe.provider_status,
+                )
+
+        current_work = getattr(self, "_current_work_id", None)
+        viewing_work = str(current_work() or "") if callable(current_work) else ""
+        if settled_labels:
+            if viewing_work == work_id:
+                label = settled_labels[0]
+                toast = getattr(self, "_toast", None)
+                if callable(toast):
+                    toast(
+                        f"Reconciled finished {label} turn from provider state (no replay)."
+                    )
+            MainWindow._sync_execution_control(self)
+        else:
+            WindowRecoveryMixin._sync_stuck_attempt_banner(self)
+        return False
+
     def _reconcile_orphaned_attempts_confirmed(
-        self, work_id: str, attempt_ids: list[str]
+        self,
+        work_id: str,
+        attempt_ids: list[str],
+        *,
+        verified_probes: dict[str, attempt_reconciler.AttemptProbeResult] | None = None,
     ) -> int:
         """Execute operator-confirmed reconciliation without replaying any prompt."""
 
         coordinator = getattr(self, "_work_coordinator", None)
         reconcile_fn = getattr(coordinator, "reconcile_uncertain_attempt", None)
-        if not callable(reconcile_fn) or not work_id or not attempt_ids:
+        verify_fn = getattr(coordinator, "reconcile_provider_verified_attempt", None)
+        if not work_id or not attempt_ids:
             return 0
         still_orphaned = {
             att.attempt_id
             for att in WindowRecoveryMixin._orphaned_attempts_for_work(self, work_id)
         }
+        probes_by_id = verified_probes or {}
         cleared = 0
         for aid in attempt_ids:
             if aid not in still_orphaned:
                 continue
-            reconcile_fn(aid, reason="reconciled.operator_confirmed")
-            cleared += 1
+            probe = probes_by_id.get(aid)
+            if probe is not None and probe.is_confirmed and callable(verify_fn):
+                verify_fn(aid, probe)
+                cleared += 1
+            elif callable(reconcile_fn):
+                reconcile_fn(aid, reason="reconciled.operator_confirmed")
+                cleared += 1
         return cleared
 
-    def _on_reconcile_stuck_turn(self) -> None:
-        """Confirm with the user before clearing an unfinished provider attempt."""
+    def _present_reconcile_dialog(
+        self,
+        work_id: str,
+        orphaned: list,
+        probes: dict[str, attempt_reconciler.AttemptProbeResult],
+    ) -> bool:
+        """Show forensic probe findings and require explicit confirmation."""
         from helios.main_window import MainWindow
+
+        if getattr(self, "_destroyed", False):
+            return False
+        still_orphaned = WindowRecoveryMixin._orphaned_attempts_for_work(self, work_id)
+        if not still_orphaned:
+            self._toast("No stuck turn needed clearing.")
+            WindowRecoveryMixin._sync_stuck_attempt_banner(self)
+            return False
+
+        attempt_ids = [att.attempt_id for att in still_orphaned]
+        first = still_orphaned[0]
+        label = model_catalog.PROVIDER_LABELS.get(first.provider, first.provider or "provider")
+        details = f"{label} attempt {first.attempt_id} (started {first.started_at})"
+        if len(still_orphaned) > 1:
+            details += f" and {len(still_orphaned) - 1} more"
+
+        probe_lines: list[str] = []
+        all_confirmed = True
+        for att in still_orphaned:
+            probe = probes.get(att.attempt_id)
+            if probe is None or not probe.is_confirmed:
+                all_confirmed = False
+            if probe is not None and probe.detail:
+                probe_lines.append(f"• {probe.detail}")
+        forensic_block = "\n".join(probe_lines[:3])
+        if forensic_block:
+            forensic_block = f"\n\nProvider state check:\n{forensic_block}"
+
+        if all_confirmed:
+            heading = "Apply verified reconciliation?"
+            body = (
+                f"Provider-native state confirmed the outcome of {details}.{forensic_block}\n\n"
+                "Applying this reconciliation closes the attempt with the verified provider "
+                "status so you can send a new message. Helios will not replay the previous prompt."
+            )
+            action_label = "Apply reconciliation"
+            appearance = Adw.ResponseAppearance.SUGGESTED
+        else:
+            heading = "Unblock this conversation?"
+            body = (
+                f"The previous {details} ended without a confirmed provider receipt."
+                f"{forensic_block}\n\n"
+                "Clearing it marks the unfinished attempt as aborted so you can send a new message. "
+                "Helios will not automatically replay the previous prompt."
+            )
+            action_label = "Unblock conversation"
+            appearance = Adw.ResponseAppearance.DESTRUCTIVE
+
+        dlg = Adw.AlertDialog.new(heading, body)
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("unblock", action_label)
+        dlg.set_response_appearance("unblock", appearance)
+        dlg.set_default_response("cancel")
+        dlg.set_close_response("cancel")
+
+        def on_response(_dialog, response: str) -> None:
+            if response != "unblock" or getattr(self, "_destroyed", False):
+                return
+            try:
+                cleared = WindowRecoveryMixin._reconcile_orphaned_attempts_confirmed(
+                    self,
+                    work_id,
+                    attempt_ids,
+                    verified_probes=probes,
+                )
+            except Exception as exc:
+                _log.warning("could not reconcile stuck turn for %s: %s", work_id, exc)
+                self._toast(f"Could not clear the stuck turn: {exc}")
+                return
+            if cleared:
+                if all_confirmed:
+                    self._toast("Reconciled turn from verified provider state.")
+                else:
+                    self._toast("Unfinished turn cleared. You can send a new message.")
+            else:
+                self._toast("No stuck turn needed clearing.")
+            MainWindow._sync_execution_control(self)
+
+        dlg.connect("response", on_response)
+        dlg.present(self)
+        return False
+
+    def _on_reconcile_stuck_turn(self) -> None:
+        """Probe provider-native state and confirm with the user before clearing."""
 
         if getattr(self, "_destroyed", False):
             return
@@ -186,45 +392,29 @@ class WindowRecoveryMixin:
                 self._toast("This conversation has no stuck provider turn.")
             WindowRecoveryMixin._sync_stuck_attempt_banner(self)
             return
-        attempt_ids = [att.attempt_id for att in orphaned]
-        first = orphaned[0]
-        label = model_catalog.PROVIDER_LABELS.get(first.provider, first.provider or "provider")
-        details = f"{label} attempt {first.attempt_id} (started {first.started_at})"
-        if len(orphaned) > 1:
-            details += f" and {len(orphaned) - 1} more"
-        dlg = Adw.AlertDialog.new(
-            "Unblock this conversation?",
-            (
-                f"The previous {details} ended without a confirmed provider receipt.\n\n"
-                "Clearing it marks the unfinished attempt as aborted so you can send a new message. "
-                "Helios will not automatically replay the previous prompt."
-            ),
-        )
-        dlg.add_response("cancel", "Cancel")
-        dlg.add_response("unblock", "Unblock conversation")
-        dlg.set_response_appearance("unblock", Adw.ResponseAppearance.DESTRUCTIVE)
-        dlg.set_default_response("cancel")
-        dlg.set_close_response("cancel")
 
-        def on_response(_dialog, response: str) -> None:
-            if response != "unblock" or getattr(self, "_destroyed", False):
-                return
-            try:
-                cleared = WindowRecoveryMixin._reconcile_orphaned_attempts_confirmed(
-                    self, work_id, attempt_ids
-                )
-            except Exception as exc:
-                _log.warning("could not reconcile stuck turn for %s: %s", work_id, exc)
-                self._toast(f"Could not clear the stuck turn: {exc}")
-                return
-            if cleared:
-                self._toast("Unfinished turn cleared. You can send a new message.")
-            else:
-                self._toast("No stuck turn needed clearing.")
-            MainWindow._sync_execution_control(self)
+        snapshot = list(orphaned)
 
-        dlg.connect("response", on_response)
-        dlg.present(self)
+        def _worker() -> None:
+            probes: dict[str, attempt_reconciler.AttemptProbeResult] = {}
+            for att in snapshot:
+                try:
+                    probes[att.attempt_id] = attempt_reconciler.probe_attempt(att)
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning("probe failed for %s: %s", att.attempt_id, exc)
+            GLib.idle_add(
+                WindowRecoveryMixin._present_reconcile_dialog,
+                self,
+                work_id,
+                snapshot,
+                probes,
+            )
+
+        threading.Thread(
+            target=_worker,
+            daemon=True,
+            name="helios-reconcile-dialog-probe",
+        ).start()
 
     def _stage_capacity_retry_send(self, text: str) -> None:
         """Retry a Gemini send automatically once an evicted idle slot closes."""
