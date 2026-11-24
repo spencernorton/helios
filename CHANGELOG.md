@@ -4,6 +4,12 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.121.1 — 2026-11-24
+
+### Fixes
+- **Sidebar pool provider chips:** track pool-row provider chip resolution per row (instead of once globally per reload generation) in `widgets/session_list.py`. Pool rows newly revealed by a filter change or delayed pool scan now resolve on the next status tick while already-resolved pool rows keep their once-per-reload stat cadence and restore their chip instantaneously on filter toggles.
+- **Shared Context full-entry copy:** added an asynchronous, bounded *Copy full entry* action to `widgets/shared_context_pane.py` (with `scratchpad.format_full_data` and a 16 MB HTTP read cap) so users can copy complete uncapped Unicode/structured payloads without stalling GTK while keeping the 64 KB detail preview cap and surfacing honest recoverable status on missing/expired entries.
+
 ## 0.121.0 — 2026-11-23
 
 ### Architecture

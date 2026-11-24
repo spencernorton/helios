@@ -71,7 +71,12 @@ def _get(path: str, params: dict | None = None) -> dict:
         req.add_header("X-API-Key", API_KEY)
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            return json.loads(resp.read().decode("utf-8", errors="replace"))
+            raw = resp.read(MAX_READ_BYTES + 1)
+            if len(raw) > MAX_READ_BYTES:
+                raise ScratchpadError(
+                    f"scratchpad entry exceeds {MAX_READ_BYTES // (1024 * 1024)} MB limit"
+                )
+            return json.loads(raw.decode("utf-8", errors="replace"))
     except urllib.error.HTTPError as e:
         raise ScratchpadError(f"scratchpad HTTP {e.code} on {path}") from e
     except (urllib.error.URLError, TimeoutError, OSError) as e:
@@ -151,20 +156,26 @@ def read_entry(key: str) -> Entry:
 # Pango measuring that much text on the main loop. Truncation is always visible
 # in the output, never silent.
 MAX_DISPLAY_CHARS = 64 * 1024
+# Hard bound on a single HTTP read so a runaway or hostile response cannot OOM Helios.
+MAX_READ_BYTES = 16 * 1024 * 1024
+
+
+def format_full_data(data: object) -> str:
+    """Render an entry's complete data payload without display truncation."""
+    if data is None:
+        return ""
+    if isinstance(data, str):
+        return data
+    try:
+        return json.dumps(data, indent=2, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return str(data)
 
 
 def format_data(data: object) -> str:
     """Render an entry's data payload for display: strings pass through,
     structures pretty-print as JSON. Capped at MAX_DISPLAY_CHARS."""
-    if data is None:
-        return ""
-    if isinstance(data, str):
-        text = data
-    else:
-        try:
-            text = json.dumps(data, indent=2, ensure_ascii=False, default=str)
-        except (TypeError, ValueError):
-            text = str(data)
+    text = format_full_data(data)
     if len(text) > MAX_DISPLAY_CHARS:
         dropped = len(text) - MAX_DISPLAY_CHARS
         # Simplification: dump-then-slice. The json.dumps is O(n) either way; the
@@ -172,6 +183,6 @@ def format_data(data: object) -> str:
         # gets big enough that the dump itself is measurable.
         text = text[:MAX_DISPLAY_CHARS] + (
             f"\n\n… ({dropped} more characters not rendered here — "
-            f"read the entry in full with scratch_read)"
+            f"use Copy full entry above)"
         )
     return text
