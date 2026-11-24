@@ -10274,12 +10274,15 @@ class MainWindow(
                 self._native_unsent_drafts = drafts
             bucket = drafts.setdefault(MainWindow._native_draft_key(drv), [])
             bucket.extend(recovered)
+        exited_work_id = str(getattr(drv, "_helios_work_id", "") or "")
         # Disconnect handlers and publish the new live-id set before any UI can
         # claim the driver is gone. Recovery ownership above has been drained,
         # so the cleanup helpers inside this call are deliberate no-ops.
         self._forget_driver(drv)
         if self._destroyed:
             return
+        if exited_work_id:
+            MainWindow._probe_orphaned_attempts_async(self, exited_work_id)
         if getattr(self, "_pending_capacity_send", None) is not None:
             GLib.idle_add(MainWindow._maybe_retry_capacity_send, self)
         if recovered or anchored_preserved:

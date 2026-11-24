@@ -4,6 +4,13 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.120.0 — 2026-11-23
+
+### Reliability
+- **Provider-backed execution attempt reconciliation without replay:** added a read-only native state reconciler (`backend/attempt_reconciler.py`) that probes durable provider evidence after a driver exits with a lingering running attempt. Pre-dispatch exits close cleanly as local aborts; Codex (`openai`) correlates exact `task_complete` / `turn_aborted` rollout events by `accepted_turn_id`; Claude (`anthropic`) correlates native CLI transcripts by SHA-256 `prompt_digest` and non-sidechain terminal `stop_reason` while rejecting Helios synthetic mirrors and mid-`tool_use` states; Google (`google`) reuses Antigravity's read-only `CASCADE_RUN_STATUS_IDLE` quiet-window check; and OpenRouter (`openrouter`) reports forensic local history while always requiring explicit operator confirmation without replay.
+- **Approval dialog dismissal crash fix:** guarded `Adw.Dialog` `closed` signal handling in `widgets/question_dialog.py` so dismissing an approval dialog via Escape or window close no longer calls `dlg.close()` re-entrantly (which could abort libadwaita via `adw_dialog_force_close`).
+- **Forensic recovery dialog & automatic verified settlement:** post-exit probes run off the GTK main loop, automatically settling only authoritatively proven terminal turns (always discarding held queues rather than replaying) and showing exact provider-state forensic details inside the *Reconcile stuck turn…* confirmation dialog when manual confirmation is required.
+
 ## 0.119.0 — 2026-11-23
 
 - **Incremental `MainWindow` modularization:** Extracted three cohesive, behavior-preserving controller mixins out of `main_window.py` following the `GoalWorkMixin` pattern: `WindowBrowserMixin` (`window_browser.py`), `WindowRecoveryMixin` (`window_recovery.py`), and `WindowCheckpointsMixin` (`window_checkpoints.py`), reducing `main_window.py` by over 680 lines with unchanged runtime and test contracts.
