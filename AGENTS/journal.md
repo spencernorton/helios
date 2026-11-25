@@ -1,5 +1,15 @@
 # Helios — Session Journal
 
+## 2026-11-25 — main (0.121.3) merged into the model picker branch (0.122.0)
+
+- Conflict in `SettingsDialog._set_model_choices`: this branch had dropped
+  the Shown-models list refill (curation moved to the dropdown) while 0.121.3
+  replaced the "reset a saved native default to row 0" branch with
+  `_with_saved_default_row`. Resolution keeps both: the placeholder row, no
+  refill. The `default_model` row added to the ui-state table in 0.121.3 is
+  kept beside this branch's `Claude Code default` wording. Versions stay
+  0.122.0; the 0.122.0 changelog date moves to its release day.
+
 ## 2026-11-24 — Model picker follow-up: real Gemini/Muse/Kimi catalogs
 
 - The first before/after preview drew one placeholder row each for Gemini,
@@ -53,6 +63,95 @@
 - Tests: `test_model_picker_layout.py` (backend rules), rewritten
   `test_model_picker_tiers.py` (widget). Backend lane 2126 passed; native
   Xvfb suite 3823 passed.
+## 2026-11-25 — A switched-away model can't take the chat back; Settings default sticks; Codex resume notice (0.121.3)
+
+- Reported: a Fable chat switched to GPT "said it switched", then answered as
+  Fable and was back on Fable with no trace. Evidence from the Work store and
+  both native transcripts: the GPT attempt ran and completed (about four
+  minutes, real tool calls). Two seconds after it finished, the Claude process
+  Helios had left running woke on a `<task-notification>` (a background wait
+  Fable had started three seconds *after* the switch, inside a turn it had
+  begun on its own). Its `system/init` reached `_on_session_started`, which
+  called `bind_work_leg_session` for a continuity Work: the tail leg became
+  Anthropic/Fable, so the next selection restored Fable. That self-started
+  turn then rewrote files GPT had just produced.
+- Fix: `WindowModelsMixin._provider_leads_work` (Work `lead_provider` is
+  selected at every send in `_ensure_target_work` and on a switch) gates
+  leg binding. A `ClaudeCliDriver` that starts a turn while not busy (Helios
+  sent nothing) and not leading a continuity Work is torn down inside the
+  `session-started` handler (`_stop_unsolicited_turn`), which then returns,
+  and the user gets a toast saying why. Synchronous on purpose, like an
+  identity rejection: the cross-engine review showed a `GLib.idle_add` stop
+  runs below the stdout reader's priority, so a buffered tool request could
+  be processed (and auto-approved in Bypass) first. At switch time,
+  `_retire_switched_away_driver` tears down the outgoing driver only when it
+  `has_background_work`; an idle one with nothing pending stays for a cheap
+  switch back. Switch-time alone would have missed the reported case (no
+  task was pending at the moment of the switch), hence the init-time guard.
+- Settings default: `SettingsDialog._set_model_choices` replaced a saved
+  GPT/Gemini/Muse/Kimi default with row 0 (Fable) whenever any list lacking it
+  arrived; Google/Muse/Kimi/OpenRouter land before Codex, so the next Save
+  wrote `fable[1m]`. It now keeps a placeholder row that only means "keep the
+  saved default" (`_with_saved_default_row`; never a selectable GPT row), and
+  programmatic list refreshes no longer run the change handler
+  (`_applying_model_choices`). A pick in Defaults → Model emits
+  `default-model-changed`, saved at once by `_on_default_model_changed`; it
+  used to wait for the Save button at the bottom of the page.
+  `Adw.ComboRow` cannot show "no selection" (INVALID_LIST_POSITION reads back
+  as 0), which is why it is a placeholder row.
+- Codex: 0.172 sends `deprecationNotice` "Full-history hydration is
+  deprecated for paginated threads" on every `thread/resume` without
+  `excludeTurns`; reproduced against an isolated app-server with a copied
+  rollout, and gone with `excludeTurns: true`. Helios reads only
+  `thread.id` from resume. `thread/fork` is unchanged (its turn count is
+  used).
+- Not changed: an alias and its resolved id (`opus[1m]` then
+  `claude-opus-5-5`) still record as two legs for one model.
+- Tests: cases in `tests/test_seamless_model_switch_gtk.py` (the reported
+  wake-up through the real `_on_session_started` and a real WorkStore,
+  dispatched and leading controls, switch-time retirement with and without
+  background work; the wake-up and retirement cases fail on the old code),
+  three in `tests/test_settings_dialog.py`, one in
+  `tests/test_default_model_for_new_chats.py`, and the resume params in
+  `tests/test_codex_app_contract.py`.
+
+## 2026-11-24 — A conversation keeps its own model; composer text area (0.121.2)
+
+- Reported: a live Opus chat "went to Fable". Evidence from the Work store:
+  attempt 1 `opus[1m]`, attempt 2 `fable[1m]`, with a `/model fable[1m]` in
+  the native transcript and no picker use in that chat.
+- Cause: `_on_session_selected` called `_adopt_session_provider(provider)`,
+  which applies `_provider_models[provider]` (last model used with that
+  provider anywhere; another chat had moved it to Fable) or returns early
+  when the provider already matches. `_driver_model_is_stale` then compared
+  the header against `driver._helios_requested_model` and `_ensure_driver`
+  issued the live `set_model`. `resolve_native_work(..., model=self._model)`
+  also stamped the header's model into participant metadata on every
+  selection. Only multi-leg Works restored `tail_leg.model`.
+- Fix: `WindowModelsMixin._restore_conversation_model` (live driver's
+  requested model → active binding's `model` → leave the adopted one) runs
+  right after adoption and before the Work lookup, and again after the two
+  late-catalog adoptions (`_apply_model_catalog`, send-time). Non-Claude cold
+  models must still be in the catalog; a `_pending_model_switch` for the same
+  Work keeps the header.
+- Composer: GtkTextView's own node carries `view` and paints
+  `@view_bg_color`; libadwaita already clears `textview > text`, so
+  `.helios-composer-text text { background: transparent }` did nothing and
+  the box showed inside the card. Same latent rule on `.helios-shared-data`.
+  Both now clear the node; `test_css_invariants.py` guards the pattern.
+  Placeholder label ellipsizes.
+- Cross-engine review (GPT) found two gaps, both closed: a cold non-Claude
+  conversation opened on the provider already on screen before its catalog
+  lands left no pending adoption, so it was never restored
+  (`_deferred_conversation_model` + `_retry_deferred_conversation_model`,
+  retried in `_apply_model_catalog` and awaited at send time); and a queued
+  cross-provider switch whose header a reselection had reverted sent its
+  queued texts under the source provider
+  (`_complete_pending_model_switch_if_ready` now re-applies
+  `pending.to_model` first). Not changed: the header still shows the source
+  model between that reselection and the switch landing.
+- Tests: `tests/test_conversation_keeps_its_model.py` (unit + the reported
+  sequence through `_on_session_selected`, fails without the fix).
 
 ## 2026-11-23 — Release 0.117.0: agent-launched filter plus the live host fixes
 

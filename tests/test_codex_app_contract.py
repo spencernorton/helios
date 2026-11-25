@@ -64,6 +64,10 @@ def test_thread_params_are_schema_exact_for_start_and_resume():
         thread_id="thread-1",
     )
     assert resume["threadId"] == "thread-1"
+    # Without it Codex 0.172 emits "Full-history hydration is deprecated for
+    # paginated threads" on every resume, which Helios toasts.
+    assert resume["excludeTurns"] is True
+    assert "excludeTurns" not in start
     assert resume["approvalPolicy"] == "on-request"
     assert resume["sandbox"] == "workspace-write"
     assert "ephemeral" not in resume

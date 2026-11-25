@@ -1283,8 +1283,15 @@ button:hover .helios-execution-plan {
     box-shadow: 0 2px 8px alpha(@accent_color, 0.22);
 }
 
+/* A GtkTextView carries the `view` class, so its own node paints
+   @view_bg_color; libadwaita already leaves the `text` child clear. Clearing
+   only `text` left an opaque square box inside the rounded card. */
+.helios-composer-text,
 .helios-composer-text text {
     background: transparent;
+}
+
+.helios-composer-text text {
     font-size: 11pt;
 }
 
@@ -1801,11 +1808,12 @@ paned > separator:hover {
     font-size: 0.85em;
 }
 
-/* The `text` node of a GtkTextView paints @view_bg_color by default, which the
-   Gtk.Label this replaced did not — without this the detail body draws an
-   opaque panel over the pane's own ground. Same override, same reason, as
-   .helios-codeview text and .helios-composer-text text above; those two are
-   the precedent, not a guess about Adwaita. */
+/* A GtkTextView paints @view_bg_color, which the Gtk.Label this replaced did
+   not — without this the detail body draws an opaque panel over the pane's own
+   ground. The paint is on the widget's own node (its `view` class), so that
+   node is cleared along with `text`, as .helios-codeview and
+   .helios-composer-text do above. */
+.helios-shared-data,
 .helios-shared-data text {
     background: transparent;
 }

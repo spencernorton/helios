@@ -192,8 +192,16 @@ def test_refresh_does_not_reinsert_unverified_selected_gpt_model():
 
     types.MethodType(SettingsDialog._set_model_choices, fake)([("fable", "Fable")])
 
-    assert fake._model_choices == [("fable", "Fable")]
-    assert fake._selected_model_id == "fable"
+    # Not offered as a GPT model by a list that never supplied it: the only
+    # row for it is the "keep the saved default" placeholder ...
+    assert fake._model_choices == [
+        ("gpt-5.6-sol", "gpt-5.6-sol (saved default, not in the current list)"),
+        ("fable", "Fable"),
+    ]
+    # ... and it is not swapped for Fable: the saved default stays saved.
+    assert fake._selected_model_id == "gpt-5.6-sol"
+    assert fake._model_row.selected == 0
+    assert "stays the default" in fake._model_row.subtitle
 
 
 def test_model_list_refresh_keeps_the_chosen_default():
@@ -639,3 +647,71 @@ def test_old_codex_loader_result_is_rejected_after_key_update():
     )
 
     types.MethodType(SettingsDialog._apply_codex, fake)(stale, generation=3)
+
+
+def _combo_dialog(selected: str):
+    from gi.repository import Adw
+
+    Adw.init()
+    row = Adw.ComboRow()
+    emitted: list[tuple] = []
+    fake = types.SimpleNamespace(
+        _selected_model_id=selected,
+        _model_choices=[],
+        _model_row=row,
+        emit=lambda *args: emitted.append(args),
+    )
+    row.connect("notify::selected", types.MethodType(SettingsDialog._on_model_changed, fake))
+    return fake, row, emitted
+
+
+def test_saved_gpt_default_survives_lists_that_land_before_codex(monkeypatch):
+    """Reported: the default kept coming back as Fable.
+
+    Settings opens with the saved GPT default, Google/Muse/Kimi/OpenRouter
+    lists arrive before Codex's, and the first of them replaced the default
+    with row 0 (Fable). Any Save afterwards wrote ``fable[1m]``.
+    """
+    monkeypatch.setattr(SettingsDialog, "_hidden_models", lambda _self: set())
+    fake, row, emitted = _combo_dialog("gpt-6.2-sol")
+    claude = [("fable[1m]", "Fable 5.2"), ("opus[1m]", "Opus 5.5")]
+    gemini = [("gemini-4-neon", "Gemini 4 Neon")]
+
+    SettingsDialog._set_model_choices(fake, claude + gemini)
+
+    assert fake._selected_model_id == "gpt-6.2-sol"
+    assert fake._model_choices[row.get_selected()][0] == "gpt-6.2-sol"
+    assert emitted == []
+
+    SettingsDialog._set_model_choices(
+        fake, claude + [("gpt-6.2-sol", "GPT-6.2 Sol")] + gemini
+    )
+
+    assert fake._selected_model_id == "gpt-6.2-sol"
+    assert row.get_selected() == 2
+    assert emitted == []  # list refreshes are never user picks
+
+
+def test_picking_a_default_model_saves_it_without_the_save_button(monkeypatch):
+    monkeypatch.setattr(SettingsDialog, "_hidden_models", lambda _self: set())
+    fake, row, emitted = _combo_dialog("fable[1m]")
+    SettingsDialog._set_model_choices(
+        fake, [("fable[1m]", "Fable 5.2"), ("opus[1m]", "Opus 5.5")]
+    )
+    assert emitted == []
+
+    row.set_selected(1)
+
+    assert fake._selected_model_id == "opus[1m]"
+    assert emitted == [("default-model-changed", "opus[1m]")]
+
+
+def test_fable_can_be_picked_while_a_saved_gpt_default_is_still_loading(monkeypatch):
+    monkeypatch.setattr(SettingsDialog, "_hidden_models", lambda _self: set())
+    fake, row, emitted = _combo_dialog("gpt-6.2-sol")
+    SettingsDialog._set_model_choices(fake, [("fable[1m]", "Fable 5.2")])
+    assert fake._model_choices[row.get_selected()][0] == "gpt-6.2-sol"
+
+    row.set_selected(1)
+
+    assert emitted == [("default-model-changed", "fable[1m]")]

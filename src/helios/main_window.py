@@ -533,6 +533,9 @@ class MainWindow(
         self._staged_effort_key = ""
         self._staged_workflow_mode = ""
         self._pending_model_switch: _PendingModelSwitch | None = None
+        # (provider, session id) whose own model waits on a catalog; see
+        # WindowModelsMixin._restore_conversation_model.
+        self._deferred_conversation_model: tuple[str, str] | None = None
         self._pending_switch_qid_seq = -1
         # Default to the latest Fable with 1M context. The `fable` alias tracks
         # the newest Fable automatically, so this stays current as models ship.
@@ -2446,6 +2449,12 @@ class MainWindow(
         active_session = session
         if not session.project.read_only and session_provider:
             self._adopt_session_provider(session_provider)
+            # Adoption shows the provider's last-used model. This conversation
+            # keeps its own: before the Work lookup below, which records the
+            # header's model against the session.
+            MainWindow._restore_conversation_model(
+                self, session_provider, session.session_id, live
+            )
             coordinator = getattr(self, "_work_coordinator", None)
             if coordinator is not None:
                 try:
@@ -2920,6 +2929,9 @@ class MainWindow(
             adopt = getattr(self, "_adopt_session_provider", None)
             if callable(adopt):
                 adopt(viewed_provider)
+                MainWindow._restore_conversation_model(
+                    self, viewed_provider, str(getattr(target, "resume_id", "") or "")
+                )
             if (
                 viewed_provider != self._selected_provider()
                 and getattr(self, "_catalog_refresh_running", False)
@@ -2929,6 +2941,17 @@ class MainWindow(
                     "try sending again in a moment."
                 )
                 return False
+        if (
+            MainWindow._retry_deferred_conversation_model(self)
+            and getattr(self, "_catalog_refresh_running", False)
+        ):
+            # Same wait as above, for a conversation whose own model cannot
+            # be checked until its provider's catalog lands.
+            self._toast(
+                "Helios is still loading provider models for this session — "
+                "try sending again in a moment."
+            )
+            return False
         coordinator = getattr(self, "_work_coordinator", None)
         if target.work_id:
             budget_block = MainWindow._work_execution_block_reason(
@@ -5224,6 +5247,7 @@ class MainWindow(
             return
         drv._helios_identity_confirmed = True
         if coordinator is not None and session_id:
+            stray_turn = False
             try:
                 if not work_id:
                     work = coordinator.ensure_work(
@@ -5263,7 +5287,20 @@ class MainWindow(
                     )
                     tag_driver(drv, participant)
                     session_goals.rekey_goal(session_id, work_id)
-                if session_id and MainWindow._work_id_has_continuity(self, work_id):
+                has_continuity = bool(session_id) and MainWindow._work_id_has_continuity(
+                    self, work_id
+                )
+                leads_work = MainWindow._provider_leads_work(self, work_id, provider)
+                # Helios sent this process nothing: a switched-away Claude
+                # waking on its own background task. Stopped below, before
+                # any of its later stdout (tool requests) is read.
+                stray_turn = (
+                    has_continuity
+                    and not leads_work
+                    and isinstance(drv, ClaudeCliDriver)
+                    and not drv.is_busy
+                )
+                if has_continuity and leads_work:
                     proj_path = ""
                     if cwd:
                         proj_path = str(
@@ -5289,6 +5326,11 @@ class MainWindow(
                     drv,
                     f"could not bind native session {session_id!r} to its Work",
                 )
+                return
+            if stray_turn:
+                # Synchronous, like an identity rejection: deferring to idle
+                # lets buffered stdout (a tool request) run first.
+                MainWindow._stop_unsolicited_turn(self, drv, work_id)
                 return
         if session_id:
             # Claude's first prompt was written before system/init could prove
@@ -7302,6 +7344,7 @@ class MainWindow(
         self._settings_dialog = dlg
         dlg.connect("closed", self._on_settings_closed)
         dlg.connect("apply", self._on_prefs_apply)
+        dlg.connect("default-model-changed", self._on_default_model_changed)
         # Pool-visibility toggle reshapes the session list right away.
         dlg.connect(
             "pool-visibility-changed",
@@ -7352,15 +7395,25 @@ class MainWindow(
         # picker changes cannot overwrite it; only switch the visible chat when
         # it is still a fresh, unbound one (a running conversation keeps its
         # model — changing that is the picker's job).
+        MainWindow._save_default_model(self, model)
+        self._toast(
+            f"Chat defaults saved — {MODE_LABELS.get(permission_mode, permission_mode)} "
+            f"permissions, new chats use {MainWindow._model_display_label(self, model)}."
+        )
+
+    def _save_default_model(self, model: str) -> None:
         self._ui_state.set(DEFAULT_MODEL_KEY, model)
         if getattr(self, "_driver", None) is None and not getattr(
             getattr(self, "_next_chat", None), "resume_id", ""
         ):
             self._apply_model_choice(model, quiet=True)
-        self._toast(
-            f"Chat defaults saved — {MODE_LABELS.get(permission_mode, permission_mode)} "
-            f"permissions, new chats use {MainWindow._model_display_label(self, model)}."
-        )
+
+    def _on_default_model_changed(self, _dlg, model: str) -> None:
+        """Settings → Defaults → Model saves on pick (no Save click needed)."""
+        if self._destroyed:
+            return
+        MainWindow._save_default_model(self, model)
+        self._toast(f"New chats use {MainWindow._model_display_label(self, model)}.")
 
     # --- close ---
 

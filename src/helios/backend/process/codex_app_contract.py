@@ -103,6 +103,12 @@ def build_thread_params(
     }
     if thread_id:
         params["threadId"] = thread_id
+        # Helios reads only the resumed thread id; history comes from the
+        # native rollout mirror. Full-history hydration on resume is
+        # deprecated for paginated threads (Codex 0.172 sends a
+        # deprecationNotice on every resume without this, which Helios
+        # surfaces as a toast).
+        params["excludeTurns"] = True
     else:
         params.update(
             {

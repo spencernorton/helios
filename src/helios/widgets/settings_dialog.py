@@ -129,6 +129,7 @@ class SettingsDialog(Adw.PreferencesDialog):
 
     __gsignals__ = {
         "apply": (GObject.SignalFlags.RUN_FIRST, None, (str, str)),
+        "default-model-changed": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
         "pool-visibility-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
     }
 
@@ -165,6 +166,9 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._model_choices: list[tuple[str, str]] = self._initial_model_choices(model)
         self._selected_model_id = model_catalog.picker_model_id(
             model, (model_id for model_id, _label in self._model_choices),
+        )
+        self._model_choices = self._with_saved_default_row(
+            self._selected_model_id, self._model_choices
         )
 
         self._build_accounts_page()
@@ -250,23 +254,58 @@ class SettingsDialog(Adw.PreferencesDialog):
             choice for choice in deduped
             if choice[0] not in hidden or choice[0] in (self._selected_model_id, "")
         ] or deduped
-        if self._selected_model_id and all(
-            model_id != self._selected_model_id for model_id, _label in choices
-        ):
-            if (
-                model_catalog.provider_for(self._selected_model_id)
-                in {model_catalog.PROVIDER_OPENAI, model_catalog.PROVIDER_GOOGLE, model_catalog.PROVIDER_MUSE, model_catalog.PROVIDER_KIMI}
-            ):
-                # Never resurrect a persisted native id that the current
-                # catalog did not supply. Select a safe visible row instead.
-                self._selected_model_id = choices[0][0]
-            else:
-                model_id = self._selected_model_id
-                choices = [(model_id, model_id.removesuffix("[1m]")), *choices]
-        self._model_choices = choices
+        self._model_choices = SettingsDialog._with_saved_default_row(
+            self._selected_model_id, choices
+        )
         model_model = Gtk.StringList()
         for _key, label in self._model_choices:
             model_model.append(label)
+        # Replacing the list emits selection changes, including an intermediate
+        # first-row selection. Publish only the final selection, and never as
+        # a user pick.
+        self._applying_model_choices = True
+        try:
+            with self._model_row.freeze_notify():
+                self._model_row.set_model(model_model)
+                SettingsDialog._sync_model_row_selection(self)
+        finally:
+            self._applying_model_choices = False
+
+    @staticmethod
+    def _is_native_catalog_model(model_id: str) -> bool:
+        return model_catalog.provider_for(model_id) in {
+            model_catalog.PROVIDER_OPENAI,
+            model_catalog.PROVIDER_GOOGLE,
+            model_catalog.PROVIDER_MUSE,
+            model_catalog.PROVIDER_KIMI,
+        }
+
+    @staticmethod
+    def _saved_default_placeholder(model_id: str) -> str:
+        return f"{model_id} (saved default, not in the current list)"
+
+    @staticmethod
+    def _with_saved_default_row(
+        selected: str, choices: list[tuple[str, str]]
+    ) -> list[tuple[str, str]]:
+        """Keep the saved default on screen even when this list lacks it.
+
+        A GPT/Gemini/Muse/Kimi default absent from the list (its provider's
+        catalog has not landed, or no longer offers it) gets a placeholder row
+        that only means "keep the saved default"; choosing it changes nothing.
+        It is never replaced by row 0: the Google/Muse/Kimi/OpenRouter lists
+        land before Codex's, and that swap is what turned a saved GPT default
+        into Fable on the next Save.
+        """
+        if not selected or any(model_id == selected for model_id, _label in choices):
+            return choices
+        if SettingsDialog._is_native_catalog_model(selected):
+            label = SettingsDialog._saved_default_placeholder(selected)
+        else:
+            label = selected.removesuffix("[1m]")
+        return [(selected, label), *choices]
+
+    def _sync_model_row_selection(self) -> None:
         midx = next(
             (
                 i
@@ -275,12 +314,15 @@ class SettingsDialog(Adw.PreferencesDialog):
             ),
             0,
         )
-        # Replacing the list emits selection changes, including an intermediate
-        # first-row selection. Publish only the final selection.
-        with self._model_row.freeze_notify():
-            self._model_row.set_model(model_model)
-            self._model_row.set_selected(midx)
-        self._model_row.set_subtitle("Default model for new chats")
+        self._model_row.set_selected(midx)
+        label = self._model_choices[midx][1] if self._model_choices else ""
+        if label == SettingsDialog._saved_default_placeholder(self._selected_model_id):
+            self._model_row.set_subtitle(
+                "Not offered by the loaded model lists yet — it stays the "
+                "default for new chats unless you pick another model"
+            )
+        else:
+            self._model_row.set_subtitle("Default model for new chats")
 
     # ── page 1: account + defaults ──────────────────────────────────────
 
@@ -447,10 +489,8 @@ class SettingsDialog(Adw.PreferencesDialog):
         for _key, label in self._model_choices:
             model_model.append(label)
         self._model_row.set_model(model_model)
-        midx = next(
-            (i for i, (k, _l) in enumerate(self._model_choices) if k == model), 0
-        )
-        self._model_row.set_selected(midx)
+        self._selected_model_id = model
+        self._sync_model_row_selection()
         self._model_row.connect("notify::selected", self._on_model_changed)
         defaults_group.add(self._model_row)
 
@@ -748,9 +788,19 @@ class SettingsDialog(Adw.PreferencesDialog):
         self.emit("apply", perm, self._selected_model_id)
 
     def _on_model_changed(self, *_args) -> None:
+        if getattr(self, "_applying_model_choices", False):
+            return
         idx = self._model_row.get_selected()
         if 0 <= idx < len(self._model_choices):
-            self._selected_model_id = self._model_choices[idx][0]
+            model_id = self._model_choices[idx][0]
+            changed = model_id != self._selected_model_id
+            self._selected_model_id = model_id
+            self._model_row.set_subtitle("Default model for new chats")
+            if changed:
+                # Saved on pick, like the working directory beside it: the
+                # Save button sits at the bottom of the page, and closing the
+                # dialog after choosing a model used to discard the choice.
+                self.emit("default-model-changed", model_id)
 
     # ── page 2: providers ───────────────────────────────────────────────
 

@@ -239,6 +239,18 @@ def test_the_read_only_reason_survives_text_in_the_buffer() -> None:
 
 
 @pytest.mark.skipif(not _HAVE_DISPLAY, reason="no display available")
+def test_the_busy_hint_stops_at_the_text_area() -> None:
+    """Unellipsized, the long hint ran on under the spinner and Stop button
+    in a narrow window."""
+    from gi.repository import Pango
+
+    c = Composer()
+    c.set_busy(True)
+    assert "is working" in c._placeholder.get_label()
+    assert c._placeholder.get_ellipsize() == Pango.EllipsizeMode.END
+
+
+@pytest.mark.skipif(not _HAVE_DISPLAY, reason="no display available")
 def test_leaving_read_only_hides_the_banner() -> None:
     c = Composer()
     c.set_read_only(True, "Read-only.")

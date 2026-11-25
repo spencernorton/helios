@@ -394,6 +394,7 @@ The file is written atomically (`ui-state.json.tmp` then rename) with `indent=2,
 | `permission_mode` | string | `"default"` | `default`, `acceptEdits`, `auto`, `bypassPermissions`, `plan`, `dontAsk` | Global default permission mode. Unknown strings are coerced to `default` and re-persisted at startup |
 | `permission_mode_confirmed` | boolean | `false` | `true`, `false` | Written `true` by Settings → "Save chat defaults". `bypassPermissions` is honoured at startup only when this is `true`; otherwise it is clamped to `default`. Leave it unset. For every mode except `bypassPermissions` it only stops a retired `project-perms.json` entry (6.2) from narrowing the default, so a fresh install does not need it; for `bypassPermissions` it is the person's confirmation (`resolve_startup_default` in `src/helios/backend/project_perms.py`), so never write it from a file. If the person wants Bypass as their global default, they choose it in Settings → "Save chat defaults" themselves |
 | `model` | string | `"fable[1m]"` | a Claude alias or id, an OpenAI id, or an OpenRouter `vendor/model` id | Sticky model for the next new chat. An empty or absent value resolves to `fable[1m]` at startup, so `""` cannot be pre-set from the file; the picker's `Claude Code default` entry (empty id, `--model` omitted) is a runtime choice that reverts to `fable[1m]` on the next launch. Classification: an id containing `/` is OpenRouter; an id starting with `gpt-<digit>`, `o<digit>`, `codex` or `chatgpt` is OpenAI; anything else is Anthropic |
+| `default_model` | string | unset | as `model`, or `""` | Model every new chat opens on (Settings → Defaults → Model, written as soon as a model is chosen there). Unset follows the sticky `model`; `""` delegates the choice to Claude Code |
 | `model_anthropic` | string | unset | as `model` | Last model used on the Claude side of the header toggle |
 | `model_openai` | string | unset | as `model` | Last model used on the GPT side |
 | `model_openrouter` | string | unset | as `model` | Last model used on the OpenRouter side |
@@ -420,7 +421,7 @@ The file is written atomically (`ui-state.json.tmp` then rename) with `indent=2,
 | `panel_context` | boolean | `false` | `true`, `false` | Right workspace pane shown |
 | `session_filter` | string | `"all"` | `all`, `local`, `temp` | Sidebar filter |
 
-Settings defers `permission_mode` and `model` to the "Save chat defaults" button, and `ollama_url` / `ollama_title_model` to Behavior → "Save and check" (editing the two rows only changes the status text to `Settings changed. Save and check to use this server and model.`); every other Settings control writes its key immediately.
+Settings defers `permission_mode` to the "Save chat defaults" button (Defaults → Model writes `default_model` as soon as a model is chosen), and `ollama_url` / `ollama_title_model` to Behavior → "Save and check" (editing the two rows only changes the status text to `Settings changed. Save and check to use this server and model.`); every other Settings control writes its key immediately.
 
 Merge keys atomically with the same permissions Helios uses (fails loudly on a malformed existing file, which is what you want). The example creates the project directory first (why: 6.3) and splices `$HOME` from the shell so the JSON value is absolute; it sets nothing about permissions:
 
