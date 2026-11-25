@@ -47,6 +47,11 @@ MODEL_ORDER_KEY = "model_order"
 # An empty string delegates model selection to Claude Code.
 DEFAULT_MODEL_KEY = "default_model"
 
+# Settings → Providers → Model picker → "Show older models": whether each
+# provider in the chat picker gets its folded "More … models" list. Off (the
+# default) keeps the picker to your list; search still covers everything.
+PICKER_SHOW_MORE_KEY = "picker_show_more"
+
 
 def _load(path: Path) -> dict[str, Any]:
     if not path.is_file():

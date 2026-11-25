@@ -12,7 +12,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, GLib, GObject, Gtk, Pango  # noqa: E402
 
-from helios.backend import context_breakdown, model_catalog, model_picker
+from helios.backend import context_breakdown, model_catalog, model_picker, ui_state
 from helios.backend.model_catalog import ModelEntry
 from helios.backend.project_perms import (
     AUTONOMY_MODE,
@@ -1548,9 +1548,11 @@ class ChatToolbar(Gtk.Box):
         )
 
     def _picker_selected_id(self) -> str:
-        return model_catalog.picker_model_id(
+        selected = model_catalog.picker_model_id(
             self._model_alias, (e.id for e in self._choices),
         )
+        # A pin that is today's alias model is shown as that alias row.
+        return model_catalog.claude_twin_alias(self._choices, selected) or selected
 
     def _fill_model_rows(self, box, popover, query: str) -> None:
         """(Re)populate the picker rows, optionally filtered by ``query``.
@@ -1596,6 +1598,11 @@ class ChatToolbar(Gtk.Box):
         more_state = getattr(self, "_model_more_state", None)
         if more_state is None:
             more_state = self._model_more_state = {}
+        # Settings → Model picker → "Show older models". Editing your list
+        # always shows them: that is where a model is added from.
+        show_more = editing or bool(
+            ui_state.store().get(ui_state.PICKER_SHOW_MORE_KEY, False)
+        )
 
         first = True
         for section in sections:
@@ -1609,12 +1616,21 @@ class ChatToolbar(Gtk.Box):
                     listed=True, selected=selected, editing=editing,
                     index=index, count=len(section.main),
                 ))
-            if section.more:
+            if section.more and show_more:
                 holds_selection = any(e.id == selected for e in section.more)
                 box.append(self._more_expander(
                     section, popover, selected=selected, editing=editing,
                     expanded=more_state.get(section.provider, holds_selection),
                 ))
+            elif section.more:
+                # Older models are hidden, but the one this chat runs on is
+                # never: it shows, marked, after your list.
+                for entry in section.more:
+                    if entry.id == selected:
+                        box.append(self._model_row(
+                            entry, section, popover,
+                            listed=False, selected=selected, editing=editing,
+                        ))
 
     def _append_section_header(
         self, box, section: model_picker.PickerSection, *, first: bool, editing: bool,
@@ -2445,12 +2461,40 @@ class _StackedContextBar(Gtk.DrawingArea):
 
 
 class _PlainSegment:
-    """Stand-in used before the transcript split has been computed."""
+    """Stand-in used before any split has been computed: one neutral band.
 
-    key = "tools"
+    It used to borrow the "tools" colour, so a session with no split yet
+    looked like one big tool-output slice.
+    """
+
+    key = "unsplit"
 
     def __init__(self, tokens: int) -> None:
         self.tokens = tokens
+
+
+class _ScaledSegment:
+    """A split category resized to the latest total, same key and colour."""
+
+    __slots__ = ("key", "label", "tokens")
+
+    def __init__(self, key: str, label: str, tokens: int) -> None:
+        self.key, self.label, self.tokens = key, label, tokens
+
+
+def _rescaled(segments, used: int) -> tuple:
+    """The last split, stretched to ``used``. The autocompact reserve is not
+    usage and keeps its size; every other band keeps its share."""
+    usage = [s for s in segments if s.key != context_breakdown.AUTOCOMPACT]
+    known = sum(s.tokens for s in usage)
+    if known <= 0 or used <= 0:
+        return tuple(segments)
+    factor = used / known
+    return tuple(
+        s if s.key == context_breakdown.AUTOCOMPACT
+        else _ScaledSegment(s.key, s.label, max(1, round(s.tokens * factor)))
+        for s in segments
+    )
 
 
 def _legend_row(segment, total: int, *, estimated: bool = False) -> Gtk.Widget:
@@ -2827,10 +2871,15 @@ class _ContextPopover(Gtk.Popover):
             self._used = used
             self._window = total
             self._refresh_scale_label()
-            # The split arrives separately (it needs the transcript). Until it
-            # does, show the measured total as one solid bar rather than a
-            # stale breakdown from the previous turn.
-            self._bar.set_plain(used, total)
+            # Usage lands once per API request; the split only once per turn
+            # (Claude) or after a transcript read. Keep the last split,
+            # stretched to the new total, instead of dropping to one band in
+            # between: that swap was the hover flicker. One neutral band only
+            # until a first split exists.
+            if self._legend_segments:
+                self._bar.set_segments(_rescaled(self._legend_segments, used), total)
+            else:
+                self._bar.set_plain(used, total)
         elif used > 0:
             # Measured fill, but the provider publishes no window (Google).
             self._has_turn = True
@@ -2862,13 +2911,13 @@ class _ContextPopover(Gtk.Popover):
 
     def set_breakdown(self, breakdown) -> None:
         """Install the per-category split for the usage already shown."""
+        # An estimate must never overwrite a measurement — and neither may the
+        # absence of one: an empty estimate used to wipe the measured legend,
+        # dropping the ring to a single accent arc until the next turn.
+        if self._legend_measured:
+            return
         if breakdown is None or not breakdown.segments:
             self._set_legend(())
-            return
-        # An estimate must never overwrite a measurement. The provider answers
-        # once per turn; the transcript walk can land later and would otherwise
-        # replace real figures with scaled ones.
-        if self._legend_measured:
             return
         self._bar.set_segments(breakdown.segments, breakdown.window)
         self._set_legend(breakdown.segments)
@@ -2977,12 +3026,15 @@ class _ContextPopover(Gtk.Popover):
             self._window = 0
             self._refresh_scale_label()
             return
+        changed = total != self._window
         self._window = total
         self._refresh_scale_label()
         if self._has_turn:
             self._bar.set_window(total)
-        if self._legend_segments:
+        if changed and self._legend_segments:
             # Shares are of the window: a new denominator re-derives them.
+            # Only then: rebuilding the rows on every model sync made them
+            # flash under the pointer.
             self._set_legend(self._legend_segments)
 
     def set_model(self, model: str) -> None:

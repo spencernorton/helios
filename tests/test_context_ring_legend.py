@@ -163,3 +163,53 @@ def _labels(widget) -> list[str]:
         out.extend(_labels(child))
         child = child.get_next_sibling()
     return out
+
+
+# ── Hover flicker (reported on 0.123.0) ───────────────────────────────────
+
+
+def _bar_keys(pop) -> list[str]:
+    return [s.key for s in pop._bar._segments]
+
+
+def test_a_usage_update_keeps_the_split_instead_of_one_orange_band():
+    """Usage lands once per API request, the measured split once per turn.
+    Each usage update used to replace the split with one band in the "tools"
+    colour, so hovering during a turn flickered between the two."""
+    pop = _popover()
+    pop.set_measured_breakdown(PAYLOAD)
+    keys = _bar_keys(pop)
+    pop.set_usage(150_000, 350_000)
+    assert _bar_keys(pop) == keys
+    usage = [s for s in pop._bar._segments if s.key != context_breakdown.AUTOCOMPACT]
+    assert abs(sum(s.tokens for s in usage) - 150_000) <= len(usage)
+    reserve = [s for s in pop._bar._segments if s.key == context_breakdown.AUTOCOMPACT]
+    assert [s.tokens for s in reserve] == [33000]
+    assert pop._max_label.get_label() == "150.0k / 350k · 42%"
+
+
+def test_before_any_split_the_single_band_is_neutral_not_tool_coloured():
+    pop = _popover()
+    assert _bar_keys(pop) == ["unsplit"]
+    assert ct._segment_rgb("unsplit", False) != ct._segment_rgb("tools", False)
+
+
+def test_an_empty_estimate_never_clears_a_measured_split():
+    toolbar = ct.ChatToolbar()
+    try:
+        toolbar.set_context_model("claude-opus-5-5")
+        toolbar.set_context_usage(127183, 350000)
+        toolbar.set_measured_breakdown(PAYLOAD)
+        toolbar.set_context_breakdown(None)
+        assert [k for k, _t in toolbar._context_meter._segments] == MEASURED
+        assert toolbar._context_popover.ring_segments()
+    finally:
+        toolbar.shutdown()
+
+
+def test_the_same_window_again_does_not_rebuild_the_legend_rows():
+    pop = _popover()
+    pop.set_measured_breakdown(PAYLOAD)
+    first = pop._legend.get_first_child()
+    pop.set_window(350000)
+    assert pop._legend.get_first_child() is first
