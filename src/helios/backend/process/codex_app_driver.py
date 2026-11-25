@@ -3,14 +3,13 @@
 The existing :class:`CodexCliDriver` remains available as a compatibility
 implementation, but this driver never falls back to it automatically.  The
 exec transport cannot currently prove parity for native developer
-instructions, delegation disablement, or lifetime budgets, so degrading to it
+instructions or lifetime budgets, so degrading to it
 would silently remove the P0 containment contract.
 """
 
 from __future__ import annotations
 
 import copy
-import json
 import os
 import threading
 import time
@@ -49,12 +48,6 @@ from helios.backend.process.codex_app_contract import (
     interaction_response,
     rate_limit_rows,
 )
-from helios.backend.router_client import (
-    RouterClient,
-    RouterError,
-    RouterRejectedError,
-)
-from helios.backend.router_tools import CODEX_NAMESPACE, CONTRACT_VERSION, tool_names
 from helios.backend.process.codex_app_hub import CodexAppServerHub, get_shared_hub
 from helios.backend.process.codex_app_server import (
     CodexAppServerRpcError,
@@ -124,8 +117,6 @@ _METHOD_THREAD_CLOSED = "thread/closed"
 _METHOD_THREAD_STARTED = "thread/started"
 
 _GOAL_STATUSES = {"active", "paused", "blocked", "complete"}
-_MAX_ROUTER_TOOL_WORKERS = 4
-_ROUTER_TOOL_SLOTS = threading.BoundedSemaphore(_MAX_ROUTER_TOOL_WORKERS)
 CODEX_STANDARD_TOKEN_BUDGET = 200_000
 CODEX_BUDGET_INTERRUPT_DEADLINE_MS = 12_000
 _RESOLVE_TOKEN_BUDGET = -1
@@ -218,13 +209,11 @@ class _TurnStartDispatch:
 
     attempt_id: str
     queue_delivery: tuple[int, str] | None
-    router_generation: int
     prepared: PreparedPrompt
     visible_text: str
     request_method: str
     operation_name: str
     accept_started_notification: bool
-    authorize_router_tools: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,18 +344,6 @@ class CodexAppServerDriver(CodexCliDriver):
         self._last_context_used = 0
         self._compaction_pre_tokens_by_item: dict[str, int] = {}
         self._recorded_compactions: set[str] = set()
-        self._router_turn_lock = threading.Lock()
-        self._router_authorized_turn_id = ""
-        self._router_tool_generation = 0
-        self._router_authorization_suppressed = False
-        self._router_tool_requests: dict[int, ServerRequest] = {}
-        # Process-global admission control prevents a burst from bypassing the
-        # limit by spreading calls across several live session drivers.
-        self._router_tool_slots = _ROUTER_TOOL_SLOTS
-        # Existing native threads can retain previously persisted dynamic
-        # tools even when thread/resume omits them. Keep execution disabled
-        # until an explicit Parallel lease and family budget exist.
-        self._delegation_enabled = False
         self._pending_interactions: dict[str, tuple[ServerRequest, str]] = {}
         self._interaction_token_by_id: dict[int | str, str] = {}
         self._interaction_seq = 0
@@ -878,13 +855,9 @@ class CodexAppServerDriver(CodexCliDriver):
         self._app_turn_id = ""
         self._app_acceptance_recorded = False
         self._interrupt_when_turn_known = False
-        turn_generation = self._invalidate_router_tool_requests(
-            suppress_authorization=True
-        )
         dispatch = _TurnStartDispatch(
             attempt_id=attempt_id,
             queue_delivery=None,
-            router_generation=turn_generation,
             prepared=preparation.prepared,
             visible_text=preparation.visible_text,
             request_method=_METHOD_REVIEW_START,
@@ -892,9 +865,6 @@ class CodexAppServerDriver(CodexCliDriver):
             # Live protocol traces show an internal reviewer turn/started id
             # that differs from review/start's returned source-turn id.
             accept_started_notification=False,
-            # Standard Work never authorizes dynamic Router delegation during
-            # a read-only review, even if an old native thread restored tools.
-            authorize_router_tools=False,
         )
         self._activate_turn_start_dispatch(dispatch)
         try:
@@ -1355,7 +1325,6 @@ class CodexAppServerDriver(CodexCliDriver):
         if not self._busy or self._hub is None:
             return
         self._stop_requested = True
-        self._invalidate_router_tool_requests()
         if not self._app_turn_id:
             self._interrupt_when_turn_known = True
             return
@@ -1619,7 +1588,6 @@ class CodexAppServerDriver(CodexCliDriver):
         if self._closed:
             return
         self._cancel_budget_interrupt_watchdog()
-        self._invalidate_router_tool_requests()
         self._clear_manual_compaction_state()
         self._review_preparation = None
         self._review_cancel_requested = False
@@ -2161,9 +2129,6 @@ class CodexAppServerDriver(CodexCliDriver):
         self._interrupt_when_turn_known = False
         self._app_turn_id = ""
         self._app_acceptance_recorded = False
-        turn_generation = self._invalidate_router_tool_requests(
-            suppress_authorization=False
-        )
         queue_delivery = (
             self._pending_queue_delivery
             if self._dispatching_queue_delivery
@@ -2172,20 +2137,17 @@ class CodexAppServerDriver(CodexCliDriver):
         dispatch = _TurnStartDispatch(
             attempt_id=attempt_id,
             queue_delivery=queue_delivery,
-            router_generation=turn_generation,
             prepared=prepared,
             visible_text=text,
             request_method="turn/start",
             operation_name="Codex turn",
             accept_started_notification=True,
-            authorize_router_tools=True,
         )
         self.last_activity = time.monotonic()
         self._activate_turn_start_dispatch(dispatch)
         try:
             future = self._hub.request("turn/start", params, timeout=60.0)
         except Exception as exc:
-            self._invalidate_router_tool_requests()
             # ``hub.request`` normally returns a Future even when the stdio
             # write fails. A synchronous failure still races shared-transport
             # teardown, so retain the post-dispatch slot conservatively.
@@ -2236,15 +2198,6 @@ class CodexAppServerDriver(CodexCliDriver):
             # callback owns neither the new attempt nor its queued head.
             return
         acceptance_recorded = self._record_turn_start_acceptance(future, dispatch)
-        # In-memory authorization is a transport-order safety boundary, not a
-        # durability claim. Pin it whenever the response carries a valid turn
-        # so early notifications/tool requests are not dropped; persistence
-        # success remains a separate fail-closed flag for later slot release.
-        if dispatch.authorize_router_tools:
-            self._record_authorized_turn_from_result(
-                future,
-                expected_generation=dispatch.router_generation,
-            )
         GLib.idle_add(
             self._finish_turn_start_request,
             future,
@@ -2300,32 +2253,6 @@ class CodexAppServerDriver(CodexCliDriver):
             return False
         return self._record_dispatch_acceptance(dispatch, turn_id)
 
-    def _record_authorized_turn_from_result(
-        self,
-        future: Future[Any],
-        *,
-        expected_generation: int | None = None,
-    ) -> None:
-        try:
-            result = future.result()
-            turn = result.get("turn") if isinstance(result, dict) else None
-            turn_id = turn.get("id") if isinstance(turn, dict) else ""
-        except Exception:
-            return
-        if isinstance(turn_id, str) and turn_id:
-            with self._router_turn_lock:
-                generation_matches = (
-                    expected_generation is None
-                    or expected_generation == self._router_tool_generation
-                )
-                if (
-                    generation_matches
-                    and not self._closed
-                    and self._native_mode
-                    and not self._router_authorization_suppressed
-                ):
-                    self._router_authorized_turn_id = turn_id
-
     def _finish_turn_start_request(
         self,
         future: Future[Any],
@@ -2349,7 +2276,6 @@ class CodexAppServerDriver(CodexCliDriver):
         try:
             turn_id = self._turn_id_from_request_result(future, dispatch)
         except CodexAppServerRpcError as exc:
-            self._invalidate_router_tool_requests()
             accounting_ok = self._settle_verified_turn_start_rejection(dispatch)
             if not accounting_ok:
                 self.emit(
@@ -2425,7 +2351,6 @@ class CodexAppServerDriver(CodexCliDriver):
     def _hold_ambiguous_turn_start(self, message: str, *, detail: str = "") -> None:
         """Close one binding while preserving its unresolved durable slot."""
 
-        self._invalidate_router_tool_requests()
         self._transition_native_delivery_state(
             NATIVE_DELIVERY_WIRE,
             NATIVE_DELIVERY_UNKNOWN,
@@ -2490,84 +2415,13 @@ class CodexAppServerDriver(CodexCliDriver):
     # -- transport callbacks (transport thread -> GLib) -------------
 
     def on_app_notification(self, method: str, params: Any) -> None:
-        if method == app_events.METHOD_TURN_STARTED and isinstance(params, dict):
-            turn = params.get("turn")
-            turn_id = turn.get("id") if isinstance(turn, dict) else ""
-            thread_id = params.get("threadId")
-            if (
-                isinstance(turn_id, str)
-                and turn_id
-                and (not thread_id or thread_id == self.session_id)
-            ):
-                # Only a Helios-dispatched user turn may authorize dynamic
-                # tools. App Server also emits turn/started for maintenance
-                # operations such as native compaction.
-                with self._native_delivery_lock:
-                    dispatched_user_turn = (
-                        self._active_turn_start_dispatch is not None
-                    )
-                with self._router_turn_lock:
-                    if (
-                        dispatched_user_turn
-                        and not self._closed
-                        and self._native_mode
-                        and not self._router_authorization_suppressed
-                    ):
-                        self._router_authorized_turn_id = turn_id
-        elif method == app_events.METHOD_TURN_COMPLETED and isinstance(params, dict):
-            thread_id = params.get("threadId")
-            turn = params.get("turn")
-            turn_id = turn.get("id") if isinstance(turn, dict) else None
-            turn_id = turn_id or params.get("turnId")
-            requests_to_reject: tuple[ServerRequest, ...] = ()
-            with self._router_turn_lock:
-                if (
-                    (not thread_id or thread_id == self.session_id)
-                    and isinstance(turn_id, str)
-                    and turn_id
-                    and turn_id == self._router_authorized_turn_id
-                ):
-                    requests_to_reject = self._retire_router_tool_requests_locked(
-                        suppress_authorization=True
-                    )
-            self._reject_router_tool_requests(requests_to_reject)
         GLib.idle_add(self._consume_app_notification, method, copy.deepcopy(params))
 
     def on_app_request(self, request: ServerRequest) -> None:
         if request.method == DYNAMIC_TOOL_METHOD:
-            if not self._delegation_enabled:
-                request.respond_error(
-                    -32000,
-                    "Helios delegation is disabled for standard Work",
-                )
-                return
-            # Inference can take tens of seconds.  Never run it on the transport
-            # reader or GTK main loop: either would stall every Codex session.
-            if not self._router_tool_slots.acquire(blocking=False):
-                request.respond_error(
-                    -32000,
-                    "Helios Router dynamic-tool capacity is in use",
-                )
-                return
-            with self._router_turn_lock:
-                generation = self._router_tool_generation
-                self._router_tool_requests[id(request)] = request
-            try:
-                threading.Thread(
-                    target=self._run_dynamic_tool_request_guarded,
-                    args=(request, generation),
-                    name="helios-codex-router-tool",
-                    daemon=True,
-                ).start()
-            except Exception:
-                with self._router_turn_lock:
-                    self._router_tool_requests.pop(id(request), None)
-                self._router_tool_slots.release()
-                _log.exception("could not start Helios Router dynamic-tool worker")
-                request.respond_error(
-                    -32000,
-                    "Helios Router dynamic-tool worker is unavailable",
-                )
+            # Helios registers no dynamic tools. An older native thread can
+            # still carry tools persisted by a previous client; refuse them.
+            request.respond_error(-32000, "Helios offers no dynamic tools")
             return
         GLib.idle_add(self._consume_app_request, request)
 
@@ -2591,7 +2445,6 @@ class CodexAppServerDriver(CodexCliDriver):
         )
         self._hub = None
         self._busy = False
-        self._invalidate_router_tool_requests()
         self._clear_manual_compaction_state()
         self._review_preparation = None
         self._review_cancel_requested = False
@@ -3153,7 +3006,6 @@ class CodexAppServerDriver(CodexCliDriver):
             # The accepted prompt has reached a terminal result. A subsequent
             # idle admission owns a new delivery state and must not inherit it.
             self._set_native_delivery_state(NATIVE_DELIVERY_IDLE)
-            self._invalidate_router_tool_requests()
             if self._pending_mirror_turn is not None:
                 self._mirror.append_assistant(
                     self._pending_mirror_turn,
@@ -3380,185 +3232,6 @@ class CodexAppServerDriver(CodexCliDriver):
         return copy.deepcopy(self._agents)
 
     # -- approvals and request_user_input ----------------------------
-
-    def _retire_router_tool_requests_locked(
-        self,
-        *,
-        suppress_authorization: bool,
-    ) -> tuple[ServerRequest, ...]:
-        self._router_authorized_turn_id = ""
-        self._router_tool_generation += 1
-        self._router_authorization_suppressed = suppress_authorization
-        requests = tuple(self._router_tool_requests.values())
-        self._router_tool_requests.clear()
-        return requests
-
-    @staticmethod
-    def _reject_router_tool_requests(
-        requests: tuple[ServerRequest, ...],
-    ) -> None:
-        for request in requests:
-            try:
-                request.respond_error(
-                    -32000,
-                    "Helios session or router turn is no longer active",
-                )
-            except Exception:
-                # A broken shared transport must not strand the driver in an
-                # uncloseable state or prevent the remaining requests from
-                # being retired.
-                _log.warning(
-                    "could not retire Helios Router dynamic-tool request",
-                    exc_info=True,
-                )
-
-    def _invalidate_router_tool_requests(
-        self,
-        *,
-        suppress_authorization: bool = True,
-    ) -> int:
-        with self._router_turn_lock:
-            requests = self._retire_router_tool_requests_locked(
-                suppress_authorization=suppress_authorization
-            )
-            generation = self._router_tool_generation
-        # ``respond_error`` atomically claims the transport request before its
-        # bounded write.  If a worker response already won the transport race,
-        # this is a no-op; otherwise Codex is resolved without stale content.
-        self._reject_router_tool_requests(requests)
-        return generation
-
-    def _run_dynamic_tool_request_guarded(
-        self,
-        request: ServerRequest,
-        generation: int,
-    ) -> None:
-        try:
-            self._run_dynamic_tool_request(request, generation=generation)
-        finally:
-            with self._router_turn_lock:
-                self._router_tool_requests.pop(id(request), None)
-            self._router_tool_slots.release()
-
-    def _run_dynamic_tool_request(
-        self,
-        request: ServerRequest,
-        *,
-        generation: int | None = None,
-    ) -> None:
-        """Execute one thread-bound Helios tool through the credential broker."""
-
-        params = request.params if isinstance(request.params, dict) else {}
-        thread_id = params.get("threadId")
-        turn_id = params.get("turnId")
-        call_id = params.get("callId")
-        namespace = params.get("namespace")
-        tool = params.get("tool")
-        arguments = params.get("arguments")
-        with self._router_turn_lock:
-            authorized_turn_id = self._router_authorized_turn_id
-            current_generation = self._router_tool_generation
-        if generation is None:
-            generation = current_generation
-
-        if (
-            self._closed
-            or not self._native_mode
-            or generation != current_generation
-            or thread_id != self.session_id
-            or not isinstance(turn_id, str)
-            or not turn_id
-            or turn_id != authorized_turn_id
-            or not isinstance(call_id, str)
-            or not call_id
-            or namespace != CODEX_NAMESPACE
-            or tool not in tool_names()
-            or not isinstance(arguments, dict)
-        ):
-            request.respond_error(
-                -32602,
-                "Invalid or unbound Helios dynamic tool request",
-            )
-            return
-
-        binding = {
-            "kind": "codex",
-            "thread_id": thread_id,
-            "turn_id": turn_id,
-            "call_id": call_id,
-        }
-        try:
-            result = RouterClient().call(tool, arguments, binding=binding)
-        except RouterRejectedError as exc:
-            # A policy refusal is a valid tool outcome: tell the primary model
-            # to retain the task instead of making Codex retry the transport.
-            result = {
-                "contract_version": CONTRACT_VERSION,
-                "accepted": False,
-                "status": "rejected",
-                "error": {
-                    "code": exc.code,
-                    "message": str(exc),
-                    "data": exc.data,
-                },
-            }
-            success = True
-        except RouterError as exc:
-            result = {
-                "contract_version": CONTRACT_VERSION,
-                "accepted": False,
-                "status": "unavailable",
-                "error": {
-                    "code": "ROUTER_UNAVAILABLE",
-                    "message": str(exc),
-                },
-            }
-            success = False
-        except Exception:
-            _log.exception("unexpected Helios Router dynamic-tool failure")
-            result = {
-                "contract_version": CONTRACT_VERSION,
-                "accepted": False,
-                "status": "failed",
-                "error": {
-                    "code": "ROUTER_INTERNAL_ERROR",
-                    "message": "Helios Router failed unexpectedly",
-                },
-            }
-            success = False
-        else:
-            success = True
-
-        response = {
-            "contentItems": [
-                {
-                    "type": "inputText",
-                    "text": json.dumps(
-                        result,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
-                }
-            ],
-            "success": success,
-        }
-        with self._router_turn_lock:
-            response_is_current = (
-                not self._closed
-                and self._native_mode
-                and generation == self._router_tool_generation
-                and turn_id == self._router_authorized_turn_id
-            )
-        if response_is_current:
-            # ``respond`` and lifecycle invalidation's ``respond_error`` compete
-            # on the transport's exactly-once claim, so no lifecycle lock is
-            # held across the potentially blocking pipe write.
-            request.respond(response)
-        else:
-            request.respond_error(
-                -32000,
-                "Helios session or router turn is no longer active",
-            )
 
     def _consume_app_request(self, request: ServerRequest) -> bool:
         if self._closed or not self._native_mode:

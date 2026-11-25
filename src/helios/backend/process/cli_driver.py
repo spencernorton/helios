@@ -85,12 +85,7 @@ from helios.backend.project_perms import (
     effective_execution_mode,
     execution_mode_restriction_reason,
 )
-from helios.backend.router_client import dispatch_available, router_socket_path
 from helios.backend import browser_tools, model_catalog
-from helios.backend.router_tools import (
-    claude_mcp_config,
-    router_mcp_launcher_path,
-)
 from helios.backend.sensitive_text import REDACTED, scrub_sensitive
 from helios.backend.rate_limits import claude_rate_limit
 from helios.backend.process.streaming import (  # noqa: F401 — re-exported names
@@ -312,7 +307,6 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
         self._resume = resume_session_id
         self._max_thinking_tokens = max_thinking_tokens
         self._effort = effort
-        self._router_binding_id = f"claude_{uuid.uuid4().hex}"
         #: Spend for THIS process. `modelUsage` restarts at zero in a new
         #: process even when it resumes the same session (measured on claude
         #: 2.1.235), so the root counter has to restart with it — see the reset
@@ -630,33 +624,7 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
         # forwarding is display-only and must never look like root traffic.
         if supports_forward_subagent_text():
             argv.append("--forward-subagent-text")
-        # The Helios Router MCP, advertised only when the broker can actually
-        # dispatch. It used to be injected whenever the launcher script existed
-        # in the repo — which is to say always, including through the whole
-        # period the broker was structurally unable to dispatch anything. That
-        # cost ~1.6k tokens of tool schemas and one Python subprocess per
-        # session, and the MCP's own `instructions` tell the model to "use
-        # delegate_task regularly", so it also spent turns on a tool whose only
-        # possible answer was that the task was retained.
-        #
-        # `dispatch_available()` is a cached read, never a socket round trip:
-        # this runs on the GTK main thread and a wedged broker must not be able
-        # to stall a session opening. Its delegated inference spend still sits
-        # outside Claude's native --max-budget-usd cap, so the Work supervisor
-        # remains the follow-on that makes it accountable.
-        router_launcher = router_mcp_launcher_path()
         mcp_servers: dict = {}
-        if dispatch_available():
-            if not router_launcher.is_file():
-                _log.warning("Helios Router MCP launcher is missing: %s", router_launcher)
-            else:
-                mcp_servers.update(json.loads(claude_mcp_config(
-                    self._router_binding_id,
-                    socket_path=str(router_socket_path()),
-                    launcher_path=str(router_launcher),
-                ))["mcpServers"])
-        elif not router_launcher.is_file():
-            _log.debug("Helios Router MCP launcher is missing (broker inactive): %s", router_launcher)
         # The browser pane's tools, whenever the window has published the pane.
         browser = browser_tools.server_entry(
             self._cwd, "Claude", scope=getattr(self, "_helios_browser_scope", None),

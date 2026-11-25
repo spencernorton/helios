@@ -12,9 +12,6 @@ from helios.backend import model_catalog, project_perms  # noqa: E402
 from helios.widgets.settings_dialog import (  # noqa: E402
     PERMISSION_MODES,
     SettingsDialog,
-    _router_awaiting_count,
-    _router_profile_summary,
-    _router_unavailable_subtitle,
 )
 from helios.widgets import settings_dialog as settings_module  # noqa: E402
 
@@ -97,32 +94,6 @@ def test_ollama_check_ready_missing_model_failure_and_closed_delivery():
     fake._ollama_check_btn.set_sensitive(False)
     SettingsDialog._apply_ollama_check(fake, ModelReadiness(True, "model"), 1)
     assert not fake._ollama_check_btn.get_sensitive()
-
-
-def test_router_copy_counts_manual_evaluation_as_awaiting():
-    profiles = [
-        {
-            "stage": "manual_evaluation",
-            "eligible": False,
-            "dispatchable": False,
-        },
-        {
-            "stage": "quarantined",
-            "eligible": False,
-            "dispatchable": False,
-        },
-    ]
-
-    assert _router_awaiting_count(profiles) == 2
-    assert _router_profile_summary(profiles) == (
-        "0 dispatchable · 1 manual evaluation · 1 quarantined"
-    )
-
-
-def test_router_unavailable_copy_preserves_last_authoritative_state():
-    assert "last confirmed on" in _router_unavailable_subtitle(True)
-    assert "last confirmed off" in _router_unavailable_subtitle(False)
-    assert "state is unknown" in _router_unavailable_subtitle(None)
 
 
 def test_initial_model_choices_preserve_unknown_selected_model():
@@ -736,61 +707,6 @@ def test_save_chat_defaults_floats_on_the_settings_page_only():
         assert not dlg._save_btn.get_visible()
     finally:
         dlg._closed = True
-
-
-def test_router_hold_is_explained_in_plain_words():
-    from gi.repository import Adw
-
-    Adw.init()
-    fake = types.SimpleNamespace(
-        _closed=False,
-        _router_generation=1,
-        _router_mutating=True,
-        _router_refresh=Adw.ActionRow(),
-        _router_status_row=Adw.ActionRow(),
-        _router_profiles_row=Adw.ActionRow(),
-        _router_tool_row=Adw.ActionRow(),
-        _router_switch=Adw.SwitchRow(),
-        _router_syncing=False,
-        _router_last_enabled=None,
-        _set_router_icon=lambda *_a: None,
-        _set_router_tool_icon=lambda *_a: None,
-    )
-    SettingsDialog._apply_router_status(fake, {
-        "enabled": False,
-        "automatic_dispatch": False,
-        "credential_status": "healthy",
-        "profiles": [{"stage": "manual_evaluation"}, {"stage": "quarantined"}],
-    }, 1)
-    assert fake._router_tool_row.get_title() == "Broker connected · nothing is delegated yet"
-    assert "keep all the work" in fake._router_tool_row.get_subtitle()
-
-
-
-@pytest.mark.parametrize(
-    "state, title",
-    [
-        (dict(automatic_dispatch=True, enabled=True, credential_ready=True, eligible=1),
-         "delegation dispatchable"),
-        (dict(automatic_dispatch=False, enabled=True, credential_ready=False, eligible=1),
-         "credential needs attention"),
-        (dict(automatic_dispatch=False, enabled=False, credential_ready=True, eligible=0),
-         "nothing is delegated yet"),
-        # Cross-model review: off-with-approved-profiles is not "no profile
-        # passed evaluation".
-        (dict(automatic_dispatch=False, enabled=False, credential_ready=True, eligible=2),
-         "Smart Routing is off"),
-        (dict(automatic_dispatch=False, enabled=True, credential_ready=True, eligible=2),
-         "delegation held"),
-    ],
-)
-def test_router_row_names_the_real_reason(state, title):
-    from helios.widgets.settings_dialog import _router_tool_state
-
-    got_title, subtitle = _router_tool_state(**state)
-    assert got_title.endswith(title)
-    if title == "Smart Routing is off":
-        assert "evaluation" not in subtitle
 
 
 def test_floating_save_lifts_above_the_narrow_page_switcher():

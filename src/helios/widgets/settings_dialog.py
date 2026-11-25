@@ -38,7 +38,6 @@ from helios.backend.project_perms import (
     PERMISSION_MODE_DESCRIPTORS,
     is_home_cwd,
 )
-from helios.backend.router_client import RouterClient
 from helios.backend.ui_state import (
     DEFAULT_CWD_KEY,
     HIDDEN_MODELS_KEY,
@@ -75,86 +74,6 @@ _HEALTH_ICON: dict[str, tuple[str, str]] = {
     "failed": ("dialog-error-symbolic", "error"),
     "unknown": ("dialog-question-symbolic", "dim-label"),
 }
-
-_ROUTER_AWAITING_STAGES = frozenset(
-    {
-        "manual_evaluation",
-        "quarantined",
-        "contract_probed",
-        "shadow",
-    }
-)
-
-
-def _router_profile_summary(profiles: list[dict]) -> str:
-    if not profiles:
-        return "No route profiles are currently available."
-    counts: dict[str, int] = {}
-    dispatchable = 0
-    for profile in profiles:
-        stage = str(profile.get("stage") or "unknown").replace("_", " ")
-        counts[stage] = counts.get(stage, 0) + 1
-        dispatchable += bool(profile.get("dispatchable", False))
-    ordered = [
-        f"{count} {stage}"
-        for stage, count in sorted(counts.items())
-    ]
-    return f"{dispatchable} dispatchable · " + " · ".join(ordered)
-
-
-def _router_awaiting_count(profiles: list[dict]) -> int:
-    return sum(
-        str(profile.get("stage") or "") in _ROUTER_AWAITING_STAGES
-        for profile in profiles
-    )
-
-
-def _router_tool_state(
-    *, automatic_dispatch: bool, enabled: bool, credential_ready: bool, eligible: int,
-) -> tuple[str, str]:
-    """Title and plain-words reason for the broker row: why work is or is not
-    being delegated. "Not delegating" has several causes; name the real one."""
-    if automatic_dispatch:
-        return (
-            "Broker connected · delegation dispatchable",
-            "delegate_task · explain_route · routing_status · specialty discovery",
-        )
-    if not credential_ready:
-        return (
-            "Broker connected · credential needs attention",
-            "Nothing is delegated until the OpenRouter key checks healthy; "
-            "Claude and GPT keep all the work.",
-        )
-    if not eligible:
-        return (
-            "Broker connected · nothing is delegated yet",
-            "No route profile has passed its evaluation, so Claude and GPT "
-            "keep all the work. Nothing to do here.",
-        )
-    if not enabled:
-        return (
-            "Broker connected · Smart Routing is off",
-            "Approved profiles are ready. Turn on Smart Routing under "
-            "Providers to let them take bounded work.",
-        )
-    return (
-        "Broker connected · delegation held",
-        "Smart Routing is on, but the broker is holding dispatch; Claude and "
-        "GPT keep all the work for now.",
-    )
-
-
-def _router_unavailable_subtitle(last_enabled: bool | None) -> str:
-    if last_enabled is None:
-        return (
-            "Current preview state is unknown. Delegation fails closed; "
-            "Claude and GPT continue normally."
-        )
-    state = "on" if last_enabled else "off"
-    return (
-        f"Current preview state is unknown; last confirmed {state}. "
-        "Delegation fails closed."
-    )
 
 
 def _descendants(widget: Gtk.Widget, kind: type) -> list:
@@ -203,10 +122,6 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._openrouter_credentials_changed = on_openrouter_credentials_changed
         self._codex_generation = 0
         self._codex_update_running = False
-        self._router_syncing = False
-        self._router_generation = 0
-        self._router_mutating = False
-        self._router_last_enabled: bool | None = None
         self._ollama_check_generation = 0
         self._ollama_check_busy = False
         self.connect("closed", self._on_closed)
@@ -240,7 +155,6 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._reload_google_mcp()
         self._reload_muse_mcp()
         self._reload_kimi_mcp()
-        self._reload_router()
         self._reload_openrouter()
 
     @staticmethod
@@ -1000,55 +914,6 @@ class SettingsDialog(Adw.PreferencesDialog):
 
         self._build_or_picker_group(page)
         self._build_model_picker_group(page)
-
-        # ── OpenRouter · Smart Routing (broker) ──
-        self._router_group = Adw.PreferencesGroup()
-        self._router_group.set_title("OpenRouter · Smart Routing")
-        self._router_group.set_description(
-            "Helios keeps Claude or GPT as the primary driver and delegates "
-            "only bounded work through versioned, privacy-pinned profiles. "
-            "Quality gates come first, cost second, and speed third."
-        )
-        self._router_refresh = Gtk.Button.new_from_icon_name(
-            "view-refresh-symbolic"
-        )
-        self._router_refresh.add_css_class("flat")
-        self._router_refresh.set_tooltip_text("Re-check Helios Router")
-        self._router_refresh.set_valign(Gtk.Align.CENTER)
-        self._router_refresh.connect("clicked", lambda *_: self._reload_router())
-        self._router_group.set_header_suffix(self._router_refresh)
-        page.add(self._router_group)
-
-        self._router_status_row = Adw.ActionRow()
-        self._router_status_row.set_title("Checking Helios Router…")
-        self._router_status_row.set_subtitle(
-            "Credential health, profile eligibility, and receipts load locally."
-        )
-        self._router_icon = Gtk.Image.new_from_icon_name("content-loading-symbolic")
-        self._router_icon.add_css_class("dim-label")
-        self._router_status_row.add_prefix(self._router_icon)
-        self._router_group.add(self._router_status_row)
-
-        self._router_switch = Adw.SwitchRow()
-        self._router_switch.set_title("Enable Smart Routing preview")
-        self._router_switch.set_subtitle(
-            "Evaluates route candidates, but sends no task upstream until "
-            "trusted context, endpoint, and paired-quality gates are approved."
-        )
-        self._router_switch.set_active(False)
-        self._router_switch.set_sensitive(False)
-        self._router_switch.connect("notify::active", self._on_router_toggle)
-        self._router_group.add(self._router_switch)
-
-        self._router_profiles_row = Adw.ActionRow()
-        self._router_profiles_row.set_title("Quality-gated profile catalog")
-        self._router_profiles_row.set_subtitle(
-            "Loading canary and quarantine states…"
-        )
-        profile_icon = Gtk.Image.new_from_icon_name("view-list-symbolic")
-        profile_icon.add_css_class("dim-label")
-        self._router_profiles_row.add_prefix(profile_icon)
-        self._router_group.add(self._router_profiles_row)
 
         self._codex_group = Adw.PreferencesGroup()
         self._codex_group.set_title("OpenAI · Codex")
@@ -1914,26 +1779,6 @@ class SettingsDialog(Adw.PreferencesDialog):
         page.set_icon_name("applications-utilities-symbolic")
         self.add(page)
 
-        self._router_tool_group = Adw.PreferencesGroup()
-        self._router_tool_group.set_title("Helios Router")
-        self._router_tool_group.set_description(
-            "The same provider-neutral schemas reach Claude through MCP and "
-            "GPT through thread-bound native dynamic tools. Neither client "
-            "receives the OpenRouter credential."
-        )
-        page.add(self._router_tool_group)
-        self._router_tool_row = Adw.ActionRow()
-        self._router_tool_row.set_title("Checking broker…")
-        self._router_tool_row.set_subtitle(
-            "delegate_task · explain_route · routing_status · specialty discovery"
-        )
-        self._router_tool_icon = Gtk.Image.new_from_icon_name(
-            "content-loading-symbolic"
-        )
-        self._router_tool_icon.add_css_class("dim-label")
-        self._router_tool_row.add_prefix(self._router_tool_icon)
-        self._router_tool_group.add(self._router_tool_row)
-
         # --- MCP servers -------------------------------------------------
         self._mcp_group = Adw.PreferencesGroup()
         self._mcp_group.set_title("Claude MCP servers")
@@ -2011,147 +1856,6 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._builtin_group.set_title("Built-in tools")
         page.add(self._builtin_group)
         self._reload_builtin()
-
-    # ── Helios Router ---------------------------------------------------
-
-    def _reload_router(self) -> None:
-        if self._router_mutating:
-            return
-        self._router_generation += 1
-        generation = self._router_generation
-        self._router_status_row.set_title("Checking Helios Router…")
-        self._set_router_icon("content-loading-symbolic", "dim-label")
-        self._router_switch.set_sensitive(False)
-        self._router_refresh.set_sensitive(False)
-        self._run_async(
-            lambda: RouterClient().status(),
-            lambda result: self._apply_router_status(result, generation),
-        )
-
-    def _apply_router_status(
-        self,
-        result: object,
-        generation: int,
-    ) -> None:
-        if self._closed or generation != self._router_generation:
-            return
-        self._router_mutating = False
-        self._router_refresh.set_sensitive(True)
-        if isinstance(result, Exception) or not isinstance(result, dict):
-            self._router_status_row.set_title("Helios Router unavailable")
-            self._router_status_row.set_subtitle(
-                _router_unavailable_subtitle(self._router_last_enabled)
-            )
-            self._router_profiles_row.set_subtitle("No profiles are dispatchable.")
-            self._router_tool_row.set_title("Broker unavailable")
-            self._set_router_icon("dialog-error-symbolic", "error")
-            self._set_router_tool_icon("dialog-error-symbolic", "error")
-            self._router_syncing = True
-            try:
-                self._router_switch.set_active(
-                    bool(self._router_last_enabled)
-                )
-            finally:
-                self._router_syncing = False
-            self._router_switch.set_sensitive(False)
-            return
-
-        enabled = bool(result.get("enabled", False))
-        self._router_last_enabled = enabled
-        automatic_dispatch = bool(result.get("automatic_dispatch", False))
-        credential = str(result.get("credential_status") or "unknown")
-        credential_ready = credential == "healthy"
-        profiles = result.get("profiles")
-        profiles = [row for row in profiles if isinstance(row, dict)] if isinstance(
-            profiles, list
-        ) else []
-        eligible = [
-            row for row in profiles
-            if str(row.get("stage") or "") in {"canary", "role_approved"}
-            and bool(row.get("eligible", False))
-        ]
-        awaiting = _router_awaiting_count(profiles)
-        mode = "preview on" if enabled else "off"
-        state = "Ready" if credential_ready else "Degraded"
-        self._router_status_row.set_title(f"{state} · Smart Routing {mode}")
-        self._router_status_row.set_subtitle(
-            f"Credential {credential} · {len(eligible)} eligible · "
-            f"{awaiting} awaiting evaluation"
-        )
-        self._router_profiles_row.set_subtitle(
-            _router_profile_summary(profiles)
-        )
-        title, subtitle = _router_tool_state(
-            automatic_dispatch=automatic_dispatch,
-            enabled=enabled,
-            credential_ready=credential_ready,
-            eligible=len(eligible),
-        )
-        self._router_tool_row.set_title(title)
-        self._router_tool_row.set_subtitle(subtitle)
-        if credential_ready:
-            self._set_router_icon("object-select-symbolic", "success")
-            self._set_router_tool_icon(
-                "object-select-symbolic"
-                if automatic_dispatch
-                else "dialog-warning-symbolic",
-                "success" if automatic_dispatch else "warning",
-            )
-        else:
-            self._set_router_icon("dialog-warning-symbolic", "warning")
-            self._set_router_tool_icon("dialog-warning-symbolic", "warning")
-        self._router_syncing = True
-        try:
-            self._router_switch.set_active(enabled)
-        finally:
-            self._router_syncing = False
-        # An unhealthy credential can always be turned off, never on. The
-        # refresh button re-checks health without reopening Settings.
-        self._router_switch.set_sensitive(credential_ready or enabled)
-
-    def _on_router_toggle(self, row: Adw.SwitchRow, _param) -> None:
-        if self._router_syncing or not row.get_sensitive():
-            return
-        desired = bool(row.get_active())
-        self._router_mutating = True
-        self._router_generation += 1
-        mutation_generation = self._router_generation
-        row.set_sensitive(False)
-        self._router_refresh.set_sensitive(False)
-        self._router_status_row.set_title("Applying Smart Routing policy…")
-
-        def done(_result: object) -> None:
-            if (
-                self._closed
-                or mutation_generation != self._router_generation
-            ):
-                return
-            # A timeout is an ambiguous mutation, not proof of rollback. Always
-            # reconcile from a new authoritative status read.
-            self._router_status_row.set_title("Confirming Smart Routing policy…")
-            self._router_generation += 1
-            reconcile_generation = self._router_generation
-            self._run_async(
-                lambda: RouterClient().status(),
-                lambda result: self._apply_router_status(
-                    result,
-                    reconcile_generation,
-                ),
-            )
-
-        self._run_async(lambda: RouterClient().set_enabled(desired), done)
-
-    def _set_router_icon(self, icon_name: str, css: str) -> None:
-        self._router_icon.set_from_icon_name(icon_name)
-        for name in ("success", "warning", "error", "dim-label"):
-            self._router_icon.remove_css_class(name)
-        self._router_icon.add_css_class(css)
-
-    def _set_router_tool_icon(self, icon_name: str, css: str) -> None:
-        self._router_tool_icon.set_from_icon_name(icon_name)
-        for name in ("success", "warning", "error", "dim-label"):
-            self._router_tool_icon.remove_css_class(name)
-        self._router_tool_icon.add_css_class(css)
 
     def _reload_builtin(self) -> None:
         names, source = claude_env.builtin_tools()

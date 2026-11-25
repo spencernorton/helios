@@ -127,12 +127,4 @@ Understanding the trust model helps you judge what is and is not a finding:
   Everything else Helios contacts is local to this machine, and the
   provider CLIs handle their own connectivity. The optional shared-context
   pane talks only to a local endpoint unless configured otherwise (its
-  default is `http://127.0.0.1:9101`). The optional Smart Routing broker is
-  different: it is a separate system service reached over a Unix socket
-  (`/run/helios-router/router.sock`) that holds its own OpenRouter key at
-  `/etc/helios-router/openrouter.key` and sends the delegated task text to
-  `https://openrouter.ai/api/v1/chat/completions` on the session's behalf.
-  It is absent unless you install it; once installed it checks that key
-  against `https://openrouter.ai/api/v1/key`, and task text goes upstream
-  only with *Enable Smart Routing preview* switched on in Settings →
-  Providers.
+  default is `http://127.0.0.1:9101`).

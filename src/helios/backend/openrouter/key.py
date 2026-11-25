@@ -1,10 +1,8 @@
 """User-level OpenRouter API key for the desktop chat driver.
 
-This is deliberately separate from the root-owned broker credential at
-``/etc/helios-router/openrouter.key``: the Smart Routing broker boundary is
-unchanged. The chat driver's key is a dedicated consumer credential owned by
-the desktop user, stored owner-only under ``~/.helios/`` — the same on-disk
-precedent as the other Helios state files (0600, atomic replace).
+The key is a dedicated consumer credential owned by the desktop user, stored
+owner-only under ``~/.helios/`` — the same on-disk precedent as the other
+Helios state files (0600, atomic replace).
 
 GTK-free so Settings and tests can use it anywhere.
 """

@@ -35,7 +35,7 @@ from helios.backend import browser_tools, model_catalog
 from helios.backend.attachments import openai_parts
 from helios.backend.openrouter import chat as or_chat
 from helios.backend.openrouter import key as or_key
-from helios.backend.openrouter.gateway import CancellationToken
+from helios.backend.openrouter.cancellation import CancellationToken
 from helios.backend.openrouter.loop_policy import ToolRoundPolicy
 from helios.backend.openrouter.budget import (
     WORK_COST_LIMIT_MICRO_USD, SpendLimitReached, micro_usd,

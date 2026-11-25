@@ -4,6 +4,19 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.125.0 — 2026-11-25
+
+### Removed
+- **Helios Router (Smart Routing).** The optional delegation broker never dispatched any work, so it is gone, with no replacement. That covers:
+  - the separate system service (`helios.router_service`), its installer and its unit template, and the Router MCP server with its launcher, which is no longer installed;
+  - the router's client, tools, policy and promotion code, and the router-only OpenRouter gateway, profiles and models;
+  - the Settings "OpenRouter · Smart Routing" group and the Tools page's "Helios Router" row;
+  - the Router MCP that Claude sessions got through `--mcp-config`;
+  - Codex's dynamic-tool delegation (a dynamic-tool call is now refused with "Helios offers no dynamic tools");
+  - the main window's five-minute dispatch check, and the `HELIOS_ROUTER_SOCKET` variable.
+
+  The OpenRouter **chat provider** (its key, catalog, picker list, routes and budgets) is unchanged. An installed broker is not removed by upgrading Helios. Remove it with `systemctl disable --now helios-router`, then delete `/etc/systemd/system/helios-router.service`, `/opt/helios-router`, `/etc/helios-router`, `/var/lib/helios-router` and the `helios-router` user and group. Its OpenRouter key is separate from the chat key; revoke it in the OpenRouter dashboard.
+
 ## 0.124.0 — 2026-11-25
 
 ### Model picker
