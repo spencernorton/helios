@@ -389,10 +389,9 @@ signed in or entitled to use it.
 OpenRouter's API key is stored at `~/.helios/openrouter.key` (mode 0600).
 The provider page fetches its model catalogue and lets you choose which
 models appear in the picker; an empty selection means the whole catalogue.
-Models without tool support are marked accordingly. The optional Smart
-Routing broker remains unavailable unless its service is installed.
+Models without tool support are marked accordingly.
 
-**Tools.** *Helios Router* (the optional broker above), *Claude MCP servers*
+**Tools.** *Claude MCP servers*
 (live, from `claude mcp list`, with health), *Codex MCP servers* (the
 inventory captured by your last GPT chat — empty until one has run), and
 *Built-in tools* (the tool set your last Claude session reported).
@@ -439,7 +438,6 @@ Paths written as `~/.helios` are the default app-state location. A configured `H
 | `HELIOS_DEBUG` | Any non-empty value: everything at DEBUG, including the Claude driver's spawn argv, the type of every record the CLI emits, its stderr and its exit code; overrides `HELIOS_LOG_LEVEL` |
 | `HELIOS_LOG_LEVEL` | Python logging level name (`DEBUG` … `CRITICAL`); default `INFO`; an unknown name is treated as `INFO`. `WARNING` quiets startup |
 | `HELIOS_CODEX_TRANSPORT` | Leave unset; `exec` refuses every GPT chat |
-| `HELIOS_ROUTER_SOCKET` | Unix socket of an optional Smart Routing broker (default `/run/helios-router/router.sock`); inert unless the socket answers |
 | `HELIOS_SESSION_POOL` | Root of an optional read-only session pool shared between machines (default `~/.local/share/helios/session-pool`); ignored when the path does not exist |
 | `HELIOS_SCRATCHPAD_URL`, `HELIOS_SCRATCHPAD_KEY` | Endpoint (default `http://127.0.0.1:9101`) and optional API key of the scratchpad service the Shared pane reads |
 | `HELIOS_TITLE_API_KEY`, `HELIOS_TITLE_API_KEY_HEADER` | Optional API key and header name for authenticated local `/v1` title servers (or `0600` `~/.helios/title-auth.json`) |
@@ -453,7 +451,7 @@ Paths written as `~/.helios` are the default app-state location. A configured `H
 A desktop launch does not read `~/.bashrc`; set these on the desktop entry's
 `Exec=` line (`Exec=env HELIOS_CLAUDE_BINARY=/path/to/claude helios`).
 `HELIOS_DEBUG`, `HELIOS_LOG_LEVEL`, `HELIOS_CLAUDE_BINARY`,
-`HELIOS_CODEX_BINARY`, `HELIOS_CODEX_TRANSPORT`, `HELIOS_ROUTER_SOCKET`,
+`HELIOS_CODEX_BINARY`, `HELIOS_CODEX_TRANSPORT`,
 `HELIOS_TANDEM_BINARY` and the two `HELIOS_SCRATCHPAD_*` variables are
 stripped from the agents' own environment;
 `HELIOS_STATE_DIR` and `HELIOS_SESSION_POOL` pass through.

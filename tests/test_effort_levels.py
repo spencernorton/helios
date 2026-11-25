@@ -409,7 +409,7 @@ def test_launch_fails_closed_only_when_a_dollar_cap_is_actually_wanted():
 
 
 def test_claude_launch_never_restricts_settings_sources(tmp_path):
-    """The Router MCP is injected additively via --mcp-config; it must not
+    """Helios's own MCP servers go in additively via --mcp-config; it must not
     bring --strict-mcp-config, which would drop the user's own MCP servers."""
     driver = _make_driver()
     argv = _collect_argv(driver)
@@ -780,72 +780,28 @@ def test_the_spend_counter_is_rebound_at_the_spawn_boundary():
     assert driver._spend.snapshot().total_tokens == 0
 
 
-# ── Router MCP advertisement ───────────────────────────────────────────────
+# ── Helios MCP servers ─────────────────────────────────────────────────────
 
 
-def _router_argv(dispatchable: bool) -> list[str]:
-    """argv for a launch where the broker does/does not report dispatchability."""
-    with patch(
-        "helios.backend.process.cli_driver.dispatch_available",
-        return_value=dispatchable,
-    ):
-        return _collect_argv(_make_driver())
-
-
-def test_router_mcp_is_not_advertised_when_the_broker_cannot_dispatch():
-    """A tool whose only possible answer is "retained" is not worth its schema.
-
-    The injection used to be conditioned on the launcher script existing in the
-    repo, which is to say always — including through the entire period the
-    broker was structurally unable to dispatch. That is ~1.6k tokens of tool
-    schemas and one Python subprocess per session, and the MCP's own
-    `instructions` tell the model to use `delegate_task` regularly, so it also
-    bought turns spent on a guaranteed refusal.
-    """
-    argv = _router_argv(False)
+def test_no_helios_mcp_config_without_the_browser_pane():
+    """Nothing of Helios's own rides along unless the browser pane is up; the
+    user's servers still arrive through the native settings sources."""
+    argv = _collect_argv(_make_driver())
 
     assert "--mcp-config" not in argv
-    # Not a blanket MCP ban: the user's own servers arrive through the native
-    # settings sources, which must still be unrestricted.
     assert "--strict-mcp-config" not in argv
     assert argv[argv.index("--setting-sources") + 1] == "user,project,local"
 
 
-def test_router_mcp_is_advertised_when_the_broker_can_dispatch():
-    argv = _router_argv(True)
-
-    config = json.loads(argv[argv.index("--mcp-config") + 1])
-    assert list(config["mcpServers"]) == ["helios-router"]
-
-
-def test_router_advertisement_never_blocks_the_ui_thread():
-    """`start()` runs on the GTK main loop, so this must be a cached read.
-
-    A socket round trip here would let a wedged broker stall every new session
-    by the client timeout. The guard is that `cli_driver` imports the cached
-    accessor and not `RouterClient`.
-    """
-    import inspect
-
-    from helios.backend.process import cli_driver
-
-    assert not hasattr(cli_driver, "RouterClient")
-    source = inspect.getsource(cli_driver.ClaudeCliDriver.start)
-    assert "dispatch_available()" in source
-    assert "RouterClient" not in source
-
-
-def test_browser_pane_rides_in_the_same_mcp_config_as_the_router():
-    """One --mcp-config carries both, so the variadic flag cannot split them."""
+def test_browser_pane_is_the_only_helios_mcp_server():
     from helios.backend import browser_tools
 
     browser_tools.publish("unix:path=/run/user/1000/bus")
     try:
-        config = json.loads((argv := _router_argv(True))[argv.index("--mcp-config") + 1])
-        assert list(config["mcpServers"]) == ["helios-router", "helios_browser"]
+        argv = _collect_argv(_make_driver())
+        config = json.loads(argv[argv.index("--mcp-config") + 1])
+        assert list(config["mcpServers"]) == ["helios_browser"]
         token = config["mcpServers"]["helios_browser"]["args"][-1]
         assert browser_tools.session_for(token)[1] == "Claude"
-        config = json.loads((argv := _router_argv(False))[argv.index("--mcp-config") + 1])
-        assert list(config["mcpServers"]) == ["helios_browser"]
     finally:
         browser_tools.publish("")

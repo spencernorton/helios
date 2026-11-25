@@ -1,7 +1,7 @@
 # Helios for autonomous agents — install, configure, verify
 
 This is a shell-based installation and verification guide for Helios on
-Linux. The procedures describe source version 0.124.0 and include expected
+Linux. The procedures describe source version 0.125.0 and include expected
 results; native account sign-ins require the account holder and remain in
 each CLI's credential store. Start with [quickstart.md](quickstart.md) for
 the shorter route. Stable APT can contain an older release, so check the
@@ -53,15 +53,15 @@ the package, then install it. The command chain stops before installation if
 a download or checksum check fails.
 
 ```bash
-mkdir -p ~/Downloads/helios-0.124.0 &&
-cd ~/Downloads/helios-0.124.0 &&
-curl -fLO https://github.com/spencernorton/helios/releases/download/v0.124.0/helios_0.124.0_all.deb &&
-curl -fLO https://github.com/spencernorton/helios/releases/download/v0.124.0/SHA256SUMS.txt &&
-grep '  helios_0.124.0_all.deb$' SHA256SUMS.txt | sha256sum --check - &&
-sudo apt install -y ./helios_0.124.0_all.deb
+mkdir -p ~/Downloads/helios-0.125.0 &&
+cd ~/Downloads/helios-0.125.0 &&
+curl -fLO https://github.com/spencernorton/helios/releases/download/v0.125.0/helios_0.125.0_all.deb &&
+curl -fLO https://github.com/spencernorton/helios/releases/download/v0.125.0/SHA256SUMS.txt &&
+grep '  helios_0.125.0_all.deb$' SHA256SUMS.txt | sha256sum --check - &&
+sudo apt install -y ./helios_0.125.0_all.deb
 ```
 
-Expected: `helios_0.124.0_all.deb: OK`. Stop on a checksum failure.
+Expected: `helios_0.125.0_all.deb: OK`. Stop on a checksum failure.
 [GitHub Releases](https://github.com/spencernorton/helios/releases/latest)
 has the current version and matching source. Use the package and checksums
 from the same release when selecting a newer version.
@@ -73,7 +73,7 @@ enabled for the full workspace.
 dpkg -s helios | grep -E '^(Status|Version):'
 ```
 
-Expected: `Status: install ok installed` and `Version: 0.124.0`. APT installs
+Expected: `Status: install ok installed` and `Version: 0.125.0`. APT installs
 WebKit for the browser and, by default, Git, VTE and desktop portal typelibs
 for review, the terminal and screenshots.
 
@@ -135,11 +135,11 @@ Expected: a version of `3.11` or newer.
 Step B3. Clone and read the version.
 
 ```bash
-git clone --branch v0.124.0 https://github.com/spencernorton/helios.git ~/helios
+git clone --branch v0.125.0 https://github.com/spencernorton/helios.git ~/helios
 PYTHONPATH=~/helios/src python3 -c "import helios; print(helios.__version__)"
 ```
 
-Expected: the clone prints `Note: switching to '<sha>'.` and a `You are in 'detached HEAD' state` paragraph (normal for a tag checkout), then `0.124.0`. Drop `--branch v0.124.0` to use development `main` instead; the version printed is then whatever `main` carries, and the `0.124.0` strings in this document, 7.3 and 12 are the release it was written for, not a mismatch.
+Expected: the clone prints `Note: switching to '<sha>'.` and a `You are in 'detached HEAD' state` paragraph (normal for a tag checkout), then `0.125.0`. Drop `--branch v0.125.0` to use development `main` instead; the version printed is then whatever `main` carries, and the `0.125.0` strings in this document, 7.3 and 12 are the release it was written for, not a mismatch.
 
 Step B4. Optional: app-grid entry and icon.
 
@@ -528,7 +528,7 @@ Log lines on stderr have the form `HH:MM:SS LEVEL   helios.<module>: message`; t
 10:00:00 INFO    helios.window: model catalog: <N> entries (openrouter: no-key)
 ```
 
-With no `claude` binary visible the first line reads `claude CLI unknown version; degraded: the reasoning-effort slider (no --effort), Claude's own spend cap (Helios stops the turn instead) (no --max-budget-usd), live subagent text in the Agent Dock (no --forward-subagent-text)`; expected in the smoke test, not on the real desktop. Two WARNING lines are benign anywhere: `helios.env-scrub: could not read the systemd user environment: ...` (a host without `systemctl`; an optional integration, inert unless configured) and, on an APT install, `Helios Router MCP launcher is missing: /usr/lib/python3/scripts/helios-router-mcp` at each Claude session start (an optional broker, inert unless configured). `HELIOS_DEBUG=1` switches to DEBUG including the Claude driver's spawn argv and every wire record.
+With no `claude` binary visible the first line reads `claude CLI unknown version; degraded: the reasoning-effort slider (no --effort), Claude's own spend cap (Helios stops the turn instead) (no --max-budget-usd), live subagent text in the Agent Dock (no --forward-subagent-text)`; expected in the smoke test, not on the real desktop. One WARNING line is benign anywhere: `helios.env-scrub: could not read the systemd user environment: ...` (a host without `systemctl`; an optional integration, inert unless configured). `HELIOS_DEBUG=1` switches to DEBUG including the Claude driver's spawn argv and every wire record.
 
 On too-old libraries the process instead prints the section 4 message to stderr, logs it at CRITICAL and exits 1 without a window; `helios.log` still exists because logging is set up first.
 
@@ -542,7 +542,7 @@ python3 -c "import helios; print(helios.__version__)"                   # APT (m
 PYTHONPATH=~/helios/src python3 -c "import helios; print(helios.__version__)"    # source checkout
 ```
 
-Expected: `helios	0.124.0` from `dpkg-query`, `0.124.0` from the other two. `man helios` is also installed by the package.
+Expected: `helios	0.125.0` from `dpkg-query`, `0.125.0` from the other two. `man helios` is also installed by the package.
 
 ## 8. Reference
 
@@ -630,7 +630,6 @@ When the Claude CLI supplies `permission_suggestions` with a tool request, the a
 | `HELIOS_DEBUG` | Any non-empty value → DEBUG logging with driver wire tracing; read at startup |
 | `HELIOS_LOG_LEVEL` | Python level name, case-insensitive, default `INFO`; an unknown name silently falls back to `INFO`; ignored when `HELIOS_DEBUG` is set |
 | `HELIOS_CODEX_TRANSPORT` | Only `exec` has an effect: every GPT session refuses to start. Leave unset |
-| `HELIOS_ROUTER_SOCKET` | Unix socket of an optional Smart Routing broker (default `/run/helios-router/router.sock`); inert unless the socket answers |
 | `HELIOS_SESSION_POOL` | Optional read-only cross-machine session pool (default `$XDG_DATA_HOME/helios/session-pool`); inert unless the path exists and `show_pool_sessions` is `true` |
 | `HELIOS_SCRATCHPAD_URL`, `HELIOS_SCRATCHPAD_KEY` | Endpoint (default `http://127.0.0.1:9101`) and optional API key of the scratchpad service the Shared pane reads; inert unless a service answers |
 | `HELIOS_TITLE_API_KEY`, `HELIOS_TITLE_API_KEY_HEADER` | Optional API key and HTTP header name (default `Authorization` bearer; else e.g. `X-API-Key`) for authenticated local `/v1` title servers; may also be placed in `0600` `$HELIOS_STATE_DIR/title-auth.json` (`{"api_key": "...", "header": "..."}`) |
@@ -695,7 +694,6 @@ Agent-launched rule for display: a local Claude transcript whose first `entrypoi
 | `https://openrouter.ai/api/v1/key`, `https://openrouter.ai/api/v1/credits` | Only with a key and an OpenRouter model selected: at startup if the sticky `model` is an OpenRouter id, whenever the picker or provider toggle switches to an OpenRouter model from another provider, whenever the key is saved in Settings, and after a completed turn at most once per 60 s |
 | `https://openrouter.ai/api/v1/chat/completions`, `https://openrouter.ai/api/v1/models/{model}/endpoints` | OpenRouter chats (bearer; redirects are refused so it never changes origin) and route pinning (no key, like the catalog fetch) |
 | `http://127.0.0.1:9101` | Only when the optional shared-context pane is shown; optional, inert unless configured |
-| `/run/helios-router/router.sock` (local Unix socket, `$HELIOS_ROUTER_SOCKET`) | At startup and every 300 s; an absent socket is silently "unavailable". Optional broker, inert unless configured |
 | Anthropic and OpenAI APIs | Contacted by the `claude` and `codex` CLIs themselves, never by Helios |
 
 Network activity depends on the active provider, catalogue/account checks, browser pages and any selected title backend. First-message titles make no title-model request. Optional integration failures are reported without making those services a prerequisite for ordinary chats.
@@ -704,7 +702,7 @@ Network activity depends on the active provider, catalogue/account checks, brows
 
 Every CLI child (Claude session, title generation, archival, `claude auth status`, `claude mcp list`, Codex App Server, `codex login status`, OpenRouter Bash tool) gets a copy of Helios's environment with:
 
-1. `HELIOS_INTERNAL_ENV` removed: `HELIOS_DEBUG`, `HELIOS_LOG_LEVEL`, `HELIOS_CLAUDE_BINARY`, `HELIOS_CODEX_BINARY`, `HELIOS_CODEX_TRANSPORT`, `HELIOS_ROUTER_SOCKET`, `HELIOS_TANDEM_BINARY`, `HELIOS_SCRATCHPAD_URL`, `HELIOS_SCRATCHPAD_KEY`, `HELIOS_TITLE_API_KEY` and `HELIOS_TITLE_API_KEY_HEADER` (full list in `src/helios/backend/process/env_scrub.py`). `GPG_AGENT_INFO` is dropped. `HELIOS_STATE_DIR` and `HELIOS_SESSION_POOL` pass through.
+1. `HELIOS_INTERNAL_ENV` removed: `HELIOS_DEBUG`, `HELIOS_LOG_LEVEL`, `HELIOS_CLAUDE_BINARY`, `HELIOS_CODEX_BINARY`, `HELIOS_CODEX_TRANSPORT`, `HELIOS_TANDEM_BINARY`, `HELIOS_SCRATCHPAD_URL`, `HELIOS_SCRATCHPAD_KEY`, `HELIOS_TITLE_API_KEY` and `HELIOS_TITLE_API_KEY_HEADER` (full list in `src/helios/backend/process/env_scrub.py`). `GPG_AGENT_INFO` is dropped. `HELIOS_STATE_DIR` and `HELIOS_SESSION_POOL` pass through.
 2. Every variable whose upper-cased name contains `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`, `_PASS`, `CREDENTIAL`, `APIKEY`, `_KEY`, `_PWD`, `_PAT`, `JWT`, `AUTH_CONFIG`, `ASKPASS` or `KEYRING` removed unless it is in that spawn's keep set. Benign names such as `TOKENIZERS_PARALLELISM` are dropped too; names without a marker (for example `DATABASE_URL`) survive.
 3. `SSH_AUTH_SOCK` always kept (`POLICY_KEEP`), so agents can `ssh` and push as the person.
 
@@ -740,7 +738,6 @@ The interactive Claude session additionally receives `CLAUDE_CODE_ENABLE_TODO_TO
 | Rewind dialog shows `No checkpoints yet` — `A checkpoint is taken before each message you send, in sessions whose folder is a git repository.` | The chat's working directory is not inside a git worktree, or `git` is not installed | Use a git repository as `default_cwd`; install `git` (only a Recommends of the package) |
 | Toast `Sent without a checkpoint — the snapshot was taking too long. Rewind is unavailable for this message.` | The pre-turn `git` snapshot exceeded its 4000 ms deadline | Large or slow worktree; the message was still sent |
 | Every chat is read-only | Working directory is `$HOME` | Set `default_cwd` (6.3) |
-| Log warning `Helios Router MCP launcher is missing: /usr/lib/python3/scripts/helios-router-mcp` on every Claude spawn (APT install) | The optional Smart Routing launcher is resolved relative to the package and does not exist in a packaged install | Benign; the session continues without that MCP. Optional, inert unless configured |
 | Log warning `could not read the systemd user environment: ...` | Host without `systemctl` | Benign; an optional integration, inert unless configured |
 | Log warning `Work graph unavailable; using legacy sessions: ...` | `~/.helios/work/work.db` could not be opened | Check permissions and free space on `~/.helios`; Helios still runs |
 | Where is the log; how to get more | — | `<state dir>/logs/helios.log` (Settings → Diagnostics shows the path). `HELIOS_DEBUG=1 helios` from a terminal adds the wire traffic to and from each CLI (spawn argv, every stdout record, stderr), which is what a bug report needs; `HELIOS_LOG_LEVEL=WARNING` quiets it. An unknown level name silently means `INFO` |
@@ -801,7 +798,7 @@ python3 -c 'import json, pathlib, os; d = json.loads((pathlib.Path.home()/".heli
 git -C "$(python3 -c 'import json, pathlib; print(json.loads((pathlib.Path.home()/".helios"/"ui-state.json").read_text())["default_cwd"])')" rev-parse --show-toplevel >/dev/null && echo 9_GIT_REPO_OK
 ```
 
-Expected, in order: `1_BINARY_OK`, `helios	0.124.0` (or `helios 0.124.0`), `2_PYTHON_OK`, `3_LIBS_OK`, `4_GIT_OK`, `5_CLAUDE_FOUND <path> (via ...)` (printed on stderr; the path alone goes to stdout and into `C`, so lines 6 and 7 test the binary Helios will run, not whatever `claude` is on the agent's `PATH`), `6_CLAUDE_VERSION 2.1.217` or newer, `7_CLAUDE_LOGGED_IN`, `8_DEFAULT_CWD_OK <path> <mode> False` (`True` only if the person has already used Settings → "Save chat defaults"), `9_GIT_REPO_OK`. Line 7 is the one the agent cannot fix alone: hand `claude auth login --claudeai` (or `--console`) back to the person and re-run from line 7. Line 9 is advisory (Rewind only). Optional providers: `codex login status` printing `logged in` with exit 0 (5.2), and `stat -c '%a' ~/.helios/openrouter.key` printing `600` plus the `key-ok` check (5.3).
+Expected, in order: `1_BINARY_OK`, `helios	0.125.0` (or `helios 0.125.0`), `2_PYTHON_OK`, `3_LIBS_OK`, `4_GIT_OK`, `5_CLAUDE_FOUND <path> (via ...)` (printed on stderr; the path alone goes to stdout and into `C`, so lines 6 and 7 test the binary Helios will run, not whatever `claude` is on the agent's `PATH`), `6_CLAUDE_VERSION 2.1.217` or newer, `7_CLAUDE_LOGGED_IN`, `8_DEFAULT_CWD_OK <path> <mode> False` (`True` only if the person has already used Settings → "Save chat defaults"), `9_GIT_REPO_OK`. Line 7 is the one the agent cannot fix alone: hand `claude auth login --claudeai` (or `--console`) back to the person and re-run from line 7. Line 9 is advisory (Rewind only). Optional providers: `codex login status` printing `logged in` with exit 0 (5.2), and `stat -c '%a' ~/.helios/openrouter.key` printing `600` plus the `key-ok` check (5.3).
 
 ### 12.2 Desktop session only (7.1)
 

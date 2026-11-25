@@ -8,7 +8,9 @@ forwarded verbatim to the Helios window over the session bus named by
 from __future__ import annotations
 
 import argparse
+import io
 import json
+import sys
 from typing import Any, Callable
 
 from helios import APP_ID, __version__
@@ -20,7 +22,60 @@ from helios.backend.browser_tools import (
     TOOL_NAMES,
     TOOLS,
 )
-from helios.router_mcp import _error, _success, serve
+
+#: One JSON-RPC line may not exceed this; a longer one is answered with an error.
+_MAX_REQUEST_BYTES = 2 * 1024 * 1024
+
+
+def _success(request_id: object, result: object) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": request_id, "result": result}
+
+
+def _error(
+    request_id: object,
+    code: int,
+    message: str,
+) -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "error": {"code": code, "message": message},
+    }
+
+
+def serve(
+    server: Any,
+    *,
+    input_stream: io.BufferedIOBase | None = None,
+    output_stream: io.BufferedIOBase | None = None,
+) -> int:
+    """Line-delimited JSON-RPC over stdio: one request in, one response out."""
+    source = input_stream or sys.stdin.buffer
+    sink = output_stream or sys.stdout.buffer
+    while True:
+        raw = source.readline(_MAX_REQUEST_BYTES + 1)
+        if not raw:
+            break
+        if len(raw) > _MAX_REQUEST_BYTES:
+            while raw and not raw.endswith(b"\n"):
+                raw = source.readline(_MAX_REQUEST_BYTES + 1)
+            response = _error(None, -32600, "Request exceeded size limit")
+        else:
+            try:
+                message = json.loads(raw)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                response = _error(None, -32700, "Parse error")
+            else:
+                response = server.handle(message)
+        if response is not None:
+            encoded = json.dumps(
+                response,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            sink.write(encoded + b"\n")
+            sink.flush()
+    return 0
 
 _PROTOCOL = "2025-06-18"
 # Long enough for a slow page load or for the person to answer an approval.

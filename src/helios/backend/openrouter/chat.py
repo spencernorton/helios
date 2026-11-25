@@ -28,7 +28,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from helios.backend.openrouter.gateway import CHAT_COMPLETIONS_URL, CancellationToken
+from helios.backend.openrouter.cancellation import CancellationToken
 from helios.backend.openrouter.sse import SSEProtocolError, iter_sse_events
 from helios.backend.openrouter.transport import (
     HttpRequest,
@@ -37,6 +37,8 @@ from helios.backend.openrouter.transport import (
     TransportFailureKind,
     UrlLibTransport,
 )
+
+CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 __all__ = [
     "PROVIDER_ROUTING",

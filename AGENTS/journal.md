@@ -1,5 +1,35 @@
 # Helios — Session Journal
 
+## 2026-11-25 — Helios Router removed (0.125.0)
+
+- Spencer: remove the router entirely; it was never used and only confused.
+  On the reporting host it was off, its own OpenRouter key showed $0 used
+  of a $1 limit, and 0 of 3 profiles were dispatchable. Codex delegation was
+  already hard-disabled (`_delegation_enabled = False`).
+- Deleted: `router_service.py`, `router_mcp.py`, `backend/router_client.py`,
+  `router_tools.py`, `router_policy.py`, `router_promotion.py`,
+  `backend/openrouter/{gateway,profiles,models}.py` (router-only), the
+  installer, unit template and MCP launcher, and their tests.
+- Kept for the OpenRouter chat provider: `CancellationToken` moved to
+  `backend/openrouter/cancellation.py`, `CHAT_COMPLETIONS_URL` to `chat.py`;
+  `routes.py`, `transport.py` and the rest untouched. `browser_mcp.py` got
+  its own copies of the JSON-RPC stdio helpers it borrowed from
+  `router_mcp.py`. `provider_identity` keeps its `openrouter-gateway`
+  descriptor and `RouteProfileRef` schema: they are persisted Work identity,
+  not router code.
+- Codex driver: the router turn authorization (lock, generation, suppressed
+  flag, per-request worker pool) and the dispatch flags are gone;
+  `item/tool/call` is refused with "Helios offers no dynamic tools".
+  Claude driver: no Router MCP in `--mcp-config` (only the browser pane's).
+  Main window: no five-minute dispatch probe.
+- The host's installed service was archived to the encrypted backup vault
+  and removed (unit, `/opt`, `/etc`, `/var/lib`, user and group). The
+  packaged `/usr/lib/helios/helios-router-mcp` goes with the 0.125.0
+  package.
+- Tests: router suites deleted; `test_dynamic_tool_calls_are_refused`;
+  Claude MCP tests now assert the browser pane is the only Helios server.
+  Native 3691 passed, backend 1965 passed / 141 skipped.
+
 ## 2026-11-25 — Picker older-models switch, pinned twin, context flicker, floating Save (0.124.0)
 
 - Reported after 0.123.0: (1) Settings' Save button needed a scroll to the

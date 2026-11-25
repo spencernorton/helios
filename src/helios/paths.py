@@ -1,6 +1,6 @@
 """Filesystem paths owned by Helios itself.
 
-Centralised here so every state file (`work.db`, `router.db`,
+Centralised here so every state file (`work.db`,
 `estate-mcp.json`, …) resolves through one function and tests or
 sandboxes can redirect the whole tree with ``HELIOS_STATE_DIR``.
 """

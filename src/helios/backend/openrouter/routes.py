@@ -222,11 +222,9 @@ def verify_endpoint(
 ) -> bool:
     """Confirm the live catalog serves ``model`` on exactly this variant.
 
-    This is the "external catalog gate" ``EndpointRef`` names as the missing
-    piece: a pinned provider slug alone can cover future operator variants, so
-    a receipt could not honestly claim the exact endpoint was confirmed. The
+    A pinned provider slug alone can cover future operator variants. The
     endpoints API publishes each variant's own slug and quantization, so the
-    claim can now be checked against something the broker did not author.
+    exact endpoint can be checked against something Helios did not author.
 
     Deliberately uncached and fail-closed: an unreachable catalog, an evolved
     payload, or no matching variant all return False, which keeps the

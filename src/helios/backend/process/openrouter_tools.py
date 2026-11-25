@@ -47,7 +47,7 @@ import subprocess
 import uuid
 from pathlib import Path
 
-from helios.backend.openrouter.gateway import CancellationToken
+from helios.backend.openrouter.cancellation import CancellationToken
 from helios.backend.process.env_scrub import (
     NORVI_TRACKER_ENV,
     scrubbed_child_env,

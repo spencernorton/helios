@@ -16,7 +16,7 @@ import time
 import pytest
 
 from helios.backend.process import openrouter_tools as t
-from helios.backend.openrouter.gateway import CancellationToken
+from helios.backend.openrouter.cancellation import CancellationToken
 
 
 @pytest.fixture()

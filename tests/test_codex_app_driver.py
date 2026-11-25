@@ -1069,7 +1069,7 @@ def test_dispatch_and_acceptance_carry_durable_native_identity(driver_factory):
     assert request[1]["clientUserMessageId"] == "attempt-native"
 
 
-def test_acceptance_persistence_failure_does_not_drop_wire_authorization(
+def test_acceptance_persistence_failure_keeps_the_execution_attempt(
     driver_factory,
 ):
     hub = FakeHub()
@@ -1088,7 +1088,6 @@ def test_acceptance_persistence_failure_does_not_drop_wire_authorization(
 
     assert driver.send_user_text("accepted on wire").pending
 
-    assert driver._router_authorized_turn_id == "turn-native"
     assert driver.execution_attempt_id == "attempt-acceptance-fails"
 
 
@@ -1229,61 +1228,6 @@ def test_turn_start_sync_transport_failure_retains_ambiguous_slot(
     if qid is not None:
         assert driver._pending_queue_delivery == (qid, "bounded turn")
         assert driver.queued_messages() == [(qid, "bounded turn")]
-
-
-def test_failed_turn_start_keeps_router_authorization_suppressed(
-    driver_factory,
-    monkeypatch,
-):
-    hub = FakeHub()
-    hub.request_results["turn/start"] = CodexAppServerRpcError(
-        "turn rejected",
-        code=-32000,
-    )
-    driver = driver_factory(hub)
-    _start(driver)
-    calls = []
-    monkeypatch.setattr(
-        "helios.backend.process.codex_app_driver.RouterClient.call",
-        lambda *_args, **_kwargs: calls.append(True),
-    )
-
-    driver.send_user_text("failed turn")
-    _drain_main_context()
-    assert driver.execution_attempt_id == ""
-    assert driver._test_execution_events[1][:3] == (
-        "finish",
-        "attempt-1",
-        "failed",
-    )
-    driver.on_app_notification(
-        events.METHOD_TURN_STARTED,
-        {
-            "threadId": driver.session_id,
-            "turn": {"id": "late-failed-turn", "status": "inProgress"},
-        },
-    )
-    request = FakeRequest(
-        "router-after-failed-start",
-        "item/tool/call",
-        {
-            "threadId": driver.session_id,
-            "turnId": "late-failed-turn",
-            "callId": "call-after-failed-start",
-            "namespace": "helios",
-            "tool": "routing_status",
-            "arguments": {"contract_version": 1},
-        },
-    )
-
-    driver._run_dynamic_tool_request(request)
-
-    assert calls == []
-    assert request.responses == []
-    assert request.errors == [
-        (-32602, "Invalid or unbound Helios dynamic tool request", None)
-    ]
-    driver.stop(interrupt=False)
 
 
 def test_prompt_waits_for_native_goal_sync_before_turn_start(driver_factory):
@@ -2434,61 +2378,6 @@ def test_stop_before_turn_start_response_interrupts_new_not_stale_turn(
     driver.stop(interrupt=False)
 
 
-def test_stop_suppresses_delayed_router_turn_authorization(
-    driver_factory,
-    monkeypatch,
-):
-    pending_start: Future = Future()
-    hub = FakeHub()
-    hub.request_results["turn/start"] = pending_start
-    driver = driver_factory(hub)
-    _start(driver)
-    calls = []
-
-    def fake_call(_client, method, params, *, binding):
-        calls.append((method, params, binding))
-        return {"contract_version": 1, "status": "completed"}
-
-    monkeypatch.setattr(
-        "helios.backend.process.codex_app_driver.RouterClient.call",
-        fake_call,
-    )
-
-    driver.send_user_text("start a turn")
-    driver.stop()
-    pending_start.set_result({"turn": {"id": "turn-after-stop"}})
-    _drain_main_context()
-    driver.on_app_notification(
-        events.METHOD_TURN_STARTED,
-        {
-            "threadId": driver.session_id,
-            "turn": {"id": "turn-after-stop", "status": "inProgress"},
-        },
-    )
-    request = FakeRequest(
-        "router-after-stop",
-        "item/tool/call",
-        {
-            "threadId": driver.session_id,
-            "turnId": "turn-after-stop",
-            "callId": "call-after-stop",
-            "namespace": "helios",
-            "tool": "routing_status",
-            "arguments": {"contract_version": 1},
-        },
-    )
-
-    driver.on_app_request(request)
-
-    assert _wait_until(lambda: bool(request.errors))
-    assert calls == []
-    assert request.responses == []
-    assert request.errors == [
-        (-32000, "Helios delegation is disabled for standard Work", None)
-    ]
-    driver.stop(interrupt=False)
-
-
 def test_approval_and_user_input_responses_are_schema_exact(driver_factory):
     hub = FakeHub()
     driver = driver_factory(hub)
@@ -2620,506 +2509,6 @@ def test_schema_unknown_request_is_reported_as_protocol_drift(
         }
     ]
     driver.stop(interrupt=False)
-
-
-def test_dynamic_router_tool_uses_authoritative_thread_binding(
-    driver_factory,
-    monkeypatch,
-):
-    hub = FakeHub()
-    driver = driver_factory(hub)
-    _start(driver)
-    calls = []
-
-    def fake_call(_client, method, params, *, binding):
-        calls.append((method, params, binding))
-        return {
-            "contract_version": 1,
-            "accepted": True,
-            "status": "completed",
-            "result": {"text": "bounded result"},
-        }
-
-    monkeypatch.setattr(
-        "helios.backend.process.codex_app_driver.RouterClient.call",
-        fake_call,
-    )
-    driver._app_turn_id = "turn-1"
-    driver._router_authorized_turn_id = "turn-1"
-    request = FakeRequest(
-        "router-1",
-        "item/tool/call",
-        {
-            "threadId": driver.session_id,
-            "turnId": "turn-1",
-            "callId": "call-1",
-            "namespace": "helios",
-            "tool": "delegate_task",
-            "arguments": {"contract_version": 1},
-        },
-    )
-
-    driver._run_dynamic_tool_request(request)
-
-    assert calls == [
-        (
-            "delegate_task",
-            {"contract_version": 1},
-            {
-                "kind": "codex",
-                "thread_id": driver.session_id,
-                "turn_id": "turn-1",
-                "call_id": "call-1",
-            },
-        )
-    ]
-    assert request.errors == []
-    response = request.responses[0]
-    assert response["success"] is True
-    assert '"status":"completed"' in response["contentItems"][0]["text"]
-    driver.stop(interrupt=False)
-
-
-def test_dynamic_router_tool_rejects_cross_thread_request(driver_factory):
-    hub = FakeHub()
-    driver = driver_factory(hub)
-    _start(driver)
-    request = FakeRequest(
-        "router-2",
-        "item/tool/call",
-        {
-            "threadId": "different-thread",
-            "turnId": "turn-1",
-            "callId": "call-1",
-            "namespace": "helios",
-            "tool": "routing_status",
-            "arguments": {"contract_version": 1},
-        },
-    )
-
-    driver._run_dynamic_tool_request(request)
-
-    assert request.responses == []
-    assert request.errors == [
-        (-32602, "Invalid or unbound Helios dynamic tool request", None)
-    ]
-    driver.stop(interrupt=False)
-
-
-def test_dynamic_router_tool_rejects_stale_turn_request(driver_factory):
-    hub = FakeHub()
-    driver = driver_factory(hub)
-    _start(driver)
-    driver._app_turn_id = "turn-current"
-    driver._router_authorized_turn_id = "turn-current"
-    request = FakeRequest(
-        "router-stale-turn",
-        "item/tool/call",
-        {
-            "threadId": driver.session_id,
-            "turnId": "turn-old",
-            "callId": "call-1",
-            "namespace": "helios",
-            "tool": "routing_status",
-            "arguments": {"contract_version": 1},
-        },
-    )
-
-    driver._run_dynamic_tool_request(request)
-
-    assert request.responses == []
-    assert request.errors == [
-        (-32602, "Invalid or unbound Helios dynamic tool request", None)
-    ]
-    driver.stop(interrupt=False)
-
-
-def test_dynamic_router_tool_accepts_wire_turn_before_gtk_completion(
-    driver_factory,
-    monkeypatch,
-):
-    hub = FakeHub()
-    driver = driver_factory(hub)
-    _start(driver)
-    future: Future = Future()
-    future.set_result({"turn": {"id": "turn-wire"}})
-
-    driver._record_authorized_turn_from_result(future)
-
-    assert driver._app_turn_id == ""
-    calls = []
-
-    def fake_call(_client, method, params, *, binding):
-        calls.append((method, params, binding))
-        return {"contract_version": 1, "status": "completed"}
-
-    monkeypatch.setattr(
-        "helios.backend.process.codex_app_driver.RouterClient.call",
-        fake_call,
-    )
-    request = FakeRequest(
-        "router-wire-race",
-        "item/tool/call",
-        {
-            "threadId": driver.session_id,
-            "turnId": "turn-wire",
-            "callId": "call-wire",
-            "namespace": "helios",
-            "tool": "routing_status",
-            "arguments": {"contract_version": 1},
-        },
-    )
-
-    driver._run_dynamic_tool_request(request)
-
-    assert calls[0][2]["turn_id"] == "turn-wire"
-    assert request.responses[0]["success"] is True
-    driver.stop(interrupt=False)
-
-
-def test_dynamic_router_tool_workers_are_bounded_and_slots_are_reused(
-    driver_factory,
-    monkeypatch,
-):
-    hub = FakeHub()
-    driver = driver_factory(hub)
-    _start(driver)
-    driver._delegation_enabled = True
-    driver._app_turn_id = "turn-capacity"
-    driver._router_authorized_turn_id = "turn-capacity"
-    other_driver = driver_factory(FakeHub(thread_id="thread-other"))
-    _start(other_driver)
-    other_driver._delegation_enabled = True
-    other_driver._app_turn_id = "turn-other"
-    other_driver._router_authorized_turn_id = "turn-other"
-    capacity = codex_app_driver._MAX_ROUTER_TOOL_WORKERS
-    calls = []
-    calls_lock = threading.Lock()
-    all_workers_started = threading.Event()
-    release_workers = threading.Event()
-
-    def fake_call(_client, method, params, *, binding):
-        with calls_lock:
-            calls.append((method, params, binding))
-            if len(calls) == capacity:
-                all_workers_started.set()
-        release_workers.wait(timeout=2.0)
-        return {"contract_version": 1, "status": "completed"}
-
-    monkeypatch.setattr(
-        "helios.backend.process.codex_app_driver.RouterClient.call",
-        fake_call,
-    )
-
-    def request_for(index, *, target=driver, turn_id="turn-capacity"):
-        return FakeRequest(
-            f"router-capacity-{index}",
-            "item/tool/call",
-            {
-                "threadId": target.session_id,
-                "turnId": turn_id,
-                "callId": f"call-{index}",
-                "namespace": "helios",
-                "tool": "routing_status",
-                "arguments": {"contract_version": 1},
-            },
-        )
-
-    active_requests = [request_for(index) for index in range(capacity)]
-    for request in active_requests:
-        driver.on_app_request(request)
-    assert all_workers_started.wait(timeout=2.0)
-
-    overflow = request_for(
-        "overflow",
-        target=other_driver,
-        turn_id="turn-other",
-    )
-    other_driver.on_app_request(overflow)
-    assert overflow.responses == []
-    assert overflow.errors == [
-        (-32000, "Helios Router dynamic-tool capacity is in use", None)
-    ]
-
-    release_workers.set()
-    assert _wait_until(
-        lambda: all(request.responses or request.errors for request in active_requests)
-    )
-    assert all(request.responses and not request.errors for request in active_requests)
-
-    def all_slots_are_available():
-        acquired = 0
-        for _index in range(capacity):
-            if not driver._router_tool_slots.acquire(blocking=False):
-                break
-            acquired += 1
-        for _index in range(acquired):
-            driver._router_tool_slots.release()
-        return acquired == capacity
-
-    assert _wait_until(all_slots_are_available)
-
-    reused = request_for(
-        "reused",
-        target=other_driver,
-        turn_id="turn-other",
-    )
-    other_driver.on_app_request(reused)
-    assert _wait_until(lambda: bool(reused.responses or reused.errors))
-    assert reused.responses and reused.errors == []
-    assert len(calls) == capacity + 1
-    driver.stop(interrupt=False)
-    other_driver.stop(interrupt=False)
-
-
-def test_dynamic_router_tool_start_failure_releases_global_slot(
-    driver_factory,
-    monkeypatch,
-):
-    driver = driver_factory(FakeHub())
-    _start(driver)
-    driver._delegation_enabled = True
-    driver._app_turn_id = "turn-start-failure"
-    driver._router_authorized_turn_id = "turn-start-failure"
-
-    def fail_start(_thread):
-        raise RuntimeError("thread unavailable")
-
-    monkeypatch.setattr(threading.Thread, "start", fail_start)
-    request = FakeRequest(
-        "router-start-failure",
-        "item/tool/call",
-        {
-            "threadId": driver.session_id,
-            "turnId": "turn-start-failure",
-            "callId": "call-start-failure",
-            "namespace": "helios",
-            "tool": "routing_status",
-            "arguments": {"contract_version": 1},
-        },
-    )
-
-    driver.on_app_request(request)
-
-    assert request.responses == []
-    assert request.errors == [
-        (-32000, "Helios Router dynamic-tool worker is unavailable", None)
-    ]
-    acquired = [
-        driver._router_tool_slots.acquire(blocking=False)
-        for _index in range(codex_app_driver._MAX_ROUTER_TOOL_WORKERS)
-    ]
-    assert all(acquired)
-    for _index in acquired:
-        driver._router_tool_slots.release()
-    driver.stop(interrupt=False)
-
-
-def test_dynamic_router_tool_discards_result_after_turn_completes(
-    driver_factory,
-    monkeypatch,
-):
-    hub = FakeHub()
-    driver = driver_factory(hub)
-    _start(driver)
-    driver._delegation_enabled = True
-    driver._app_turn_id = "turn-finishing"
-    driver._router_authorized_turn_id = "turn-finishing"
-    broker_started = threading.Event()
-    release_broker = threading.Event()
-
-    def fake_call(_client, method, params, *, binding):
-        broker_started.set()
-        release_broker.wait(timeout=2.0)
-        return {"contract_version": 1, "status": "completed"}
-
-    monkeypatch.setattr(
-        "helios.backend.process.codex_app_driver.RouterClient.call",
-        fake_call,
-    )
-    request = FakeRequest(
-        "router-completed-turn",
-        "item/tool/call",
-        {
-            "threadId": driver.session_id,
-            "turnId": "turn-finishing",
-            "callId": "call-finishing",
-            "namespace": "helios",
-            "tool": "routing_status",
-            "arguments": {"contract_version": 1},
-        },
-    )
-
-    driver.on_app_request(request)
-    assert broker_started.wait(timeout=2.0)
-    driver.on_app_notification(
-        events.METHOD_TURN_COMPLETED,
-        {
-            "threadId": driver.session_id,
-            "turn": {"id": "turn-finishing", "status": "completed"},
-        },
-    )
-    release_broker.set()
-
-    assert _wait_until(lambda: bool(request.errors))
-    assert request.responses == []
-    assert request.errors == [
-        (-32000, "Helios session or router turn is no longer active", None)
-    ]
-    assert request.abandoned == 0
-    driver.stop(interrupt=False)
-
-
-def test_dynamic_router_tool_discards_result_after_user_interrupt(
-    driver_factory,
-    monkeypatch,
-):
-    hub = FakeHub()
-    driver = driver_factory(hub)
-    _start(driver)
-    driver._delegation_enabled = True
-    driver._busy = True
-    driver._app_turn_id = "turn-interrupted"
-    driver._router_authorized_turn_id = "turn-interrupted"
-    broker_started = threading.Event()
-    release_broker = threading.Event()
-
-    def fake_call(_client, method, params, *, binding):
-        broker_started.set()
-        release_broker.wait(timeout=2.0)
-        return {"contract_version": 1, "status": "completed"}
-
-    monkeypatch.setattr(
-        "helios.backend.process.codex_app_driver.RouterClient.call",
-        fake_call,
-    )
-    request = FakeRequest(
-        "router-interrupted-turn",
-        "item/tool/call",
-        {
-            "threadId": driver.session_id,
-            "turnId": "turn-interrupted",
-            "callId": "call-interrupted",
-            "namespace": "helios",
-            "tool": "routing_status",
-            "arguments": {"contract_version": 1},
-        },
-    )
-
-    driver.on_app_request(request)
-    assert broker_started.wait(timeout=2.0)
-    driver.stop()
-    release_broker.set()
-
-    assert _wait_until(lambda: bool(request.errors))
-    assert request.responses == []
-    assert request.errors == [
-        (-32000, "Helios session or router turn is no longer active", None)
-    ]
-    assert request.abandoned == 0
-    driver.stop(interrupt=False)
-
-
-def test_child_turn_completion_does_not_invalidate_parent_router_turn(
-    driver_factory,
-):
-    hub = FakeHub()
-    driver = driver_factory(hub)
-    _start(driver)
-    driver._app_turn_id = "turn-parent"
-    driver._router_authorized_turn_id = "turn-parent"
-    generation = driver._router_tool_generation
-
-    driver.on_app_notification(
-        events.METHOD_TURN_COMPLETED,
-        {
-            "threadId": "child-thread",
-            "turn": {"id": "turn-child", "status": "completed"},
-        },
-    )
-
-    assert driver._router_authorized_turn_id == "turn-parent"
-    assert driver._router_tool_generation == generation
-    driver.stop(interrupt=False)
-
-
-def test_dynamic_router_tool_discards_result_after_session_closes(
-    driver_factory,
-    monkeypatch,
-):
-    hub = FakeHub()
-    driver = driver_factory(hub)
-    _start(driver)
-    driver._delegation_enabled = True
-    driver._app_turn_id = "turn-closing"
-    driver._router_authorized_turn_id = "turn-closing"
-    broker_started = threading.Event()
-    release_broker = threading.Event()
-
-    def fake_call(_client, method, params, *, binding):
-        broker_started.set()
-        release_broker.wait(timeout=2.0)
-        return {"contract_version": 1, "status": "completed"}
-
-    monkeypatch.setattr(
-        "helios.backend.process.codex_app_driver.RouterClient.call",
-        fake_call,
-    )
-    request = FakeRequest(
-        "router-closed-session",
-        "item/tool/call",
-        {
-            "threadId": driver.session_id,
-            "turnId": "turn-closing",
-            "callId": "call-closing",
-            "namespace": "helios",
-            "tool": "routing_status",
-            "arguments": {"contract_version": 1},
-        },
-    )
-
-    driver.on_app_request(request)
-    assert broker_started.wait(timeout=2.0)
-    driver.stop(interrupt=False)
-    release_broker.set()
-
-    assert _wait_until(lambda: bool(request.errors))
-    assert request.responses == []
-    assert request.errors == [
-        (-32000, "Helios session or router turn is no longer active", None)
-    ]
-    assert request.abandoned == 0
-
-
-def test_router_request_rejection_failure_does_not_block_native_finalization(
-    driver_factory,
-):
-    hub = FakeHub()
-    driver = driver_factory(hub)
-    _start(driver)
-
-    class RaisingRequest(FakeRequest):
-        def __init__(self):
-            super().__init__("router-raising", "item/tool/call", {})
-            self.rejection_attempts = 0
-
-        def respond_error(self, code, message, data=None):
-            self.rejection_attempts += 1
-            raise RuntimeError("transport write failed")
-
-    raising = RaisingRequest()
-    retired = FakeRequest("router-retired", "item/tool/call", {})
-    driver._router_tool_requests[id(raising)] = raising
-    driver._router_tool_requests[id(retired)] = retired
-
-    driver.stop(interrupt=False)
-
-    assert raising.rejection_attempts == 1
-    assert retired.errors == [
-        (-32000, "Helios session or router turn is no longer active", None)
-    ]
-    assert driver._closed
-    assert hub.released == [driver]
 
 
 @pytest.mark.parametrize("mode", ["plan", "dontAsk", "bypassPermissions"])
@@ -3573,7 +2962,6 @@ def test_native_review_narrows_settings_then_uses_authoritative_response_turn(
     )
     _drain_main_context()
     assert driver._app_turn_id == ""
-    assert driver._router_authorized_turn_id == ""
     assert accepted == []
     assert acknowledgements == []
     assert statuses == []
@@ -3587,7 +2975,6 @@ def test_native_review_narrows_settings_then_uses_authoritative_response_turn(
     _drain_main_context()
 
     assert driver._app_turn_id == "review-source-turn"
-    assert driver._router_authorized_turn_id == ""
     assert accepted == ["/review focus on concurrency"]
     assert acknowledgements == ["focus on concurrency"]
     assert driver._mirror.users == ["/review focus on concurrency"]
@@ -3896,7 +3283,6 @@ def test_manual_compaction_is_an_isolated_native_maintenance_turn(driver_factory
     _drain_main_context()
 
     assert not driver.is_busy
-    assert driver._router_authorized_turn_id == ""
     assert driver._app_acc.turn_id == prior_accumulator_turn
     assert driver._test_execution_events == []
     assert results == []
@@ -4146,3 +3532,30 @@ def test_terminal_retires_its_interactions_and_ignores_late_delivery(driver_fact
     assert other.abandoned == 0
     driver.answer_question(other_token, 'still current')
     assert len(other.responses) == 1
+
+
+
+def test_dynamic_tool_calls_are_refused(driver_factory):
+    """Helios registers no dynamic tools. A native thread restored with tools
+    from an older client still gets a refusal, never a hang."""
+    hub = FakeHub()
+    driver = driver_factory(hub)
+    _start(driver)
+    request = FakeRequest(
+        "tool-1",
+        "item/tool/call",
+        {
+            "threadId": "thread-1",
+            "turnId": "turn-1",
+            "callId": "call-1",
+            "namespace": "helios",
+            "tool": "anything",
+            "arguments": {},
+        },
+    )
+
+    driver.on_app_request(request)
+
+    assert request.responses == []
+    assert request.errors == [(-32000, "Helios offers no dynamic tools", None)]
+    driver.stop(interrupt=False)

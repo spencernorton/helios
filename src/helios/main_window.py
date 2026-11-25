@@ -32,7 +32,6 @@ from helios.backend.agent_commands import (
     commands_for_provider,
     resolve_command,
 )
-from helios.backend.router_client import refresh_dispatch_available
 from helios.backend.process.cli_driver import ClaudeCliDriver, DriverSpawnError
 from helios.backend.process.codex_app_driver import (
     NATIVE_DELIVERY_ACCEPTED,
@@ -287,10 +286,6 @@ class MainWindow(
     # ghost stubs). The sweep itself only moves stubs older than its own 10-min
     # grace, so a couple-minute tick keeps disk clean without racing new chats.
     _ORPHAN_SWEEP_SECONDS = 120
-    #: How often to re-ask the broker whether it can dispatch. Matched to the
-    #: broker's own credential-health TTL — asking more often than it refreshes
-    #: the answer buys nothing.
-    _ROUTER_DISPATCH_SECONDS = 300
     # Soft cap on concurrent claude subprocesses. When a new spawn would
     # exceed it, the least-recently-active idle background driver is wound
     # down first. Busy drivers are never evicted, so the cap can be exceeded
@@ -475,18 +470,6 @@ class MainWindow(
         # restarts, so re-run it on a timer (off-thread) and reload if any moved.
         self._orphan_sweep_timer_id = GLib.timeout_add_seconds(
             self._ORPHAN_SWEEP_SECONDS, self._sweep_orphans_async
-        )
-        # Whether the Router MCP is worth advertising to a Claude session is
-        # read from a cache on the main thread, and the broker's preview bit
-        # persists across a Helios restart. Warm it now so a broker that was
-        # already dispatching before the app closed is not treated as dead, and
-        # keep re-asking: a one-shot warmup leaves the cache false forever if
-        # Helios wins the race against the broker's socket at boot, or if the
-        # broker restarts while Helios stays open. Neither has any other way
-        # back — new sessions only read the cache.
-        self._refresh_router_dispatch_async()
-        self._router_dispatch_timer_id = GLib.timeout_add_seconds(
-            self._ROUTER_DISPATCH_SECONDS, self._refresh_router_dispatch_async
         )
         # Live-follow of the open transcript when it has NO in-process driver
         # (a session driven by an external claude/IDE, or a remote pool one).
@@ -3734,22 +3717,6 @@ class MainWindow(
             root_actor_id=str(getattr(driver, "session_id", "") or ""),
         )
         return scope if scope.is_valid else None
-
-    def _refresh_router_dispatch_async(self) -> bool:
-        """Re-ask the broker whether it can dispatch, off the main thread.
-
-        The answer is read on the GTK main loop when a session launches, so it
-        has to be cached; a cache with no refresh is a cache that can be wrong
-        forever. Returns True to keep the timer armed.
-        """
-        if self._destroyed:
-            return False
-        threading.Thread(
-            target=refresh_dispatch_available,
-            name="helios-router-dispatch",
-            daemon=True,
-        ).start()
-        return True
 
     def _on_spend_updated(self, driver, snapshot) -> None:
         """Show what a delegating turn actually cost, beside who is running it.
@@ -7462,7 +7429,6 @@ class MainWindow(
             "_archive_timer_id",
             "_startup_archive_timer_id",
             "_orphan_sweep_timer_id",
-            "_router_dispatch_timer_id",
             "_catalog_tick_id",
             "_follow_debounce_id",
         ):

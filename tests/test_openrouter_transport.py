@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from helios.backend.openrouter import chat as or_chat
-from helios.backend.openrouter.gateway import CancellationToken
+from helios.backend.openrouter.cancellation import CancellationToken
 from helios.backend.openrouter.transport import (
     HttpRequest,
     TransportFailure,
