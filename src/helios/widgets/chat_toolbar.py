@@ -727,8 +727,13 @@ class ChatToolbar(Gtk.Box):
             return
         self._context_meter.set_usage(used, total)
         self._context_popover.set_usage(used, total)
+        self._sync_ring_segments()
         self._caption_used, self._caption_window = used, total
         self._refresh_usage_caption()
+
+    def _sync_ring_segments(self) -> None:
+        """The ring wears the legend's colours (whatever split it shows)."""
+        self._context_meter.set_segments(self._context_popover.ring_segments())
 
     def set_session_tokens(self, tokens_in: int, tokens_out: int) -> None:
         """Totals for this session since Helios opened it (popover only)."""
@@ -751,6 +756,7 @@ class ChatToolbar(Gtk.Box):
         if self._destroyed:
             return
         self._context_popover.set_breakdown(breakdown)
+        self._sync_ring_segments()
 
     def set_measured_breakdown(self, payload: dict) -> None:
         """The provider's own per-category split, which outranks the estimate.
@@ -762,6 +768,7 @@ class ChatToolbar(Gtk.Box):
         if self._destroyed:
             return
         self._context_popover.set_measured_breakdown(payload)
+        self._sync_ring_segments()
 
     def set_compact_handler(self, handler) -> None:
         """Wire the popover's "Compact now" to the window."""
@@ -2070,7 +2077,27 @@ class _ContextMeter(Gtk.DrawingArea):
         self._anim.set_easing(Adw.Easing.EASE_IN_OUT_CUBIC)
         self._used = 0
         self._total = 0
-        self._refresh_tooltip()
+        #: (key, tokens) per category in the window, same order and colours
+        #: as the popover's legend. Empty draws one accent arc.
+        self._segments: tuple[tuple[str, int], ...] = ()
+        self._summary = ""
+        self._refresh_summary()
+
+    def set_segments(self, segments) -> None:
+        """Colour the arc by category, in the popover legend's order.
+
+        The autocompact reserve is not usage, so it never joins the arc.
+        """
+        if self._destroyed:
+            return
+        shown = tuple(
+            (str(key), int(tokens))
+            for key, tokens in segments
+            if int(tokens) > 0 and key != context_breakdown.AUTOCOMPACT
+        )
+        if shown != self._segments:
+            self._segments = shown
+            self.queue_draw()
 
     def shutdown(self) -> None:
         if self._destroyed:
@@ -2086,7 +2113,9 @@ class _ContextMeter(Gtk.DrawingArea):
         self._used = used
         self._total = total
         new_fraction = max(0.0, min(1.0, (used / total) if total > 0 else 0.0))
-        self._refresh_tooltip()
+        if used <= 0:
+            self._segments = ()
+        self._refresh_summary()
         # Animate from current `_fraction` to `new_fraction` so jumping from
         # 19% → 38% sweeps the arc rather than snapping.
         self._target_fraction = new_fraction
@@ -2104,7 +2133,7 @@ class _ContextMeter(Gtk.DrawingArea):
             self._used = 0
         self._total = total
         new_fraction = max(0.0, min(1.0, (self._used / total) if total > 0 else 0.0))
-        self._refresh_tooltip()
+        self._refresh_summary()
         self._target_fraction = new_fraction
         self._start_tween()
 
@@ -2126,21 +2155,30 @@ class _ContextMeter(Gtk.DrawingArea):
         self._anim.set_value_to(self._target_fraction)
         self._anim.play()
 
-    def _refresh_tooltip(self) -> None:
+    def _refresh_summary(self) -> None:
+        """Spoken summary of the gauge.
+
+        Not a tooltip: hovering the ring opens the popover, which already
+        shows these figures, and a tooltip on top of it only repeated them.
+        """
         if self._total > 0:
             # The arc deliberately animates through ``_fraction``; the
-            # tooltip reports the authoritative usage immediately.  Reading
+            # summary reports the authoritative usage immediately.  Reading
             # the animated value here made a first update to 50% say 0% until
             # the 320 ms tween happened to finish.
             fraction = max(0.0, min(1.0, self._used / self._total))
             pct = int(fraction * 100)
-            self.set_tooltip_text(
-                f"Context: {self._used:,} / {self._total:,} tokens ({pct}%)"
-            )
+            text = f"Context: {self._used:,} / {self._total:,} tokens ({pct}%)"
         elif self._used > 0:
-            self.set_tooltip_text(f"Context: {self._used:,} tokens (window unknown)")
+            text = f"Context: {self._used:,} tokens (window unknown)"
         else:
-            self.set_tooltip_text("Context window not reported by this provider")
+            text = "Context window not reported by this provider"
+        self._summary = text
+        self.update_property([Gtk.AccessibleProperty.LABEL], [text])
+
+    @property
+    def summary_text(self) -> str:
+        return self._summary
 
     def _draw(self, _area, cr, width: int, height: int) -> None:
         # Resolve colors from the libadwaita CSS by querying the widget style.
@@ -2150,15 +2188,19 @@ class _ContextMeter(Gtk.DrawingArea):
         track_rgb = (0.85, 0.85, 0.85) if not is_dark else (0.30, 0.30, 0.30)
         text_rgb = (0.2, 0.2, 0.2) if not is_dark else (0.85, 0.85, 0.85)
 
-        # Pick arc color based on usage tier. The two alarm tiers stay fixed
-        # (an alarm must not turn the user's accent color), the nominal tier
-        # follows the system accent like the rest of the app.
+        # Usage tier. The two alarm tiers stay fixed (an alarm must not turn
+        # the user's accent color); the nominal tier follows the accent.
+        # With a category split the arc carries the categories' colours, so
+        # the alarm moves to the number in the middle.
         if self._fraction >= 0.95:
-            arc_rgb = (0.78, 0.30, 0.30)  # error/red
+            alarm_rgb = (0.78, 0.30, 0.30)  # error/red
         elif self._fraction >= 0.80:
-            arc_rgb = (0.85, 0.55, 0.20)  # warning/amber
+            alarm_rgb = (0.85, 0.55, 0.20)  # warning/amber
         else:
-            arc_rgb = _accent_rgb(is_dark)
+            alarm_rgb = None
+        arc_rgb = alarm_rgb or _accent_rgb(is_dark)
+        if self._segments and alarm_rgb is not None:
+            text_rgb = alarm_rgb
 
         cx, cy = width / 2, height / 2
         radius = min(width, height) / 2 - 3
@@ -2171,7 +2213,9 @@ class _ContextMeter(Gtk.DrawingArea):
         cr.stroke()
 
         # Filled arc (start at top, go clockwise)
-        if self._fraction > 0:
+        if self._fraction > 0 and self._segments:
+            self._draw_segments(cr, cx, cy, radius, is_dark)
+        elif self._fraction > 0:
             start = -math.pi / 2
             end = start + 2 * math.pi * self._fraction
             cr.set_source_rgb(*arc_rgb)
@@ -2180,6 +2224,7 @@ class _ContextMeter(Gtk.DrawingArea):
             cr.stroke()
 
         # Centered percentage text
+        cr.set_line_cap(0)
         if self._total > 0:
             pct = int(self._fraction * 100)
             text = f"{pct}"
@@ -2199,6 +2244,25 @@ class _ContextMeter(Gtk.DrawingArea):
             cr.move_to(cx - extents.width / 2 - extents.x_bearing,
                       cy - extents.height / 2 - extents.y_bearing)
             cr.show_text("·")
+
+    def _draw_segments(self, cr, cx: float, cy: float, radius: float, dark: bool) -> None:
+        """One arc per category, sharing the filled sweep by token share."""
+        total = sum(tokens for _key, tokens in self._segments) or 1
+        sweep = 2 * math.pi * self._fraction
+        # A hairline of track between neighbours keeps adjacent hues apart
+        # at 3 px, where colour alone separates them poorly.
+        gap = 0.07 if len(self._segments) > 1 else 0.0
+        angle = -math.pi / 2
+        cr.set_line_cap(0)  # BUTT: round caps would overlap the gaps
+        for key, tokens in self._segments:
+            span = sweep * tokens / total
+            if span <= 0:
+                continue
+            inset = gap / 2 if span > gap * 2 else 0.0
+            cr.set_source_rgb(*_segment_rgb(key, dark))
+            cr.arc(cx, cy, radius, angle + inset, angle + span - inset)
+            cr.stroke()
+            angle += span
 
 
 # ── Stacked context breakdown ─────────────────────────────────────────────
@@ -2223,9 +2287,73 @@ _SEGMENT_RGB_DARK: dict[str, tuple[float, float, float]] = {
 }
 
 
+# The categories Claude measures (`get_context_usage`) on the eight-slot
+# categorical palette. Claude reports them in a fixed order and a stacked bar
+# only puts neighbours side by side, so the assignment was chosen among the
+# orders whose ADJACENT pairs pass the CVD and normal-vision checks in both
+# themes (worst CVD ΔE 11.8 light / 10.1 dark, the palette's own best): of
+# those, the one that gives Messages — usually the largest slice — blue and
+# puts red on a small one, so a calm session never reads as the ring's red
+# alarm. Light steps under 3:1 are relieved by the labelled legend. Colour
+# follows the category, never its position, so a missing one does not
+# repaint the rest; anything else folds into a neutral "other".
+_MEASURED_CATEGORY_SLOTS: dict[str, int] = {
+    "system prompt": 1,           # orange
+    "system tools": 2,            # aqua
+    "mcp tools": 3,               # yellow
+    "mcp server instructions": 4, # magenta
+    "custom agents": 5,           # green
+    "memory files": 6,            # violet
+    "skills": 7,                  # red
+    "messages": 0,                # blue
+}
+_CATEGORICAL_LIGHT = (
+    "#257de0", "#f47230", "#00b894", "#f2a600",
+    "#ee7fac", "#008a17", "#6a4ce2", "#ec4647",
+)
+_CATEGORICAL_DARK = (
+    "#338ced", "#e76624", "#00a888", "#d28e05",
+    "#e24d8b", "#0aac23", "#9887ef", "#eb6263",
+)
+#: Reserved, not used: the autocompact buffer (drawn hatched).
+_RESERVED_RGB = {False: (0.74, 0.75, 0.78), True: (0.46, 0.47, 0.51)}
+_OTHER_RGB = {False: (0.62, 0.63, 0.66), True: (0.55, 0.56, 0.60)}
+
+
+def _hex_rgb(value: str) -> tuple[float, float, float]:
+    value = value.lstrip("#")
+    return tuple(int(value[i:i + 2], 16) / 255 for i in (0, 2, 4))  # type: ignore[return-value]
+
+
 def _segment_rgb(key: str, dark: bool) -> tuple[float, float, float]:
     table = _SEGMENT_RGB_DARK if dark else _SEGMENT_RGB_LIGHT
-    return table.get(key, table["baseline"])
+    if key in table:
+        return table[key]
+    slot = _MEASURED_CATEGORY_SLOTS.get(key)
+    if slot is not None:
+        return _hex_rgb((_CATEGORICAL_DARK if dark else _CATEGORICAL_LIGHT)[slot])
+    if key == context_breakdown.AUTOCOMPACT:
+        return _RESERVED_RGB[dark]
+    return _OTHER_RGB[dark]
+
+
+def _hatch(cr, x: float, y: float, w: float, h: float, dark: bool) -> None:
+    """Reserved space: a light fill with 45° strokes, clipped to the box."""
+    cr.save()
+    cr.rectangle(x, y, w, h)
+    cr.clip()
+    cr.set_source_rgb(*_RESERVED_RGB[dark])
+    cr.paint_with_alpha(0.35)
+    cr.set_source_rgb(*_RESERVED_RGB[dark])
+    cr.set_line_width(1.2)
+    step = 4.0
+    i = x - h
+    while i < x + w:
+        cr.move_to(i, y + h)
+        cr.line_to(i + h, y)
+        i += step
+    cr.stroke()
+    cr.restore()
 
 
 def _rounded_rect(cr, x: float, y: float, w: float, h: float, r: float) -> None:
@@ -2293,14 +2421,26 @@ class _StackedContextBar(Gtk.DrawingArea):
         _rounded_rect(cr, 0, 0, width, height, radius)
         cr.clip()
         x = 0.0
+        reserved = 0
         for segment in self._segments:
+            if segment.key == context_breakdown.AUTOCOMPACT:
+                # Reserved at the END of the window: compaction fires when
+                # usage reaches it, which is what the hatching shows.
+                reserved += segment.tokens
+                continue
             span = width * (segment.tokens / self._window)
             if span <= 0:
                 continue
+            # A 2 px surface gap between neighbours, unless the band is too
+            # thin to survive losing it.
+            gap = 2.0 if span > 5 else 0.0
             cr.set_source_rgb(*_segment_rgb(segment.key, dark))
-            cr.rectangle(x, 0, span, height)
+            cr.rectangle(x, 0, max(0.0, span - gap), height)
             cr.fill()
             x += span
+        if reserved > 0:
+            span = width * min(1.0, reserved / self._window)
+            _hatch(cr, width - span, 0, span, height, dark)
         cr.restore()
 
 
@@ -2313,7 +2453,7 @@ class _PlainSegment:
         self.tokens = tokens
 
 
-def _legend_row(segment, total: int) -> Gtk.Widget:
+def _legend_row(segment, total: int, *, estimated: bool = False) -> Gtk.Widget:
     row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
 
     swatch = Gtk.DrawingArea()
@@ -2323,6 +2463,11 @@ def _legend_row(segment, total: int) -> Gtk.Widget:
 
     def draw(_a, cr, w, h, key=segment.key):
         dark = Adw.StyleManager.get_default().get_dark()
+        if key == context_breakdown.AUTOCOMPACT:
+            _rounded_rect(cr, 0, 0, w, h, 2.5)
+            cr.clip()
+            _hatch(cr, 0, 0, w, h, dark)
+            return
         cr.set_source_rgb(*_segment_rgb(key, dark))
         _rounded_rect(cr, 0, 0, w, h, 2.5)
         cr.fill()
@@ -2335,8 +2480,10 @@ def _legend_row(segment, total: int) -> Gtk.Widget:
     label.set_hexpand(True)
     row.append(label)
 
-    pct = int(round(100 * segment.tokens / total)) if total else 0
-    value = Gtk.Label(label=f"{_format_tokens(segment.tokens)} · {pct}%", xalign=1)
+    share = 100 * segment.tokens / total if total else 0
+    pct = "<1%" if 0 < share < 1 else f"{int(round(share))}%"
+    approx = "≈" if estimated else ""
+    value = Gtk.Label(label=f"{approx}{_format_tokens(segment.tokens)} · {pct}", xalign=1)
     value.add_css_class("caption")
     value.add_css_class("dim-label")
     row.append(value)
@@ -2454,6 +2601,17 @@ _LIMITS_EMPTY: dict[str, str] = {
 }
 
 
+# The one line shown in place of the rows; the sentence above is its tooltip.
+_LIMITS_EMPTY_SHORT: dict[str, str] = {
+    model_catalog.PROVIDER_ANTHROPIC: "Shown after the first response",
+    model_catalog.PROVIDER_OPENAI: "Shown once Codex connects",
+    model_catalog.PROVIDER_GOOGLE: "Not reported by Antigravity",
+    model_catalog.PROVIDER_MUSE: "Shown after the first response",
+    model_catalog.PROVIDER_KIMI: "Not reported by Kimi",
+    model_catalog.PROVIDER_OPENROUTER: "Add a key in Settings → Providers",
+}
+
+
 _RATE_STATUS_DOT_CLASS = {
     "allowed": "helios-rate-ok",
     "warning": "helios-rate-warn",
@@ -2461,6 +2619,13 @@ _RATE_STATUS_DOT_CLASS = {
     "denied": "helios-rate-error",
     "blocked": "helios-rate-error",
 }
+
+
+_CTX_TITLE_TOOLTIP = (
+    "How much of this session's model context window is filled — used to "
+    "know when to /clear and start fresh. This is per-session, not your "
+    "overall account usage."
+)
 
 
 class _ContextPopover(Gtk.Popover):
@@ -2480,27 +2645,21 @@ class _ContextPopover(Gtk.Popover):
         # ── Context window section ──
         self._ctx_title = Gtk.Label(label="Session context", xalign=0)
         self._ctx_title.add_css_class("caption-heading")
-        self._ctx_title.set_tooltip_text(
-            "How much of this session's model context window is filled — used "
-            "to know when to /clear and start fresh. This is per-session, not "
-            "your overall account usage."
-        )
+        self._ctx_title.set_tooltip_text(_CTX_TITLE_TOOLTIP)
         box.append(self._ctx_title)
 
         bar_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         self._bar = _StackedContextBar()
         bar_row.append(self._bar)
 
+        # "127.2k / 350k · 36%": the bar's own scale, so no separate usage
+        # sentence underneath restating it.
         self._max_label = Gtk.Label(label="—", xalign=1)
         self._max_label.add_css_class("caption")
         self._max_label.add_css_class("dim-label")
+        self._max_label.add_css_class("numeric")
         bar_row.append(self._max_label)
         box.append(bar_row)
-
-        self._usage_label = Gtk.Label(xalign=0)
-        self._usage_label.add_css_class("caption")
-        self._usage_label.add_css_class("dim-label")
-        box.append(self._usage_label)
 
         # ── What is filling it ──
         self._legend = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
@@ -2512,31 +2671,15 @@ class _ContextPopover(Gtk.Popover):
         self._legend_measured = False
         #: Deferred tool-schema tokens — real, but NOT in the window.
         self._legend_deferred = 0
-        self._legend_note = Gtk.Label(xalign=0)
-        self._legend_note.add_css_class("caption")
-        self._legend_note.add_css_class("dim-label")
-        self._legend_note.set_wrap(True)
-        # A wrapped label's natural width is its whole text on one line; without
-        # a cap the popover outgrew the window and clipped the legend's numbers.
-        self._legend_note.set_max_width_chars(46)
-        self._legend_note.set_visible(False)
-        box.append(self._legend_note)
-        # What the categories are made of: memory files, skills, agents, the
-        # message split, and where autocompaction fires (measured only).
-        self._details_label = Gtk.Label(xalign=0)
-        self._details_label.add_css_class("caption")
-        self._details_label.add_css_class("dim-label")
-        self._details_label.set_wrap(True)
-        self._details_label.set_max_width_chars(46)
-        self._details_label.set_selectable(True)
-        self._details_label.set_visible(False)
-        box.append(self._details_label)
-
-        # ── Model line ──
-        self._model_label = Gtk.Label(xalign=0)
-        self._model_label.add_css_class("caption")
-        self._model_label.add_css_class("dim-label")
-        box.append(self._model_label)
+        #: What the categories are made of (memory files, skills, agents, the
+        #: message split). Kept as the legend's tooltip: on screen it was a
+        #: paragraph restating the rows above it.
+        self._details_lines: list[str] = []
+        #: (key, tokens) the legend shows, for the ring's colours.
+        self._shown_segments: tuple[tuple[str, int], ...] = ()
+        #: The Segment objects behind the rows, so a window change can
+        #: recompute their shares (rows show % of the window).
+        self._legend_segments: tuple = ()
 
         self._session_tokens_label = Gtk.Label(xalign=0)
         self._session_tokens_label.add_css_class("caption")
@@ -2566,24 +2709,23 @@ class _ContextPopover(Gtk.Popover):
         box.append(self._limits_box)
 
         self._limits_empty = Gtk.Label(
-            label=_LIMITS_EMPTY[model_catalog.PROVIDER_ANTHROPIC],
+            label=_LIMITS_EMPTY_SHORT[model_catalog.PROVIDER_ANTHROPIC],
             xalign=0,
         )
+        self._limits_empty.set_tooltip_text(_LIMITS_EMPTY[model_catalog.PROVIDER_ANTHROPIC])
         self._limits_empty.add_css_class("caption")
         self._limits_empty.add_css_class("dim-label")
-        self._limits_empty.set_wrap(True)
-        self._limits_empty.set_max_width_chars(46)
         self._limits_box.append(self._limits_empty)
 
         # Link to the actual claude.ai dashboard for full breakdown.
         self._usage_link = Gtk.LinkButton.new_with_label(
             "https://claude.ai/settings/usage",
-            "Open full account usage in browser ↗",
+            "Account usage ↗",
         )
         self._usage_link.add_css_class("flat")
         self._usage_link.add_css_class("caption")
         self._usage_link.set_halign(Gtk.Align.START)
-        self._usage_link.set_margin_top(6)
+        self._usage_link.set_margin_top(2)
         box.append(self._usage_link)
 
         # ── Compaction ──
@@ -2592,8 +2734,6 @@ class _ContextPopover(Gtk.Popover):
         self._compact_label = Gtk.Label(xalign=0)
         self._compact_label.add_css_class("caption")
         self._compact_label.add_css_class("dim-label")
-        self._compact_label.set_wrap(True)
-        self._compact_label.set_max_width_chars(46)
         self._compact_label.set_visible(False)
         self._compact_label.set_margin_top(4)
         box.append(self._compact_label)
@@ -2676,9 +2816,9 @@ class _ContextPopover(Gtk.Popover):
 
     def note_compaction(self, trigger: str, pre_tokens: int) -> None:
         """Record that compaction happened, so it stops being invisible."""
-        freed = f" from {pre_tokens:,} tokens" if pre_tokens > 0 else ""
-        how = "Automatically compacted" if trigger != "manual" else "Compacted"
-        self._compact_label.set_label(f"{how}{freed} earlier in this session.")
+        freed = f" (was {_format_tokens(pre_tokens)})" if pre_tokens > 0 else ""
+        how = "Auto-compacted" if trigger != "manual" else "Compacted"
+        self._compact_label.set_label(f"{how} earlier{freed}")
         self._compact_label.set_visible(True)
 
     def set_usage(self, used: int, total: int) -> None:
@@ -2686,12 +2826,7 @@ class _ContextPopover(Gtk.Popover):
             self._has_turn = True
             self._used = used
             self._window = total
-            frac = max(0.0, min(1.0, used / total))
-            self._max_label.set_label(f"{_format_window(total)} max")
-            pct = int(frac * 100)
-            self._usage_label.set_label(
-                f"{used:,} / {total:,} tokens ({pct}%)"
-            )
+            self._refresh_scale_label()
             # The split arrives separately (it needs the transcript). Until it
             # does, show the measured total as one solid bar rather than a
             # stale breakdown from the previous turn.
@@ -2700,7 +2835,7 @@ class _ContextPopover(Gtk.Popover):
             # Measured fill, but the provider publishes no window (Google).
             self._has_turn = True
             self._used = used
-            self._usage_label.set_label(f"{used:,} tokens (window size not published)")
+            self._refresh_scale_label()
         else:
             # Reset (fresh chat / session switch). Keep showing the selected
             # model's window cap if we know it, just with no usage yet.
@@ -2721,8 +2856,9 @@ class _ContextPopover(Gtk.Popover):
             self._compact_label.set_label("")
             self._bar.set_plain(0, self._window)
             self._set_legend(())
-            self._max_label.set_label(f"{_format_window(self._window)} max" if self._window else "—")
-            self._usage_label.set_label("No turn yet — usage appears after the first response.")
+            self._details_lines = []
+            self._refresh_legend_tooltip()
+            self._refresh_scale_label()
 
     def set_breakdown(self, breakdown) -> None:
         """Install the per-category split for the usage already shown."""
@@ -2763,8 +2899,8 @@ class _ContextPopover(Gtk.Popover):
             if details is not None
             else []
         )
-        self._details_label.set_label("\n".join(lines))
-        self._details_label.set_visible(bool(lines))
+        self._details_lines = list(lines)
+        self._refresh_legend_tooltip()
 
     def _set_legend(self, segments) -> None:
         child = self._legend.get_first_child()
@@ -2772,31 +2908,58 @@ class _ContextPopover(Gtk.Popover):
             nxt = child.get_next_sibling()
             self._legend.remove(child)
             child = nxt
+        self._legend_segments = tuple(segments)
+        self._shown_segments = tuple((s.key, s.tokens) for s in segments)
         if not segments:
-            self._legend_note.set_visible(False)
+            self._refresh_legend_tooltip()
             return
-        total = sum(s.tokens for s in segments) or 1
+        # Shares of the WINDOW, matching the bar's widths; an estimated split
+        # is marked "≈" on every value, so the two never look alike.
+        total = self._window or sum(s.tokens for s in segments) or 1
         for segment in segments:
-            self._legend.append(_legend_row(segment, total))
+            self._legend.append(
+                _legend_row(segment, total, estimated=not self._legend_measured)
+            )
+        self._refresh_legend_tooltip()
+
+    def ring_segments(self) -> tuple[tuple[str, int], ...]:
+        """(key, tokens) the legend shows, for the ring's colours."""
+        return self._shown_segments
+
+    def _refresh_scale_label(self) -> None:
+        if self._has_turn and self._window > 0:
+            pct = int(max(0.0, min(1.0, self._used / self._window)) * 100)
+            text = f"{_format_tokens(self._used)} / {_format_window(self._window)} · {pct}%"
+        elif self._has_turn:
+            text = f"{_format_tokens(self._used)} used"
+        elif self._window > 0:
+            text = f"{_format_window(self._window)} window"
+        else:
+            text = "Window not reported"
+        self._max_label.set_label(text)
+
+    def _refresh_legend_tooltip(self) -> None:
+        """Provenance and the parts list, available on hover, off the page."""
+        if not self._shown_segments:
+            self._legend.set_tooltip_text(None)
+            self._ctx_title.set_tooltip_text(_CTX_TITLE_TOOLTIP)
+            return
         if self._legend_measured:
-            # Every figure here came from the provider. Saying "estimated"
-            # anyway would train the reader to discount a real measurement —
-            # and the whole point of this change is that the two must never
-            # look alike.
-            note = f"{total:,} tokens, measured by the provider."
+            # Every figure here came from the provider. Calling it estimated
+            # would train the reader to discount a real measurement.
+            source = "Measured by the provider."
             if self._legend_deferred:
-                note += (
-                    f" A further {self._legend_deferred:,} tokens of tool"
-                    " schemas are deferred — the CLI loads them on demand, so"
-                    " they are NOT in the window and are not counted here."
+                source += (
+                    f" {self._legend_deferred:,} more tokens of tool schemas are"
+                    " deferred: loaded on demand, not in the window."
                 )
         else:
-            note = (
-                f"{total:,} tokens measured. The split across categories is "
-                "estimated from the transcript."
+            source = (
+                "Total measured; the split across categories (≈) is estimated "
+                "from the transcript."
             )
-        self._legend_note.set_label(note)
-        self._legend_note.set_visible(True)
+        self._ctx_title.set_tooltip_text(f"{_CTX_TITLE_TOOLTIP}\n\n{source}")
+        self._legend.set_tooltip_text("\n".join(self._details_lines) or source)
 
     def set_session_tokens(self, tokens_in: int, tokens_out: int) -> None:
         shown = tokens_in > 0 or tokens_out > 0
@@ -2812,15 +2975,15 @@ class _ContextPopover(Gtk.Popover):
         immediately; only rescales the bar/usage line once a turn has run."""
         if total <= 0:
             self._window = 0
-            self._max_label.set_label("Window not reported")
+            self._refresh_scale_label()
             return
         self._window = total
-        self._max_label.set_label(f"{_format_window(total)} max")
+        self._refresh_scale_label()
         if self._has_turn:
-            frac = max(0.0, min(1.0, self._used / total))
-            pct = int(frac * 100)
-            self._usage_label.set_label(f"{self._used:,} / {total:,} tokens ({pct}%)")
             self._bar.set_window(total)
+        if self._legend_segments:
+            # Shares are of the window: a new denominator re-derives them.
+            self._set_legend(self._legend_segments)
 
     def set_model(self, model: str) -> None:
         if model:
@@ -2831,9 +2994,13 @@ class _ContextPopover(Gtk.Popover):
                 self._rate_limits = self._rate_store.pop(provider, {})
                 self._rebuild_limits_rows()
             self._rate_provider = provider
-            self._model_label.set_label(f"Model: {model}")
-            self._model_label.set_visible(True)
+            # No "Model:" line: the toolbar beside the ring already names it.
             self._limits_empty.set_label(
+                _LIMITS_EMPTY_SHORT.get(
+                    provider, _LIMITS_EMPTY_SHORT[model_catalog.PROVIDER_ANTHROPIC]
+                )
+            )
+            self._limits_empty.set_tooltip_text(
                 _LIMITS_EMPTY.get(
                     provider, _LIMITS_EMPTY[model_catalog.PROVIDER_ANTHROPIC]
                 )
@@ -2850,28 +3017,25 @@ class _ContextPopover(Gtk.Popover):
                     "Credit balance and spend on the OpenRouter key Helios holds."
                 )
                 self._usage_link.set_uri("https://openrouter.ai/credits")
-                self._usage_link.set_label("Open OpenRouter credits in browser ↗")
+                self._usage_link.set_label("OpenRouter credits ↗")
             elif provider == model_catalog.PROVIDER_OPENAI:
                 self._limits_title.set_tooltip_text(
                     "Live limits reported by Codex for the signed-in OpenAI account."
                 )
                 self._usage_link.set_uri("https://chatgpt.com/codex")
-                self._usage_link.set_label("Open Codex in browser ↗")
+                self._usage_link.set_label("Codex usage ↗")
             elif provider == model_catalog.PROVIDER_GOOGLE:
                 self._limits_title.set_tooltip_text(
                     "Usage reported by Google Gemini for your subscription account."
                 )
                 self._usage_link.set_uri("https://gemini.google.com")
-                self._usage_link.set_label("Open Gemini in browser ↗")
+                self._usage_link.set_label("Gemini ↗")
             else:
                 self._limits_title.set_tooltip_text(
                     "Live limits reported by Claude for the signed-in Anthropic account."
                 )
                 self._usage_link.set_uri("https://claude.ai/settings/usage")
-                self._usage_link.set_label("Open full account usage in browser ↗")
-        else:
-            self._model_label.set_label("")
-            self._model_label.set_visible(False)
+                self._usage_link.set_label("Account usage ↗")
 
     def update_rate_limit(self, info: dict) -> None:
         rl_type = info.get("rateLimitType") or ""

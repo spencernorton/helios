@@ -4,6 +4,12 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.123.0 — 2026-11-25
+
+### Context meter
+- **Colours by category:** the toolbar ring is drawn in the colours of what fills the window, matching the popover's bar and legend. Claude's measured categories (system prompt, system tools, MCP tools, MCP server instructions, custom agents, memory files, skills, messages) had no colour of their own and all rendered the same grey; each now has one from a palette checked for colour-blind and normal-vision separation in both themes, with messages, usually the largest slice, in blue. The 80% and 95% alarms move to the ring's number. The autocompact reserve is hatched at the end of the bar, where compaction fires, and kept out of the ring.
+- **Less text in the popover:** the usage sentence is the bar's own scale (`127.2k / 350k · 36%`); the "measured by the provider" note, the parts paragraph and the model line are gone (provenance is on the title's tooltip, the parts list on the legend's, estimated values are marked ≈); legend shares are of the window, like the bar; the empty-limits explanations, link labels and compaction line are one short line each. The ring no longer shows a tooltip over its own popover.
+
 ## 0.122.0 — 2026-11-25
 
 ### Model picker

@@ -1,5 +1,36 @@
 # Helios — Session Journal
 
+## 2026-11-25 — Context ring by category; popover text cut (0.123.0)
+
+- Asked for: the ring and popover to show what fills the window as colours,
+  and the hover text that restated the visuals cut. Found: Claude's measured
+  categories are keyed by their names ("system prompt", "mcp tools", …) and
+  `_segment_rgb` knew only the estimate's five keys, so the whole measured
+  bar and every swatch fell back to one grey; the ring was a single accent
+  arc. A headless render with real `get_context_usage` figures (claude
+  2.1.332: nine in-window categories) showed half the popover's height was
+  the "measured by the provider" note, the details paragraph and a model line.
+- Palette: the eight-slot categorical palette, assigned to Claude's fixed
+  report order by searching all orders with messages pinned to blue for ones
+  whose adjacent pairs pass the dataviz validator in both themes (16 pass;
+  chosen: worst CVD ΔE 11.8 light / 10.1 dark, red on skills). Red next to
+  green failed deutan in dark (ΔE 4.7), which is why the order is not
+  arbitrary. Unknown categories fold to a neutral "other", the autocompact
+  reserve is hatched. Light-mode steps under 3:1 are relieved by the
+  labelled legend.
+- Ring: `_ContextMeter.set_segments` from the legend's own segments
+  (`_ContextPopover.ring_segments`), so a late estimate never repaints a
+  measured ring and a reset clears it; butt-capped arcs with hairline gaps;
+  alarm tiers colour the number. Its tooltip became the accessible label
+  (`summary_text`), since hovering opens the popover anyway.
+- Popover: usage on the bar's scale label; provenance and deferred schema
+  tokens on the title tooltip; the parts list on the legend tooltip; ≈ on
+  estimated values; legend shares are of the window and are rebuilt on a
+  window change (cross-model review finding: they went stale after a model
+  switch). Height with the same data: 835 → 559 px.
+- Tests: `tests/test_context_ring_legend.py`; the tooltip test in
+  `tests/test_ui_nuances.py` now reads the accessible summary.
+
 ## 2026-11-25 — main (0.121.3) merged into the model picker branch (0.122.0)
 
 - Conflict in `SettingsDialog._set_model_choices`: this branch had dropped
