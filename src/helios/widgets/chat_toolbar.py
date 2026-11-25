@@ -10,9 +10,9 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, GLib, GObject, Gtk, Pango  # noqa: E402
+from gi.repository import Adw, Gdk, GLib, GObject, Gtk, Pango  # noqa: E402
 
-from helios.backend import context_breakdown, model_catalog, ui_state
+from helios.backend import context_breakdown, model_catalog, model_picker
 from helios.backend.model_catalog import ModelEntry
 from helios.backend.project_perms import (
     AUTONOMY_MODE,
@@ -94,14 +94,38 @@ def _accent_rgb(is_dark: bool) -> tuple[float, float, float]:
 # filter is the only navigation that scales. (It used to appear only above
 # 25 total rows, which hid it exactly on smaller multi-provider setups.)
 
-# Anthropic first-tier splitting lives in
-# model_catalog.collapse_latest_twins: one row per family up front, named
-# after the version it resolves to; older pinned versions behind the
-# disclosure.
+# What each provider shows up front, what folds under "More", and how the
+# user's hide/add/reorder edits persist all live in helios.backend.model_picker.
 
-# A provider whose catalog is already curated (Codex App Server returns a
-# handful of agent models) shows this many rows before the rest fold away.
-_CURRENT_ROWS_CAP = 8
+_EDIT_TOOLTIP = "Hide, add and reorder models"
+_PICK_ROW_WIDTH = 252
+_EDIT_ROW_WIDTH = 316
+_EDIT_HINT = (
+    "Your list holds each provider's current models plus any you add; older "
+    "and hidden ones wait under More. Drag a handle or use the arrows to "
+    "reorder."
+)
+
+
+def _more_tooltip(provider: str) -> str:
+    if provider == model_catalog.PROVIDER_ANTHROPIC:
+        return "Older Claude versions, models you hid, and the Claude Code default"
+    if provider == model_catalog.PROVIDER_OPENROUTER:
+        return "Models not on your OpenRouter shortlist"
+    return "Models you hid and the rest of this provider's catalog"
+
+
+def _model_tooltip(entry: ModelEntry) -> str:
+    details = []
+    if entry.description:
+        details.append(entry.description)
+    if entry.reasoning_efforts:
+        details.append(
+            "Reasoning: " + ", ".join(key for key, _desc in entry.reasoning_efforts)
+        )
+    if entry.input_modalities:
+        details.append("Input: " + ", ".join(entry.input_modalities))
+    return "\n".join(details)
 
 _EFFORT_LABELS = {
     "none": "None",
@@ -1428,38 +1452,80 @@ class ChatToolbar(Gtk.Box):
 
         scroller = Gtk.ScrolledWindow()
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroller.set_max_content_height(380)
+        scroller.set_max_content_height(420)
         scroller.set_propagate_natural_height(True)
 
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
-        box.set_margin_top(4)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        box.set_margin_top(2)
         box.set_margin_bottom(4)
         box.set_margin_start(4)
         box.set_margin_end(4)
 
         self._model_rows_box = box
         self._model_popover_ref = popover
-        self._fill_model_rows(box, popover, "")
-        scroller.set_child(box)
+        self._model_scroller = scroller
+        # A rebuilt popover (a catalog refresh replaces it, closing any open
+        # one) starts in pick mode, so its fresh pencil toggle tells the truth.
+        self._model_editing = False
+        # "More" disclosures the user opened or closed during this opening. A
+        # provider not in here is open exactly when its More holds the
+        # selection, so the ✓ is never folded out of sight.
+        self._model_more_state: dict[str, bool] = {}
+        self._model_focus_after: tuple[str, str] | None = None
+        if not hasattr(self, "_model_refill_pending"):
+            self._model_refill_pending = False
 
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        top.set_margin_top(6)
+        top.set_margin_start(6)
+        top.set_margin_end(6)
+        top.set_margin_bottom(2)
         search = Gtk.SearchEntry()
         search.set_placeholder_text("Filter models…")
-        search.set_margin_top(6)
-        search.set_margin_start(6)
-        search.set_margin_end(6)
-        search.set_margin_bottom(2)
+        search.set_hexpand(True)
         search.connect(
             "search-changed",
             lambda entry: self._fill_model_rows(
                 box, popover, entry.get_text() or ""
             ),
         )
-        outer.append(search)
+        self._model_search = search
+        top.append(search)
+        edit = Gtk.ToggleButton()
+        edit.set_icon_name("document-edit-symbolic")
+        edit.add_css_class("flat")
+        edit.add_css_class("helios-model-edit-toggle")
+        edit.set_valign(Gtk.Align.CENTER)
+        edit.set_tooltip_text(_EDIT_TOOLTIP)
+        edit.update_property([Gtk.AccessibleProperty.LABEL], ["Customize model list"])
+        edit.connect("toggled", self._on_model_edit_toggled)
+        self._model_edit_btn = edit
+        top.append(edit)
+
+        hint = Gtk.Label(label=_EDIT_HINT, xalign=0, wrap=True)
+        hint.set_max_width_chars(36)
+        hint.add_css_class("caption")
+        hint.add_css_class("dim-label")
+        hint.add_css_class("helios-model-edit-hint")
+        hint.set_visible(False)
+        self._model_edit_hint = hint
+
+        self._fill_model_rows(box, popover, "")
+        scroller.set_child(box)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        outer.append(top)
+        outer.append(hint)
+
         def _on_show(*_a) -> None:
             # The ✓ marker is baked into the rows when they are built, so
             # rebuild on every open: otherwise it stays on whichever model was
             # selected when the popover was built while the chip shows another.
+            # Every opening starts in pick mode with only the selection's
+            # disclosure open.
+            self._model_more_state = {}
+            if edit.get_active():
+                edit.set_active(False)
             search.set_text("")
             self._fill_model_rows(box, popover, "")
             search.grab_focus()
@@ -1469,191 +1535,387 @@ class ChatToolbar(Gtk.Box):
         popover.set_child(outer)
         self._model_btn.set_popover(popover)
 
-    def _provider_pool(self, provider: str | None = None) -> list[ModelEntry]:
-        """The choices belonging to a provider (or _provider_filter if omitted)."""
-        target_provider = provider or getattr(self, "_provider_filter", None)
-        if target_provider:
-            return [
-                e
-                for e in self._choices
-                if getattr(e, "provider", model_catalog.PROVIDER_ANTHROPIC)
-                == target_provider
-            ]
-        return list(self._choices)
+    def _picker_sections(self) -> list[model_picker.PickerSection]:
+        return model_picker.stored_sections(
+            self._choices, selected=self._picker_selected_id(),
+        )
 
-    def _split_by_currency(
-        self, pool: list[ModelEntry], provider: str | None = None
-    ) -> tuple[list[ModelEntry], list[ModelEntry]]:
-        """Split into "the ones you actually pick" and "everything older"."""
-        target_provider = provider or getattr(self, "_provider_filter", model_catalog.PROVIDER_ANTHROPIC)
-        if target_provider == model_catalog.PROVIDER_ANTHROPIC:
-            current, older = model_catalog.collapse_latest_twins(
-                pool, keep_id=getattr(self, "_model_alias", ""),
-            )
-        elif target_provider == model_catalog.PROVIDER_OPENROUTER:
-            chosen = set(ui_state.store().get(ui_state.OPENROUTER_PICKER_KEY, []) or [])
-            current = [e for e in pool if e.id in chosen]
-            older = [e for e in pool if e.id not in chosen]
-        else:
-            current, older = pool[:_CURRENT_ROWS_CAP], pool[_CURRENT_ROWS_CAP:]
-        if not current:
-            # Nothing configured/matched — never show an empty first tier with
-            # the real list hidden behind a disclosure.
-            return pool, []
-        return current, older
+    def _picker_selected_id(self) -> str:
+        return model_catalog.picker_model_id(
+            self._model_alias, (e.id for e in self._choices),
+        )
 
     def _fill_model_rows(self, box, popover, query: str) -> None:
-        """(Re)populate the picker rows, optionally filtered by ``query``."""
+        """(Re)populate the picker rows, optionally filtered by ``query``.
+
+        Each provider gets one header, the user's list, then a folded "More"
+        holding the rest of its catalog (see helios.backend.model_picker for
+        what lands where). A search spans both tiers of every provider.
+        """
         child = box.get_first_child()
         while child is not None:
             nxt = child.get_next_sibling()
             box.remove(child)
             child = nxt
 
-        # Hidden models (Settings → Shown models) never render here; read
-        # the store fresh so a Settings change applies on the next open
-        # without any refresh plumbing. The selected model always stays.
-        hidden = ui_state.store().get(ui_state.HIDDEN_MODELS_KEY, []) or []
-        picker_id = model_catalog.picker_model_id(
-            self._model_alias, (e.id for e in self._choices),
-        )
-        choices = model_catalog.visible_entries(self._choices, hidden, keep_id=picker_id)
+        selected = self._picker_selected_id()
+        editing = bool(getattr(self, "_model_editing", False))
+        sections = self._picker_sections()
         needle = query.strip().lower()
+
         if needle:
-            pool = [
-                e for e in choices
-                if needle in e.id.lower()
-                or needle in e.label.lower()
-                or needle in (e.group or "").lower()
-                or needle in getattr(e, "provider", "").lower()
-            ]
-            if not pool:
+            first = True
+            for section in sections:
+                rows = [(e, True) for e in section.main if model_picker.matches(e, needle)]
+                rows += [(e, False) for e in section.more if model_picker.matches(e, needle)]
+                if not rows:
+                    continue
+                self._append_section_header(box, section, first=first, editing=False)
+                first = False
+                for entry, listed in rows:
+                    box.append(self._model_row(
+                        entry, section, popover,
+                        listed=listed, selected=selected, editing=editing,
+                    ))
+            if first:
                 empty = Gtk.Label(label="No models match", xalign=0)
                 empty.add_css_class("dim-label")
                 empty.set_margin_start(10)
                 empty.set_margin_top(8)
                 empty.set_margin_bottom(8)
                 box.append(empty)
-                return
-            self._append_model_rows(box, popover, pool)
             return
 
-        provider_order = [
-            model_catalog.PROVIDER_ANTHROPIC,
-            model_catalog.PROVIDER_OPENAI,
-            model_catalog.PROVIDER_GOOGLE,
-            model_catalog.PROVIDER_MUSE,
-            model_catalog.PROVIDER_KIMI,
-            model_catalog.PROVIDER_OPENROUTER,
-        ]
-        provider_titles = {
-            model_catalog.PROVIDER_ANTHROPIC: "Claude (Anthropic)",
-            model_catalog.PROVIDER_OPENAI: "OpenAI (Codex)",
-            model_catalog.PROVIDER_GOOGLE: "Google (Gemini)",
-            model_catalog.PROVIDER_MUSE: "Muse (Meta)",
-            model_catalog.PROVIDER_KIMI: "Kimi (Kimi Code)",
-            model_catalog.PROVIDER_OPENROUTER: "OpenRouter",
-        }
+        more_state = getattr(self, "_model_more_state", None)
+        if more_state is None:
+            more_state = self._model_more_state = {}
 
-        seen_providers = set(provider_order)
-        for e in choices:
-            p = getattr(e, "provider", model_catalog.PROVIDER_ANTHROPIC)
-            if p not in seen_providers:
-                provider_order.append(p)
-                seen_providers.add(p)
-
-        first_section = True
-        for p in provider_order:
-            p_entries = [
-                e for e in choices
-                if getattr(e, "provider", model_catalog.PROVIDER_ANTHROPIC) == p
-            ]
-            if not p_entries:
+        first = True
+        for section in sections:
+            if not section.main and not section.more:
                 continue
+            self._append_section_header(box, section, first=first, editing=editing)
+            first = False
+            for index, entry in enumerate(section.main):
+                box.append(self._model_row(
+                    entry, section, popover,
+                    listed=True, selected=selected, editing=editing,
+                    index=index, count=len(section.main),
+                ))
+            if section.more:
+                holds_selection = any(e.id == selected for e in section.more)
+                box.append(self._more_expander(
+                    section, popover, selected=selected, editing=editing,
+                    expanded=more_state.get(section.provider, holds_selection),
+                ))
 
-            if first_section:
-                first_section = False
+    def _append_section_header(
+        self, box, section: model_picker.PickerSection, *, first: bool, editing: bool,
+    ) -> None:
+        if not first:
+            sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+            sep.set_margin_top(4)
+            sep.set_margin_bottom(2)
+            box.append(sep)
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        title = Gtk.Label(label=section.title, xalign=0)
+        title.set_hexpand(True)
+        title.add_css_class("helios-model-section-title")
+        title.add_css_class("dim-label")
+        header.append(title)
+        if editing and section.customized:
+            reset = Gtk.Button(label="Reset")
+            reset.add_css_class("flat")
+            reset.add_css_class("helios-model-section-reset")
+            reset.set_valign(Gtk.Align.CENTER)
+            reset.set_tooltip_text(f"Back to the default {section.title} list")
+            reset.connect(
+                "clicked", self._on_model_curate, "reset", section.provider, "",
+            )
+            header.append(reset)
+        box.append(header)
+
+    def _more_expander(
+        self,
+        section: model_picker.PickerSection,
+        popover,
+        *,
+        selected: str,
+        editing: bool,
+        expanded: bool,
+    ) -> Gtk.Expander:
+        """The folded rest of a provider's catalog. Rows are built on first
+        open: OpenRouter's runs to hundreds, and most openings never look."""
+        name = model_catalog.PROVIDER_LABELS.get(section.provider, section.title)
+        expander = Gtk.Expander(label=f"More {name} models ({len(section.more)})")
+        expander.add_css_class("helios-model-more")
+        expander.set_tooltip_text(_more_tooltip(section.provider))
+
+        def build() -> None:
+            if expander.get_child() is not None:
+                return
+            inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+            # Indented under the disclosure so an open More never reads as
+            # more of your list.
+            inner.set_margin_start(12)
+            # OpenRouter labels omit the vendor ("Kimi K2" is Moonshot's), so
+            # its long tail keeps vendor sub-headers; every other provider's
+            # labels already say what they are.
+            grouped = section.provider == model_catalog.PROVIDER_OPENROUTER
+            last_group = None
+            for entry in section.more:
+                if grouped and entry.group != last_group:
+                    sub = Gtk.Label(label=entry.group, xalign=0)
+                    sub.add_css_class("helios-model-subgroup")
+                    sub.add_css_class("dim-label")
+                    inner.append(sub)
+                    last_group = entry.group
+                inner.append(self._model_row(
+                    entry, section, popover,
+                    listed=False, selected=selected, editing=editing,
+                ))
+            expander.set_child(inner)
+
+        def on_expanded(exp, _pspec) -> None:
+            if not isinstance(getattr(self, "_model_more_state", None), dict):
+                self._model_more_state = {}
+            self._model_more_state[section.provider] = exp.get_expanded()
+            if exp.get_expanded():
+                build()
+
+        if expanded:
+            build()
+            expander.set_expanded(True)
+        expander.connect("notify::expanded", on_expanded)
+        return expander
+
+    def _model_row(
+        self,
+        entry: ModelEntry,
+        section: model_picker.PickerSection,
+        popover,
+        *,
+        listed: bool,
+        selected: str,
+        editing: bool,
+        index: int = -1,
+        count: int = 0,
+    ) -> Gtk.Widget:
+        """One model: a pick button (a plain name while editing) and the
+        hide/add action, plus drag handle and arrows for a listed row in edit
+        mode."""
+        provider = section.provider
+        # A one-row list has nothing to reorder; inert arrows are just noise.
+        reorderable = editing and listed and index >= 0 and count > 1
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        row.add_css_class("helios-model-row")
+        # Wide enough that names differing only at the end ("Orchestrator
+        # (Neon)" / "(Carbon)") stay apart; edit mode adds three controls.
+        row.set_size_request(_EDIT_ROW_WIDTH if editing else _PICK_ROW_WIDTH, -1)
+
+        is_selected = entry.id == selected
+        # Without a marker the current model is indistinguishable in a long
+        # list. A label prefix, not set_icon_name: the icon replaces the text.
+        text = f"✓ {entry.label}" if is_selected else entry.label
+        # The name leads the tooltip: a long one may still be cut short.
+        tooltip = "\n".join(filter(None, (entry.label, _model_tooltip(entry))))
+
+        if editing:
+            if reorderable:
+                handle = Gtk.Image.new_from_icon_name("list-drag-handle-symbolic")
+                handle.add_css_class("helios-model-drag-handle")
+                handle.set_tooltip_text("Drag to reorder")
+                self._attach_row_drag(row, handle, provider, entry.id, index)
+                row.append(handle)
             else:
-                sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
-                sep.set_margin_top(6)
-                sep.set_margin_bottom(4)
-                box.append(sep)
-
-            section_header = Gtk.Label(label=provider_titles.get(p, p.capitalize()), xalign=0)
-            section_header.add_css_class("heading")
-            section_header.add_css_class("dim-label")
-            section_header.set_margin_start(10)
-            section_header.set_margin_top(4)
-            section_header.set_margin_bottom(4)
-            box.append(section_header)
-
-            current, older = self._split_by_currency(p_entries, provider=p)
-            self._append_model_rows(box, popover, current)
-            if older:
-                expander = Gtk.Expander()
-                expander.set_label(f"Older models ({len(older)})")
-                expander.add_css_class("helios-model-older")
-                expander.set_margin_start(10)
-                expander.set_margin_top(4)
-                inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
-                inner.set_margin_top(2)
-                self._append_model_rows(inner, popover, older)
-                expander.set_child(inner)
-                box.append(expander)
-
-    def _append_model_rows(self, box, popover, entries: list[ModelEntry]) -> None:
-        last_group = None
-        picker_id = model_catalog.picker_model_id(
-            self._model_alias, (e.id for e in self._choices),
-        )
-        for entry in entries:
-            alias, label, group = entry.id, entry.label, entry.group
-            if group != last_group:
-                if last_group is not None:
-                    sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
-                    sep.set_margin_top(4)
-                    sep.set_margin_bottom(4)
-                    box.append(sep)
-                header = Gtk.Label(label=group, xalign=0)
-                header.add_css_class("caption-heading")
-                header.add_css_class("dim-label")
-                header.set_margin_start(10)
-                header.set_margin_top(4)
-                header.set_margin_bottom(2)
-                box.append(header)
-                last_group = group
-
-            selected = alias == picker_id
-            if selected:
-                # Without a marker the current model is indistinguishable
-                # in a long list — the main navigation complaint. A label
-                # prefix, not set_icon_name: the icon replaces the text.
-                label = f"✓ {label}"
-            btn = Gtk.Button(label=label)
+                spacer = Gtk.Box()
+                spacer.add_css_class("helios-model-drag-spacer")
+                row.append(spacer)
+            name = Gtk.Label(label=text, xalign=0)
+            name.set_hexpand(True)
+            name.set_ellipsize(Pango.EllipsizeMode.END)
+            name.add_css_class("helios-model-name")
+            if is_selected:
+                name.add_css_class("helios-model-selected")
+            if tooltip:
+                name.set_tooltip_text(tooltip)
+            row.append(name)
+            if reorderable:
+                for kind, icon, label, allowed in (
+                    ("up", "go-up-symbolic", "Move up", index > 0),
+                    ("down", "go-down-symbolic", "Move down", index < count - 1),
+                ):
+                    move = Gtk.Button.new_from_icon_name(icon)
+                    move.add_css_class("flat")
+                    move.add_css_class("helios-model-move")
+                    move.set_valign(Gtk.Align.CENTER)
+                    move.set_sensitive(allowed)
+                    move.set_tooltip_text(label)
+                    move.update_property(
+                        [Gtk.AccessibleProperty.LABEL], [f"{label}: {entry.label}"],
+                    )
+                    move.connect("clicked", self._on_model_curate, kind, provider, entry.id)
+                    self._maybe_refocus(move, entry.id, kind)
+                    row.append(move)
+        else:
+            btn = Gtk.Button(label=text)
             btn.add_css_class("flat")
-            if selected:
+            btn.add_css_class("helios-model-pick")
+            if is_selected:
                 btn.add_css_class("helios-model-selected")
             btn.set_has_frame(False)
-            btn.set_halign(Gtk.Align.FILL)
-            btn.set_size_request(220, -1)
-            # Make text left-aligned within the button.
-            child = btn.get_first_child()
-            if isinstance(child, Gtk.Label):
-                child.set_xalign(0)
-            details = []
-            if entry.description:
-                details.append(entry.description)
-            if entry.reasoning_efforts:
-                details.append(
-                    "Reasoning: "
-                    + ", ".join(key for key, _desc in entry.reasoning_efforts)
-                )
-            if entry.input_modalities:
-                details.append("Input: " + ", ".join(entry.input_modalities))
-            if details:
-                btn.set_tooltip_text("\n".join(details))
-            btn.connect("clicked", self._on_pick_model, alias, popover)
-            box.append(btn)
+            btn.set_hexpand(True)
+            label_child = btn.get_first_child()
+            if isinstance(label_child, Gtk.Label):
+                label_child.set_xalign(0)
+                label_child.set_ellipsize(Pango.EllipsizeMode.END)
+            if tooltip:
+                btn.set_tooltip_text(tooltip)
+            btn.connect("clicked", self._on_pick_model, entry.id, popover)
+            row.append(btn)
+
+        kind = "hide" if listed else "add"
+        action = Gtk.Button.new_from_icon_name(
+            "view-conceal-symbolic" if listed else "list-add-symbolic"
+        )
+        action.add_css_class("flat")
+        action.add_css_class("helios-model-row-action")
+        action.set_valign(Gtk.Align.CENTER)
+        verb = "Hide from your list" if listed else "Add to your list"
+        action.set_tooltip_text(verb)
+        action.update_property([Gtk.AccessibleProperty.LABEL], [f"{verb}: {entry.label}"])
+        action.connect("clicked", self._on_model_curate, kind, provider, entry.id)
+        self._maybe_refocus(action, entry.id, kind)
+        row.append(action)
+        return row
+
+    def _attach_row_drag(
+        self, row: Gtk.Widget, handle: Gtk.Widget, provider: str, model_id: str, index: int,
+    ) -> None:
+        source = Gtk.DragSource()
+        source.set_actions(Gdk.DragAction.MOVE)
+        payload = f"{provider}\n{model_id}"
+        source.connect(
+            "prepare", lambda *_a: Gdk.ContentProvider.new_for_value(payload),
+        )
+        source.connect(
+            "drag-begin",
+            lambda src, _drag: src.set_icon(Gtk.WidgetPaintable.new(row), 12, 12),
+        )
+        handle.add_controller(source)
+        target = Gtk.DropTarget.new(GObject.TYPE_STRING, Gdk.DragAction.MOVE)
+        target.connect("drop", self._on_model_row_drop, provider, index)
+        row.add_controller(target)
+
+    def _on_model_row_drop(self, target, value, _x: float, y: float, provider: str, index: int) -> bool:
+        """Drop a dragged row before or after this one (by pointer half)."""
+        if self._destroyed:
+            return False
+        widget = target.get_widget()
+        after = widget is not None and y > widget.get_height() / 2
+        return self._drop_model_at(str(value or ""), provider, index + (1 if after else 0))
+
+    def _drop_model_at(self, payload: str, provider: str, slot: int) -> bool:
+        dragged_provider, _sep, model_id = payload.partition("\n")
+        if dragged_provider != provider:
+            return False  # lists never mix providers
+        section = self._picker_section(provider)
+        if section is None or model_id not in section.main_ids:
+            return False
+        current = section.main_ids.index(model_id)
+        # ``slot`` counts gaps in the list as drawn, which still holds the
+        # dragged row; removing it first shifts every later gap by one.
+        if slot > current:
+            slot -= 1
+        if model_picker.move_model(section, model_id, slot):
+            self._refill_model_rows_soon()
+        return True
+
+    def _picker_section(self, provider: str) -> model_picker.PickerSection | None:
+        return next((s for s in self._picker_sections() if s.provider == provider), None)
+
+    def _maybe_refocus(self, widget: Gtk.Widget, model_id: str, kind: str) -> None:
+        """After a rebuild, give focus back to the control that was used, so
+        keyboard reordering can repeat (↓ ↓ ↓) without hunting for the row."""
+        want = getattr(self, "_model_focus_after", None)
+        if want is None or want != (model_id, kind) or not widget.get_sensitive():
+            return
+        self._model_focus_after = None
+        GLib.idle_add(lambda: (widget.grab_focus(), False)[1])
+
+    def _on_model_curate(self, _btn, action: str, provider: str, model_id: str) -> None:
+        if self._destroyed:
+            return
+        if action == "reset":
+            model_picker.reset_provider(provider)
+            self._refill_model_rows_soon()
+            return
+        section = self._picker_section(provider)
+        if section is None:
+            return
+        if action == "hide":
+            model_picker.hide_model(section, model_id)
+            # The row is now under More: focus its "add" there if it is open.
+            self._model_focus_after = (model_id, "add")
+        elif action == "add":
+            model_picker.add_model(section, model_id)
+            self._model_focus_after = (model_id, "hide")
+        elif action in ("up", "down"):
+            ids = section.main_ids
+            if model_id not in ids:
+                return
+            step = -1 if action == "up" else 1
+            if not model_picker.move_model(section, model_id, ids.index(model_id) + step):
+                return
+            self._model_focus_after = (model_id, action)
+        else:
+            return
+        self._refill_model_rows_soon()
+
+    def _refill_model_rows_soon(self) -> None:
+        """Rebuild on idle: the clicked control lives in the rows a rebuild
+        destroys, so never tear them down inside its own signal."""
+        if getattr(self, "_model_refill_pending", False):
+            return
+        self._model_refill_pending = True
+
+        def run() -> bool:
+            self._model_refill_pending = False
+            if self._destroyed:
+                return False
+            adj = self._model_scroller.get_vadjustment()
+            value = adj.get_value()
+            self._fill_model_rows(
+                self._model_rows_box,
+                self._model_popover_ref,
+                self._model_search.get_text() or "",
+            )
+            # A target folded away (a hidden row under a closed More) must not
+            # steal focus whenever that disclosure is opened later.
+            self._model_focus_after = None
+            # Keep the list where it was; restore after the new rows measure.
+            GLib.idle_add(lambda: (adj.set_value(value), False)[1])
+            return False
+
+        GLib.idle_add(run)
+
+    def _on_model_edit_toggled(self, button: Gtk.ToggleButton) -> None:
+        if self._destroyed:
+            return
+        editing = button.get_active()
+        self._model_editing = editing
+        button.set_icon_name("object-select-symbolic" if editing else "document-edit-symbolic")
+        button.set_tooltip_text("Done" if editing else _EDIT_TOOLTIP)
+        self._model_edit_hint.set_visible(editing)
+        if editing:
+            self._model_popover_ref.add_css_class("helios-model-editing")
+        else:
+            self._model_popover_ref.remove_css_class("helios-model-editing")
+        self._fill_model_rows(
+            self._model_rows_box,
+            self._model_popover_ref,
+            self._model_search.get_text() or "",
+        )
 
     def _on_pick_model(self, _btn: Gtk.Button, alias: str, popover: Gtk.Popover) -> None:
         if self._destroyed:

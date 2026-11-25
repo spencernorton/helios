@@ -1,141 +1,216 @@
-"""Model picker: one provider at a time, current models first.
+"""Model picker widget: one header per provider, your list, then "More".
 
-The picker used to render every catalog entry from every provider into one
-scroll box — so a Claude session offered OpenAI and OpenRouter rows that
-picking would have silently switched provider. And Claude's binary scan
-produces every pinned version it can find, burying the four aliases anyone
-actually chooses.
-
-The widget needs real GTK; these exercise the split logic directly, matching
-the convention in test_model_picker_filter.py.
+The Claude section used to draw a header and a divider for every family — four
+headers for four rows — plus an "Other" group holding only the settings
+sentinel. The rules for what lands where are tested GTK-free in
+test_model_picker_layout.py; these tests check the widget draws them and that
+hide/add/reorder work from the dropdown itself.
 """
 
 from __future__ import annotations
-
-import types
 
 import pytest
 
 gi = pytest.importorskip("gi")
 gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+
+from gi.repository import GLib, Gtk  # noqa: E402
 
 from helios.backend import model_catalog, ui_state  # noqa: E402
 from helios.backend.model_catalog import ModelEntry  # noqa: E402
 from helios.widgets.chat_toolbar import ChatToolbar  # noqa: E402
 
-ANTHROPIC = model_catalog.PROVIDER_ANTHROPIC
 OPENAI = model_catalog.PROVIDER_OPENAI
-OPENROUTER = model_catalog.PROVIDER_OPENROUTER
+ANTHROPIC = model_catalog.PROVIDER_ANTHROPIC
+
+_KEYS = (
+    ui_state.HIDDEN_MODELS_KEY,
+    ui_state.MODEL_ORDER_KEY,
+    ui_state.OPENROUTER_PICKER_KEY,
+)
 
 
 def _catalog() -> list[ModelEntry]:
     return [
-        ModelEntry("fable[1m]", "Fable 5", "Latest"),
-        ModelEntry("opus", "Opus 4.8", "Latest"),
-        ModelEntry("sonnet", "Sonnet 4.6", "Latest"),
-        ModelEntry("", "Default (from Claude settings)", "Other"),
-        ModelEntry("claude-fable-5", "Fable 5", "Fable"),
-        ModelEntry("claude-opus-4-8", "Opus 4.8", "Opus"),
-        ModelEntry("claude-opus-4-5", "Opus 4.5", "Opus"),
-        ModelEntry("claude-sonnet-4-5", "Sonnet 4.5", "Sonnet"),
-        ModelEntry("gpt-5.6-sol", "GPT-5.6 Sol", "OpenAI", OPENAI),
-        ModelEntry("gpt-5.5", "GPT-5.5", "OpenAI", OPENAI),
-        ModelEntry("anthropic/claude-opus-4.8", "Opus 4.8", "Anthropic", OPENROUTER),
-        ModelEntry("deepseek/deepseek-v4", "DeepSeek V4", "DeepSeek", OPENROUTER),
-        ModelEntry("z-ai/glm-5.2", "GLM 5.2", "Z.AI", OPENROUTER),
-    ]
-
-
-def _toolbar(provider: str) -> types.SimpleNamespace:
-    return types.SimpleNamespace(_choices=_catalog(), _provider_filter=provider)
-
-
-def pool(provider: str) -> list[str]:
-    return [e.id for e in ChatToolbar._provider_pool(_toolbar(provider))]
-
-
-def split(provider: str) -> tuple[list[str], list[str]]:
-    fake = _toolbar(provider)
-    current, older = ChatToolbar._split_by_currency(
-        fake, ChatToolbar._provider_pool(fake)
-    )
-    return [e.id for e in current], [e.id for e in older]
-
-
-def test_claude_picker_offers_no_openai_or_openrouter_rows():
-    assert pool(ANTHROPIC) == [
-        "fable[1m]",
-        "opus",
-        "sonnet",
-        "",
-        "claude-fable-5",
-        "claude-opus-4-8",
-        "claude-opus-4-5",
-        "claude-sonnet-4-5",
-    ]
-
-
-def test_each_provider_sees_only_its_own_models():
-    assert pool(OPENAI) == ["gpt-5.6-sol", "gpt-5.5"]
-    assert pool(OPENROUTER) == [
-        "anthropic/claude-opus-4.8",
-        "deepseek/deepseek-v4",
-        "z-ai/glm-5.2",
-    ]
-    assert set(pool(ANTHROPIC)) & set(pool(OPENROUTER)) == set()
-
-
-def test_claude_pinned_versions_fold_behind_the_disclosure():
-    current, older = split(ANTHROPIC)
-    # Aliases (incl. the 1M variant and the settings-owned default) stay up
-    # front; only the pinned dated versions fold away.
-    assert current == ["fable[1m]", "opus", "sonnet", ""]
-    # The pinned twin of each up-front row (Fable 5, Opus 4.8) is the newest
-    # model, not an older one — it must not sit under "Older models".
-    assert older == ["claude-opus-4-5", "claude-sonnet-4-5"]
-
-
-def test_short_openai_catalog_shows_everything_up_front():
-    current, older = split(OPENAI)
-    assert current == ["gpt-5.6-sol", "gpt-5.5"]
-    assert older == []
-
-
-def test_openrouter_first_tier_is_the_configured_shortlist(monkeypatch):
-    monkeypatch.setattr(
-        ui_state,
-        "store",
-        lambda: types.SimpleNamespace(
-            get=lambda _key, default=None: ["z-ai/glm-5.2"]
-        ),
-    )
-    current, older = split(OPENROUTER)
-    assert current == ["z-ai/glm-5.2"]
-    assert older == ["anthropic/claude-opus-4.8", "deepseek/deepseek-v4"]
-
-
-def test_unconfigured_openrouter_shows_the_whole_catalog(monkeypatch):
-    # Never present an empty first tier with the real list hidden behind a
-    # disclosure — that reads as "no models available".
-    monkeypatch.setattr(
-        ui_state,
-        "store",
-        lambda: types.SimpleNamespace(get=lambda _key, default=None: []),
-    )
-    current, older = split(OPENROUTER)
-    assert current == pool(OPENROUTER)
-    assert older == []
-
-
-def test_claude_families_stay_visible_when_current_aliases_are_hidden():
-    current, older = model_catalog.collapse_latest_twins([
+        ModelEntry("fable[1m]", "Fable 5.2", "Latest"),
+        ModelEntry("opus[1m]", "Opus 5.5", "Latest"),
+        ModelEntry("sonnet[1m]", "Sonnet 5.5", "Latest"),
         ModelEntry("haiku", "Haiku 5.5", "Latest"),
+        model_catalog.CLAUDE_CODE_DEFAULT,
         ModelEntry("claude-fable-5-2", "Fable 5.2", "Fable"),
-        ModelEntry("claude-fable-5-1", "Fable 5.1", "Fable"),
-    ])
-
-    assert [(row.id, row.group) for row in current] == [
-        ("claude-fable-5-2", "Fable"),
-        ("haiku", "Haiku"),
+        ModelEntry("claude-opus-4-8", "Opus 4.8", "Opus"),
+        ModelEntry("gpt-6.2-sol", "GPT-6.2 Sol", "OpenAI", OPENAI),
+        ModelEntry("gpt-6.2-terra", "GPT-6.2 Terra", "OpenAI", OPENAI),
     ]
-    assert [row.id for row in older] == ["claude-fable-5-1"]
+
+
+@pytest.fixture()
+def toolbar():
+    if not Gtk.init_check():
+        pytest.skip("GTK display is unavailable")
+    store = ui_state.store()
+    previous = {key: store.get(key, []) for key in _KEYS}
+    store.update(**{key: [] for key in _KEYS})
+    bar = ChatToolbar()
+    bar.set_choices(_catalog())
+    bar.set_model("opus[1m]")
+    yield bar
+    store.update(**previous)
+
+
+def _fill(bar: ChatToolbar, query: str = "") -> None:
+    bar._fill_model_rows(bar._model_rows_box, bar._model_popover_ref, query)
+
+
+def _drain() -> None:
+    ctx = GLib.MainContext.default()
+    while ctx.pending():
+        ctx.iteration(False)
+
+
+def _walk(widget, out: list) -> list:
+    child = widget.get_first_child()
+    while child is not None:
+        out.append(child)
+        if isinstance(child, Gtk.Expander):
+            if child.get_child() is not None:
+                _walk(child.get_child(), out)
+        else:
+            _walk(child, out)
+        child = child.get_next_sibling()
+    return out
+
+
+def _widgets(bar: ChatToolbar) -> list:
+    return _walk(bar._model_rows_box, [])
+
+
+def _texts(bar: ChatToolbar, css: str) -> list[str]:
+    return [
+        w.get_label() for w in _widgets(bar)
+        if isinstance(w, (Gtk.Label, Gtk.Button)) and w.has_css_class(css)
+    ]
+
+
+def _expanders(bar: ChatToolbar) -> list[Gtk.Expander]:
+    return [w for w in _widgets(bar) if isinstance(w, Gtk.Expander)]
+
+
+def test_one_header_per_provider_and_no_other_group(toolbar):
+    _fill(toolbar)
+    assert _texts(toolbar, "helios-model-section-title") == ["Claude", "GPT"]
+    assert _texts(toolbar, "helios-model-pick") == [
+        "Fable 5.2", "✓ Opus 5.5", "Sonnet 5.5", "Haiku 5.5",
+        "GPT-6.2 Sol", "GPT-6.2 Terra",
+    ]
+    labels = [
+        w.get_label() for w in _widgets(toolbar) if isinstance(w, Gtk.Label)
+    ]
+    assert "Other" not in labels
+    assert [e.get_label() for e in _expanders(toolbar)] == [
+        "More Claude models (2)",
+    ]
+
+
+def test_more_builds_its_rows_on_first_open(toolbar):
+    _fill(toolbar)
+    (more,) = _expanders(toolbar)
+    assert more.get_child() is None
+    more.set_expanded(True)
+    # The pinned twin of the Fable row is not listed; the Claude Code
+    # default closes the list.
+    assert _texts(toolbar, "helios-model-pick")[4:6] == [
+        "Opus 4.8", "Claude Code default",
+    ]
+
+
+def test_hide_and_add_from_the_dropdown(toolbar):
+    _fill(toolbar)
+    toolbar._on_model_curate(None, "hide", ANTHROPIC, "haiku")
+    _drain()
+    assert "Haiku 5.5" not in _texts(toolbar, "helios-model-pick")
+    assert _expanders(toolbar)[0].get_label() == "More Claude models (3)"
+
+    toolbar._on_model_curate(None, "add", ANTHROPIC, "claude-opus-4-8")
+    _drain()
+    assert _texts(toolbar, "helios-model-pick")[:4] == [
+        "Fable 5.2", "✓ Opus 5.5", "Sonnet 5.5", "Opus 4.8",
+    ]
+
+
+def test_edit_mode_draws_handles_arrows_and_reset(toolbar):
+    toolbar._model_edit_btn.set_active(True)
+    assert toolbar._model_edit_hint.get_visible()
+    # Names are plain labels while editing: a stray click must not switch
+    # model (and possibly provider) mid-curation.
+    assert _texts(toolbar, "helios-model-pick") == []
+    assert _texts(toolbar, "helios-model-name")[:4] == [
+        "Fable 5.2", "✓ Opus 5.5", "Sonnet 5.5", "Haiku 5.5",
+    ]
+    moves = [w for w in _widgets(toolbar) if isinstance(w, Gtk.Button)
+             and w.has_css_class("helios-model-move")]
+    assert len(moves) == 2 * 6  # up + down on every listed row
+    assert [m.get_sensitive() for m in moves[:2]] == [False, True]
+    assert _texts(toolbar, "helios-model-section-reset") == []
+
+    toolbar._on_model_curate(None, "down", ANTHROPIC, "fable[1m]")
+    _drain()
+    assert _texts(toolbar, "helios-model-name")[:2] == ["✓ Opus 5.5", "Fable 5.2"]
+    assert _texts(toolbar, "helios-model-section-reset") == ["Reset"]
+
+    toolbar._on_model_curate(None, "reset", ANTHROPIC, "")
+    _drain()
+    assert _texts(toolbar, "helios-model-name")[:2] == ["Fable 5.2", "✓ Opus 5.5"]
+
+
+
+def test_reopening_starts_in_pick_mode(toolbar):
+    window = Gtk.Window()
+    window.set_child(toolbar)
+    window.present()
+    try:
+        _drain()
+        toolbar._model_edit_btn.set_active(True)
+        toolbar._model_popover_ref.popup()
+        _drain()
+        assert not toolbar._model_edit_btn.get_active()
+        assert not toolbar._model_edit_hint.get_visible()
+        assert _texts(toolbar, "helios-model-pick")[1] == "✓ Opus 5.5"
+        toolbar._model_popover_ref.popdown()
+    finally:
+        window.set_child(None)
+        window.destroy()
+        _drain()
+
+
+def test_drop_places_the_row_in_the_gap_it_was_dropped_on(toolbar):
+    # Gaps count the list as drawn: dropping Fable (row 0) below Sonnet
+    # (row 2) is gap 3, which is index 2 once Fable leaves row 0.
+    assert toolbar._drop_model_at(f"{ANTHROPIC}\nfable[1m]", ANTHROPIC, 3)
+    _drain()
+    sections = toolbar._picker_sections()
+    assert sections[0].main_ids == ["opus[1m]", "sonnet[1m]", "fable[1m]", "haiku"]
+    # Rows never cross providers.
+    assert not toolbar._drop_model_at(f"{ANTHROPIC}\nhaiku", OPENAI, 0)
+
+
+def test_tooltip_leads_with_the_full_name(toolbar):
+    # A long name can be cut short in the row; the tooltip always has it.
+    _fill(toolbar)
+    picks = [
+        w for w in _widgets(toolbar)
+        if isinstance(w, Gtk.Button) and w.has_css_class("helios-model-pick")
+    ]
+    assert picks[0].get_tooltip_text().splitlines()[0] == "Fable 5.2"
+    assert picks[4].get_tooltip_text() == "GPT-6.2 Sol"
+
+
+def test_search_marks_rows_by_tier(toolbar):
+    _fill(toolbar, "opus")
+    actions = [
+        w.get_tooltip_text() for w in _widgets(toolbar)
+        if isinstance(w, Gtk.Button) and w.has_css_class("helios-model-row-action")
+    ]
+    assert _texts(toolbar, "helios-model-pick") == ["✓ Opus 5.5", "Opus 4.8"]
+    assert actions == ["Hide from your list", "Add to your list"]

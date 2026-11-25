@@ -94,6 +94,19 @@ works you can keep typing — the message queues and goes when the turn ends.
 `Esc` or `Ctrl+.` stops the current turn; queued messages come back to the
 composer.
 
+**The model picker.** Each provider gets one section that starts with *your
+list*: the newest model of every Claude family (each row is named after the
+version its alias resolves to today), every model Codex, Gemini, Muse and
+Kimi report (the first eight when a catalogue is longer), and the OpenRouter
+models ticked in Settings → Providers.
+Everything else the provider offers — older pinned versions, models you hid,
+and *Claude Code default* (no `--model`, so Claude Code uses its own
+`/model` or `settings.json` choice) — folds under *More <provider> models*.
+The filter box searches both. Hover a row for its hide or add button, or
+press the pencil button to drag or arrow-key rows into your own order; a
+section's *Reset* returns it to the default list. Settings → Providers →
+Model picker resets every provider at once.
+
 **Switching models mid-session.** Pick another model or provider in the toolbar
 during an ongoing chat to continue in the same conversation instead of opening
 a new one. Same-provider switches reuse the live session or native resume path
@@ -385,7 +398,7 @@ rewritten whole on every change, so edit it only while Helios is closed.
 | Control | Key | Values |
 |---|---|---|
 | Defaults → Default permissions | `permission_mode` | `default` · `acceptEdits` · `auto` · `bypassPermissions` · `plan` · `dontAsk` (default `default`); `bypassPermissions` is honoured only with `permission_mode_confirmed: true`, otherwise it is clamped to `default` |
-| Defaults → Model | `model` | model id (default `fable[1m]`); an empty value is read back as `fable[1m]` at the next launch, so *Default (from Claude settings)* in the picker lasts only for the running session |
+| Defaults → Model | `model` | model id (default `fable[1m]`); an empty value is read back as `fable[1m]` at the next launch, so *Claude Code default* in the picker lasts only for the running session |
 | Defaults → Default working directory | `default_cwd` | absolute path; unset, or no longer a directory → the most recent project folder Helios knows about, else `$HOME` (read-only) |
 | Appearance → Theme | `color_scheme` | `auto` · `light` · `dark` |
 | Appearance → Translucent sessions sidebar | `glass_sidebar` | `true` · `false` |
@@ -396,7 +409,8 @@ rewritten whole on every change, so edit it only while Helios is closed.
 | Behavior → Ollama server URL | `ollama_url` | default `http://localhost:11434`; URLs ending in `/v1` use OpenAI-compatible `/v1/models` and `/v1/chat/completions` |
 | Behavior → Title model | `ollama_title_model` | default `qwen2.5-coder:14b` |
 | Behavior → Show other machines' sessions | `show_pool_sessions` | `true` · `false` (default) |
-| Providers → Models in the picker | `openrouter_picker_models` | list of model ids; empty = whole catalog |
+| Providers → Models in the picker | `openrouter_picker_models` | list of model ids: OpenRouter's list in the model picker; empty = none up front, the catalog stays under *More* |
+| Model picker → hide / add / reorder | `hidden_models`, `model_order` | lists of model ids: defaults moved to *More*, and your list in order; both empty = default lists |
 | Execution capsule → Reasoning (global default) | `effort_level` | `off` · `low` · `medium` · `high` (default) · `xhigh` · `max` |
 
 Per-conversation overrides live in `$HELIOS_STATE_DIR/conversation-perms.json`

@@ -13,7 +13,7 @@ import pytest
 gi = pytest.importorskip("gi")
 gi.require_version("Gtk", "4.0")
 
-from helios.backend import model_catalog  # noqa: E402
+from helios.backend import model_catalog, model_picker  # noqa: E402
 from helios.backend.model_catalog import ModelEntry  # noqa: E402
 from helios.widgets.chat_toolbar import ChatToolbar  # noqa: E402
 
@@ -46,15 +46,8 @@ def rendered(widget) -> list[str]:
 
 
 def matches(query: str):
-    """Mirror of the predicate in _fill_model_rows."""
-    needle = query.strip().lower()
-    return [
-        e.id for e in entries()
-        if not needle
-        or needle in e.id.lower()
-        or needle in e.label.lower()
-        or needle in (e.group or "").lower()
-    ]
+    """The predicate _fill_model_rows applies to every row of both tiers."""
+    return [e.id for e in entries() if model_picker.matches(e, query)]
 
 
 class TestFilterPredicate:
@@ -91,29 +84,6 @@ class TestPickerHygieneHelpers:
         ]
         unique = model_catalog.dedupe_entries(rows)
         assert [e.label for e in unique] == ["Opus", "Opus OR", "Sonnet"]
-
-    def test_visible_entries_hides_but_keeps_selection_and_default(self):
-        rows = entries() + [ModelEntry("", "Default", "Other")]
-        visible = model_catalog.visible_entries(
-            rows,
-            ["z-ai/glm-5.2", "deepseek/deepseek-v4-flash", ""],
-            keep_id="deepseek/deepseek-v4-flash")
-        assert [e.id for e in visible] == [
-            "anthropic/claude-sonnet-4", "deepseek/deepseek-v4-flash",
-            "openai/gpt-5", ""]
-
-    def test_collapse_latest_twins_one_row_per_family(self):
-        pool = [
-            ModelEntry("opus[1m]", "Opus 1M", "Latest"),
-            ModelEntry("opus", "Opus", "Latest"),
-            ModelEntry("sonnet[1m]", "Sonnet 1M", "Latest"),
-            ModelEntry("sonnet", "Sonnet", "Latest"),
-            ModelEntry("", "Default", "Other"),
-            ModelEntry("claude-opus-4-8", "Opus 4.8", "Opus"),
-        ]
-        current, older = model_catalog.collapse_latest_twins(pool)
-        assert [e.id for e in current] == ["opus[1m]", "sonnet[1m]", ""]
-        assert [e.id for e in older] == ["claude-opus-4-8"]
 
 
 class TestSearchAlwaysAvailable:
@@ -154,34 +124,53 @@ class TestHiddenModelsInToolbar:
         from helios.backend import ui_state
 
         store = ui_state.store()
-        previous = store.get(ui_state.HIDDEN_MODELS_KEY, [])
+        previous = {
+            key: store.get(key, [])
+            for key in (ui_state.HIDDEN_MODELS_KEY, ui_state.MODEL_ORDER_KEY,
+                        ui_state.OPENROUTER_PICKER_KEY)
+        }
         bar = ChatToolbar()
         bar._choices = [
             ModelEntry("sonnet", "Claude Sonnet", "Latest"),
             ModelEntry("z-ai/glm-5.2", "GLM 5.2", "Z.AI",
                        provider=model_catalog.PROVIDER_OPENROUTER),
+            ModelEntry("deepseek/deepseek-v4", "DeepSeek V4", "DeepSeek",
+                       provider=model_catalog.PROVIDER_OPENROUTER),
         ]
         yield bar, store
-        store.set(ui_state.HIDDEN_MODELS_KEY, previous)
+        store.update(**previous)
 
-    def test_hidden_model_disappears_until_selected(self, toolbar):
+    def test_hidden_model_folds_under_more_but_search_still_finds_it(self, toolbar):
+        from gi.repository import Gtk
+        from helios.backend import ui_state
+
+        bar, store = toolbar
+        store.set(ui_state.OPENROUTER_PICKER_KEY, ["deepseek/deepseek-v4", "z-ai/glm-5.2"])
+        store.set(ui_state.HIDDEN_MODELS_KEY, ["z-ai/glm-5.2"])
+        bar._model_alias = "sonnet"
+        bar._model_more_state = {}
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        bar._fill_model_rows(box, Gtk.Popover(), "")
+        # Folded: More builds its rows only when opened.
+        assert not any("GLM 5.2" in text for text in rendered(box))
+        assert "DeepSeek V4" in rendered(box)
+
+        # A search spans both tiers, so a hidden model is never unreachable.
+        box2 = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        bar._fill_model_rows(box2, Gtk.Popover(), "glm")
+        assert "GLM 5.2" in rendered(box2)
+
+    def test_selected_hidden_model_opens_its_more_with_the_tick(self, toolbar):
         from gi.repository import Gtk
         from helios.backend import ui_state
 
         bar, store = toolbar
         store.set(ui_state.HIDDEN_MODELS_KEY, ["z-ai/glm-5.2"])
-        bar._model_alias = "sonnet"
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        # Search renders the flat cross-provider list, so GLM would show
-        # here if hiding did not remove it first.
-        bar._fill_model_rows(box, Gtk.Popover(), "glm")
-        assert not any("GLM 5.2" in text for text in rendered(box))
-
-        # The selected model is never hidden out from under its session.
         bar._model_alias = "z-ai/glm-5.2"
-        box2 = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        bar._fill_model_rows(box2, Gtk.Popover(), "glm")
-        assert any("GLM 5.2" in text for text in rendered(box2))
+        bar._model_more_state = {}
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        bar._fill_model_rows(box, Gtk.Popover(), "")
+        assert "✓ GLM 5.2" in rendered(box)
 
 
 def test_rate_limit_label_prefers_the_row_the_provider_labelled() -> None:

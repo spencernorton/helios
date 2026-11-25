@@ -17,7 +17,7 @@ _ENTRIES = [
     ModelEntry("fable[1m]", "Fable 5.2", "Latest"),
     ModelEntry("opus[1m]", "Opus 5.5", "Latest"),
     ModelEntry("haiku", "Haiku 5.5", "Latest"),
-    ModelEntry("", "Default (from Claude settings)", "Other"),
+    ModelEntry("", "Claude Code default", "Claude Code"),
     ModelEntry("claude-opus-4-8", "Opus 4.8", "Opus"),
 ]
 
@@ -32,8 +32,10 @@ def _ticked(toolbar: ChatToolbar) -> list[str]:
             if isinstance(child, Gtk.Button) and (child.get_label() or "").startswith("✓"):
                 out.append(child.get_label())
             if isinstance(child, Gtk.Expander):
-                # A collapsed expander keeps its rows off the widget tree.
-                walk(child.get_child())
+                # A collapsed expander keeps its rows off the widget tree,
+                # and builds them only once opened.
+                if child.get_child() is not None:
+                    walk(child.get_child())
             else:
                 walk(child)
             child = child.get_next_sibling()

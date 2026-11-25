@@ -1,5 +1,68 @@
 # Helios — Session Journal
 
+## 2026-11-25 — main (0.121.3) merged into the model picker branch (0.122.0)
+
+- Conflict in `SettingsDialog._set_model_choices`: this branch had dropped
+  the Shown-models list refill (curation moved to the dropdown) while 0.121.3
+  replaced the "reset a saved native default to row 0" branch with
+  `_with_saved_default_row`. Resolution keeps both: the placeholder row, no
+  refill. The `default_model` row added to the ui-state table in 0.121.3 is
+  kept beside this branch's `Claude Code default` wording. Versions stay
+  0.122.0; the 0.122.0 changelog date moves to its release day.
+
+## 2026-11-24 — Model picker follow-up: real Gemini/Muse/Kimi catalogs
+
+- The first before/after preview drew one placeholder row each for Gemini,
+  Muse and Kimi, which read as "these providers cannot show or hide other
+  models". The rules already covered them; the real catalogs (8 / 5 / 6
+  models) list in full and curate like any other. Lesson: render previews
+  from the app's own discovery, never hand-written rows.
+- Real data exposed one flaw: edit-mode rows cut "Orchestrator (Neon)",
+  "(Carbon)" and "(Argon)" to the same text. Rows are wider
+  (`_PICK_ROW_WIDTH` 252, `_EDIT_ROW_WIDTH` 316) and every row's tooltip now
+  leads with the full name.
+- New parametrized test curates real id shapes (`gemini-*`, `muse-*`,
+  `kimi-code/*`) and checks Kimi's slash ids never touch OpenRouter's list.
+- Not changed, recorded for a decision: `agy models` also lists
+  `claude-opus-5-5`, `claude-sonnet-5-5` and `gpt-oss-120b`.
+  `google_env._MODEL_ID` drops every non-`gemini-` id and
+  `gemini_driver` refuses to start one, so Helios shows 8 of Antigravity's
+  11 models. Lifting that means `google:`-prefixed ids (the bare Claude ids
+  collide with the Anthropic catalog) through the driver and model memory.
+- Backend lane 2129 passed; native Xvfb suite 3827 passed.
+
+## 2026-11-24 — Model picker: two tiers, curation from the dropdown (0.122.0)
+
+- Problem: the Claude section drew a header + divider per family (four
+  headers for four rows) and an "Other" group whose only row was the empty-id
+  settings sentinel, labelled "Default (from Claude settings)" — easily read
+  as Helios's own Settings default. Curation lived in a Settings checklist
+  ("Shown models") whose tick meant "not hidden", not "shown up front".
+- New GTK-free `backend/model_picker.py` owns the rules: per provider, *your
+  list* (Claude `Latest` aliases; first 8 for Codex/Gemini/Muse/Kimi; exactly
+  the OpenRouter shortlist) then *More* (everything else; Claude alias twins
+  dropped unless selected; `""` last). Curation = `hidden_models` (defaults
+  moved to More) + new `model_order` (presence promotes, position orders;
+  first curation of a provider materializes its whole list there).
+- OpenRouter's list is now exactly the shortlist — an empty shortlist lists
+  none up front (was: the whole catalog), because hiding the last shortlisted
+  model otherwise dumped several hundred rows into the list. Picker edits and
+  Settings ticks are kept in step (`sync_openrouter_shortlist`).
+- Toolbar: one header per provider, ~26px rows, lazy-built "More <provider>
+  models (N)" expanders (open when holding the selection), hover hide/add,
+  pencil → edit mode (drag handle, ↑/↓, per-provider Reset; names are labels
+  so a stray click cannot switch model). Rebuilds go through idle so a
+  clicked control is never destroyed inside its own signal.
+- Settings → Providers → "Model picker" replaces the checklist with an
+  explanation + reset-all. `prune_model_order` keeps `""`.
+- Cross-engine review (GPT) caught two: `_save` dropped placed ids the
+  current catalog lacked (curating under the fallback list lost them for
+  good) — now kept until reset/prune; and `.helios-model-more > title` never
+  matched because GTK4 nests `expander-widget > box > title` (the old
+  "Older models" rule had the same dead selector).
+- Tests: `test_model_picker_layout.py` (backend rules), rewritten
+  `test_model_picker_tiers.py` (widget). Backend lane 2126 passed; native
+  Xvfb suite 3823 passed.
 ## 2026-11-25 — A switched-away model can't take the chat back; Settings default sticks; Codex resume notice (0.121.3)
 
 - Reported: a Fable chat switched to GPT "said it switched", then answered as

@@ -28,7 +28,7 @@ from gi.repository import Adw, GLib, GObject, Gtk  # noqa: E402
 
 from helios import APP_ID
 from helios.backend import accounts, claude_env, codex_env, model_catalog
-from helios.backend import ollama_titles
+from helios.backend import model_picker, ollama_titles
 from helios.backend.process.codex_app_hub import (
     CodexCredentialUpdateInUseError,
     get_shared_hub,
@@ -257,10 +257,6 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._model_choices = SettingsDialog._with_saved_default_row(
             self._selected_model_id, choices
         )
-        if hasattr(self, "_hidden_picker_list") and not getattr(
-            self, "_suppress_hidden_refill", False
-        ):
-            self._fill_hidden_picker(getattr(self, "_hidden_query", ""))
         model_model = Gtk.StringList()
         for _key, label in self._model_choices:
             model_model.append(label)
@@ -891,7 +887,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._or_group.set_header_suffix(or_refresh)
 
         self._build_or_picker_group(page)
-        self._build_hidden_models_group(page)
+        self._build_model_picker_group(page)
 
         # ── OpenRouter · Smart Routing (broker) ──
         self._router_group = Adw.PreferencesGroup()
@@ -1432,22 +1428,23 @@ class SettingsDialog(Adw.PreferencesDialog):
         """Choose which OpenRouter models the chat picker offers up front.
 
         OpenRouter routes several hundred models. Nobody picks from that list;
-        they pick from the five they use. Ticked models become the picker's
-        first tier — the rest stay reachable behind "Older models" and search,
-        so this narrows the default view without hiding the catalog.
+        they pick from the five they use. Ticked models become OpenRouter's list
+        in the picker — the rest stay reachable behind "More" and search, so
+        this narrows the default view without hiding the catalog.
         """
         group = Adw.PreferencesGroup()
         group.set_title("OpenRouter · Models in the picker")
         group.set_description(
-            "Tick the models you actually use. Untick everything to show the "
-            "whole catalog."
+            "Tick the models you actually use: they are OpenRouter's list in "
+            "the chat picker. The rest of the catalog stays under More and in "
+            "the picker's search."
         )
         page.add(group)
         self._or_picker_group = group
 
         self._or_picker_count = Adw.ActionRow()
         self._or_picker_count.set_title("No models selected")
-        self._or_picker_count.set_subtitle("The picker shows the full catalog.")
+        self._or_picker_count.set_subtitle("The picker keeps the catalog under More.")
         clear = Gtk.Button(label="Clear")
         clear.add_css_class("flat")
         clear.set_valign(Gtk.Align.CENTER)
@@ -1489,8 +1486,14 @@ class SettingsDialog(Adw.PreferencesDialog):
         return {str(x) for x in stored if isinstance(x, str)}
 
     def _set_or_picked(self, ids: set[str]) -> None:
+        previous = self._or_picked()
         ui_state_store().set(OPENROUTER_PICKER_KEY, sorted(ids))
+        # A model ticked here must show even if it was hidden from the picker;
+        # one unticked must leave the picker list even if it was reordered.
+        model_picker.sync_openrouter_shortlist(previous, ids)
         self._refresh_or_picker_count()
+        if hasattr(self, "_picker_summary_row"):
+            self._refresh_picker_summary()
 
     def _refresh_or_picker_count(self) -> None:
         picked = self._or_picked()
@@ -1499,11 +1502,11 @@ class SettingsDialog(Adw.PreferencesDialog):
                 f"{len(picked)} model{'s' if len(picked) != 1 else ''} selected"
             )
             self._or_picker_count.set_subtitle(
-                "These appear first in the chat model picker."
+                "These are OpenRouter's list in the chat model picker."
             )
         else:
             self._or_picker_count.set_title("No models selected")
-            self._or_picker_count.set_subtitle("The picker shows the full catalog.")
+            self._or_picker_count.set_subtitle("The picker keeps the catalog under More.")
 
     def _fill_or_picker(self, query: str) -> None:
         if not self._or_picker_entries:
@@ -1553,115 +1556,62 @@ class SettingsDialog(Adw.PreferencesDialog):
         row.set_activatable_widget(check)
         return row
 
-    def _build_hidden_models_group(self, page: Adw.PreferencesPage) -> None:
+    def _build_model_picker_group(self, page: Adw.PreferencesPage) -> None:
+        """Explain what the chat picker lists, and undo its customization.
+
+        Curation happens in the picker itself (hover a model to hide or add
+        it; the pencil button reorders), so this group only says how the
+        lists are chosen and offers the way back to the defaults.
+        """
         group = Adw.PreferencesGroup()
-        group.set_title("Model picker · Shown models")
+        group.set_title("Model picker")
         group.set_description(
-            "Every model Helios can pick, across all providers. Untick a "
-            "model to hide it from the chat picker and the default-model "
-            "dropdown; tick it again here to bring it back. The currently "
-            "selected model always stays visible."
+            "Each provider in the chat picker starts with its current models: "
+            "the newest of every Claude family, every model Codex, Gemini, "
+            "Muse and Kimi offer (the first eight of a longer catalog), and "
+            "your OpenRouter shortlist. "
+            "Older versions and anything you hide fold under More, and the "
+            "filter box searches everything. Hover a model in the picker to "
+            "hide or add it; the pencil button reorders. Hidden models also "
+            "stay out of the default-model list above."
         )
         page.add(group)
 
-        self._hidden_count_row = Adw.ActionRow()
-        self._hidden_count_row.set_title("Shown models")
-        count_icon = Gtk.Image.new_from_icon_name("view-list-symbolic")
-        count_icon.add_css_class("dim-label")
-        self._hidden_count_row.add_prefix(count_icon)
-        show_all = Gtk.Button.new_with_label("Show all")
-        show_all.set_valign(Gtk.Align.CENTER)
-        show_all.connect("clicked", lambda *_: self._set_hidden_models(set()))
-        self._hidden_count_row.add_suffix(show_all)
-        group.add(self._hidden_count_row)
+        self._picker_summary_row = Adw.ActionRow()
+        icon = Gtk.Image.new_from_icon_name("view-list-symbolic")
+        icon.add_css_class("dim-label")
+        self._picker_summary_row.add_prefix(icon)
+        self._picker_reset_btn = Gtk.Button.new_with_label("Reset")
+        self._picker_reset_btn.set_valign(Gtk.Align.CENTER)
+        self._picker_reset_btn.set_tooltip_text(
+            "Show every provider's default list again, in default order"
+        )
+        self._picker_reset_btn.connect("clicked", lambda *_: self._reset_model_picker())
+        self._picker_summary_row.add_suffix(self._picker_reset_btn)
+        group.add(self._picker_summary_row)
+        self._refresh_picker_summary()
 
-        search_row = Adw.ActionRow()
-        search = Gtk.SearchEntry()
-        search.set_placeholder_text("Filter models…")
-        search.set_hexpand(True)
-        search.connect("search-changed", self._on_hidden_search_changed)
-        search_row.add_prefix(search)
-        group.add(search_row)
-
-        self._hidden_picker_list = Gtk.ListBox()
-        self._hidden_picker_list.set_selection_mode(Gtk.SelectionMode.NONE)
-        self._hidden_picker_list.add_css_class("boxed-list")
-        group.add(self._hidden_picker_list)
-        self._hidden_query = ""
-        self._fill_hidden_picker("")
-
-    def _on_hidden_search_changed(self, entry: Gtk.SearchEntry) -> None:
-        self._hidden_query = entry.get_text() or ""
-        self._fill_hidden_picker(self._hidden_query)
-
-    def _fill_hidden_picker(self, query: str) -> None:
-        child = self._hidden_picker_list.get_first_child()
-        while child is not None:
-            nxt = child.get_next_sibling()
-            self._hidden_picker_list.remove(child)
-            child = nxt
-        hidden = self._hidden_models()
-        all_choices = [
-            choice for choice in getattr(self, "_all_model_choices", self._model_choices)
-            if choice[0]  # the "" Claude-default sentinel is not hideable
-        ]
-        needle = query.strip().lower()
-        matches = [
-            (model_id, label) for model_id, label in all_choices
-            if not needle or needle in label.lower() or needle in model_id.lower()
-        ]
-        shown = len(all_choices) - len(hidden & {m for m, _l in all_choices})
-        self._hidden_count_row.set_subtitle(
-            f"{shown} of {len(all_choices)} models shown in pickers")
-        if not matches:
-            empty = Adw.ActionRow()
-            empty.set_title("No models match")
-            empty.add_css_class("dim-label")
-            self._hidden_picker_list.append(empty)
+    def _refresh_picker_summary(self) -> None:
+        hidden, placed = model_picker.customization_counts()
+        if not hidden and not placed:
+            self._picker_summary_row.set_title("Default lists")
+            self._picker_summary_row.set_subtitle("Nothing hidden, added or reordered.")
+            self._picker_reset_btn.set_sensitive(False)
             return
-        for model_id, label in matches[:_OR_PICKER_ROW_CAP]:
-            row = Adw.ActionRow()
-            row.set_title(label)
-            row.set_subtitle(model_id.removesuffix("[1m]"))
-            check = Gtk.CheckButton()
-            check.set_active(model_id not in hidden)
-            check.set_valign(Gtk.Align.CENTER)
-            check.connect("toggled", self._on_hidden_toggled, model_id)
-            row.add_prefix(check)
-            row.set_activatable_widget(check)
-            self._hidden_picker_list.append(row)
-        if len(matches) > _OR_PICKER_ROW_CAP:
-            more = Adw.ActionRow()
-            more.set_title(f"…and {len(matches) - _OR_PICKER_ROW_CAP} more")
-            more.set_subtitle("Keep typing to narrow the list.")
-            more.add_css_class("dim-label")
-            self._hidden_picker_list.append(more)
+        parts = []
+        if hidden:
+            parts.append(f"{hidden} hidden")
+        if placed:
+            parts.append(f"{placed} in your order")
+        self._picker_summary_row.set_title("Customized")
+        self._picker_summary_row.set_subtitle(" · ".join(parts))
+        self._picker_reset_btn.set_sensitive(True)
 
-    def _set_hidden_models(self, hidden: set[str]) -> None:
-        ui_state_store().set(HIDDEN_MODELS_KEY, sorted(hidden))
-        # Re-render the default-model combo from the master list at once.
+    def _reset_model_picker(self) -> None:
+        model_picker.reset_all()
+        self._refresh_picker_summary()
+        # Re-render the default-model combo now that nothing is hidden.
         self._set_model_choices(list(getattr(self, "_all_model_choices", self._model_choices)))
-
-    def _on_hidden_toggled(self, check: Gtk.CheckButton, model_id: str) -> None:
-        hidden = self._hidden_models()
-        if check.get_active():
-            hidden.discard(model_id)
-        else:
-            hidden.add(model_id)
-        # The emitting check button lives in the list a refill would
-        # destroy mid-signal; update the combo + count only.
-        self._suppress_hidden_refill = True
-        try:
-            self._set_hidden_models(hidden)
-        finally:
-            self._suppress_hidden_refill = False
-        all_choices = [
-            choice for choice in getattr(self, "_all_model_choices", self._model_choices)
-            if choice[0]
-        ]
-        shown = len(all_choices) - len(hidden & {m for m, _l in all_choices})
-        self._hidden_count_row.set_subtitle(
-            f"{shown} of {len(all_choices)} models shown in pickers")
 
     def _on_or_pick_toggled(self, check: Gtk.CheckButton, model_id: str) -> None:
         picked = self._or_picked()
