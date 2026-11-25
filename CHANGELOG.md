@@ -4,6 +4,13 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.121.3 — 2026-11-25
+
+### Fixes
+- **A model you switch away from can't take the chat back:** switching a chat from Claude to another provider left the Claude process running. When one of its background tasks finished, the Claude CLI started a turn by itself and Helios recorded it as the conversation's next model leg: the chat flipped back to Claude with no user action, and that turn could edit files the new model had just written. A turn Helios did not send, from a provider that is not leading the conversation, is no longer recorded as a leg; a self-started Claude turn like that is stopped, with a toast saying so; and switching away from a Claude process that still has background tasks stops it at once (the switch toast says its tasks were stopped). An idle Claude process with nothing pending is still kept for a cheap switch back.
+- **The Settings default model sticks:** a saved GPT, Gemini, Muse or Kimi default was replaced with the first row (Fable) as soon as another provider's model list loaded before its own, and the next Save wrote Fable. The saved default now stays, shown as a placeholder row until its own list arrives. Choosing a model under Settings → Defaults now saves it immediately, like the working directory beside it; it used to wait for the Save chat defaults button at the bottom of the page and was lost when the dialog closed without it.
+- **No Codex deprecation pop-up on resume:** Codex 0.172 sends "Full-history hydration is deprecated for paginated threads" for every resume that asks for the full history, which Helios showed as a toast after each restart. Helios reads only the thread id from a resume, so it now resumes with `excludeTurns`.
+
 ## 0.121.2 — 2026-11-24
 
 ### Fixes

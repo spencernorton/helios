@@ -655,6 +655,111 @@ class WindowModelsMixin:
         except Exception:
             return False
 
+    def _provider_leads_work(self, work_id: str, provider: str) -> bool:
+        """True when ``provider`` is the Work's current lead (or it is unknown).
+
+        Every user send selects the lead before its driver starts, so a
+        native turn from any other provider is one Helios never asked for: a
+        switched-away Claude process waking on its own background task. Its
+        ``system/init`` must not be recorded as the conversation's next leg,
+        or the chat silently flips back to that model.
+        """
+        if not work_id or not provider:
+            return True
+        coordinator = getattr(self, "_work_coordinator", None)
+        store = getattr(coordinator, "store", None)
+        if store is None:
+            return True
+        try:
+            work = store.get_work(work_id)
+        except Exception:
+            return True
+        lead = str(getattr(work, "lead_provider", "") or "") if work is not None else ""
+        return not lead or lead == provider
+
+    def _lead_model_label(self, work_id: str) -> str:
+        """Human label of the model currently leading ``work_id`` ("" unknown)."""
+        coordinator = getattr(self, "_work_coordinator", None)
+        store = getattr(coordinator, "store", None)
+        if store is None or not work_id:
+            return ""
+        try:
+            work = store.get_work(work_id)
+            lead = str(getattr(work, "lead_provider", "") or "")
+            legs = coordinator.list_work_legs(work_id) if lead else []
+        except Exception:
+            return ""
+        tail = legs[-1] if legs else None
+        if tail is None or tail.provider != lead:
+            return ""
+        return human_model_label(lead, tail.model)
+
+    def _stop_unsolicited_turn(self, drv, work_id: str) -> bool:
+        """Tear down a switched-away Claude that began a turn on its own.
+
+        Called synchronously from ``session-started`` (its ``system/init``),
+        so nothing the turn streams afterwards is processed. Returns True when
+        the driver was stopped.
+        """
+        if not getattr(drv, "is_running", False) or getattr(drv, "is_busy", False):
+            return False
+        provider = self._driver_provider(drv)
+        if _mw().MainWindow._provider_leads_work(self, work_id, provider):
+            return False
+        label = human_model_label(provider, str(getattr(drv, "model", "") or ""))
+        lead_label = _mw().MainWindow._lead_model_label(self, work_id)
+        _log.info(
+            "stopping unsolicited %s turn in Work %s (lead is %s)",
+            provider,
+            work_id,
+            lead_label or "another provider",
+        )
+        self._teardown_driver(drv)
+        if getattr(self, "_destroyed", False):
+            return True
+        moved = f"moved to {lead_label}" if lead_label else "moved to another model"
+        self._toast(
+            f"Stopped {label}: it started working on its own (a background "
+            f"task finished) after this chat {moved}.",
+            timeout=8,
+        )
+        return True
+
+    def _retire_switched_away_driver(
+        self,
+        outgoing,
+        *,
+        old_provider: str,
+        outgoing_session_id: str,
+        keep=None,
+    ) -> str:
+        """Stop the old model's process if its background tasks would wake it.
+
+        A Claude process with background work keeps running after the chat
+        moves to another provider; when a task finishes it starts a turn by
+        itself and acts in the workspace. Returns the stopped model's label.
+        """
+        candidates = [outgoing]
+        manager = getattr(self, "_driver_manager", None)
+        if manager is not None and outgoing_session_id:
+            try:
+                candidates.append(manager.driver_for_session(outgoing_session_id))
+            except Exception:
+                pass
+        for candidate in candidates:
+            if candidate is None or candidate is keep:
+                continue
+            if self._driver_provider(candidate) != old_provider:
+                continue
+            if candidate.is_busy or not getattr(candidate, "has_background_work", False):
+                continue
+            label = human_model_label(
+                old_provider, str(getattr(candidate, "model", "") or "")
+            )
+            self._teardown_driver(candidate)
+            return label
+        return ""
+
     def _target_work_has_continuity(self, target) -> bool:
         if target is None:
             return False
@@ -1403,12 +1508,31 @@ class WindowModelsMixin:
             )
         )
 
+        stopped_label = ""
+        if new_provider != old_provider:
+            stopped_label = _mw().MainWindow._retire_switched_away_driver(
+                self,
+                drv,
+                old_provider=old_provider,
+                outgoing_session_id=outgoing_session_id,
+                keep=rebound_driver,
+            )
+
         self._sync_effort_sensitivity()
         self._sync_execution_control()
         _mw().MainWindow._refresh_capabilities(self)
-        if announce and divider is not None:
+        new_label = human_model_label(new_provider, new_model)
+        if stopped_label:
+            # Always say so, even for an unannounced switch: background work
+            # the user started was cancelled.
             self._toast(
-                f"Switched to {human_model_label(new_provider, new_model)} — "
+                f"Switched to {new_label} — stopped {stopped_label}'s background "
+                "tasks so it can't keep working in this chat.",
+                timeout=8,
+            )
+        elif announce and divider is not None:
+            self._toast(
+                f"Switched to {new_label} — "
                 "essential context carries forward in this chat."
             )
         return True

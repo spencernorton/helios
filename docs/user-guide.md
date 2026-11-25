@@ -347,10 +347,11 @@ Kimi uses `kimi login` and owns its membership credentials. OpenRouter is
 an API key, so its row opens *Providers*; that key is stored in
 `~/.helios/openrouter.key`. Native CLI credentials are not copied by Helios.
 
-**Settings.** *Defaults* — permission mode and
-model for new chats (persisted only by the **Save chat defaults** button at
-the bottom of the page) and the default working directory (saved as soon as
-you choose it). *Appearance* — colour scheme (auto, light, dark) and a
+**Settings.** *Defaults* — permission mode for new chats (persisted only by
+the **Save chat defaults** button at the bottom of the page), and the model
+for new chats and default working directory (each saved as soon as you
+choose it). A saved default whose provider's models have not loaded yet stays
+listed as a placeholder row until they do. *Appearance* — colour scheme (auto, light, dark) and a
 translucent sessions sidebar. *Behavior* — notifications when a background
 session finishes or a tandem mission is gated, the four-choice title backend
 (First message is the default), and other machines' sessions. Optional

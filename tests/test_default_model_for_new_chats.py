@@ -154,3 +154,15 @@ def test_saving_default_does_not_change_an_unbound_existing_conversation(monkeyp
 
     assert store[DEFAULT_MODEL_KEY] == "fable[1m]"
     assert applied == []
+
+
+def test_settings_model_pick_is_saved_immediately():
+    window, store, applied, _shown, toasts = _window(model="claude-opus-5-5", default="fable[1m]")
+    window._destroyed = False
+    window._driver = object()  # a live chat keeps its own model
+
+    MainWindow._on_default_model_changed(window, None, "gpt-6.2-sol")
+
+    assert store[DEFAULT_MODEL_KEY] == "gpt-6.2-sol"
+    assert applied == []
+    assert toasts and "New chats use" in toasts[-1]
