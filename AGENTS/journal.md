@@ -1,5 +1,57 @@
 # Helios — Session Journal
 
+## 2026-11-25 — A switched-away model can't take the chat back; Settings default sticks; Codex resume notice (0.121.3)
+
+- Reported: a Fable chat switched to GPT "said it switched", then answered as
+  Fable and was back on Fable with no trace. Evidence from the Work store and
+  both native transcripts: the GPT attempt ran and completed (about four
+  minutes, real tool calls). Two seconds after it finished, the Claude process
+  Helios had left running woke on a `<task-notification>` (a background wait
+  Fable had started three seconds *after* the switch, inside a turn it had
+  begun on its own). Its `system/init` reached `_on_session_started`, which
+  called `bind_work_leg_session` for a continuity Work: the tail leg became
+  Anthropic/Fable, so the next selection restored Fable. That self-started
+  turn then rewrote files GPT had just produced.
+- Fix: `WindowModelsMixin._provider_leads_work` (Work `lead_provider` is
+  selected at every send in `_ensure_target_work` and on a switch) gates
+  leg binding. A `ClaudeCliDriver` that starts a turn while not busy (Helios
+  sent nothing) and not leading a continuity Work is torn down inside the
+  `session-started` handler (`_stop_unsolicited_turn`), which then returns,
+  and the user gets a toast saying why. Synchronous on purpose, like an
+  identity rejection: the cross-engine review showed a `GLib.idle_add` stop
+  runs below the stdout reader's priority, so a buffered tool request could
+  be processed (and auto-approved in Bypass) first. At switch time,
+  `_retire_switched_away_driver` tears down the outgoing driver only when it
+  `has_background_work`; an idle one with nothing pending stays for a cheap
+  switch back. Switch-time alone would have missed the reported case (no
+  task was pending at the moment of the switch), hence the init-time guard.
+- Settings default: `SettingsDialog._set_model_choices` replaced a saved
+  GPT/Gemini/Muse/Kimi default with row 0 (Fable) whenever any list lacking it
+  arrived; Google/Muse/Kimi/OpenRouter land before Codex, so the next Save
+  wrote `fable[1m]`. It now keeps a placeholder row that only means "keep the
+  saved default" (`_with_saved_default_row`; never a selectable GPT row), and
+  programmatic list refreshes no longer run the change handler
+  (`_applying_model_choices`). A pick in Defaults → Model emits
+  `default-model-changed`, saved at once by `_on_default_model_changed`; it
+  used to wait for the Save button at the bottom of the page.
+  `Adw.ComboRow` cannot show "no selection" (INVALID_LIST_POSITION reads back
+  as 0), which is why it is a placeholder row.
+- Codex: 0.172 sends `deprecationNotice` "Full-history hydration is
+  deprecated for paginated threads" on every `thread/resume` without
+  `excludeTurns`; reproduced against an isolated app-server with a copied
+  rollout, and gone with `excludeTurns: true`. Helios reads only
+  `thread.id` from resume. `thread/fork` is unchanged (its turn count is
+  used).
+- Not changed: an alias and its resolved id (`opus[1m]` then
+  `claude-opus-5-5`) still record as two legs for one model.
+- Tests: cases in `tests/test_seamless_model_switch_gtk.py` (the reported
+  wake-up through the real `_on_session_started` and a real WorkStore,
+  dispatched and leading controls, switch-time retirement with and without
+  background work; the wake-up and retirement cases fail on the old code),
+  three in `tests/test_settings_dialog.py`, one in
+  `tests/test_default_model_for_new_chats.py`, and the resume params in
+  `tests/test_codex_app_contract.py`.
+
 ## 2026-11-24 — A conversation keeps its own model; composer text area (0.121.2)
 
 - Reported: a live Opus chat "went to Fable". Evidence from the Work store:

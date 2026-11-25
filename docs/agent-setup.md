@@ -1,7 +1,7 @@
 # Helios for autonomous agents — install, configure, verify
 
 This is a shell-based installation and verification guide for Helios on
-Linux. The procedures describe source version 0.121.2 and include expected
+Linux. The procedures describe source version 0.121.3 and include expected
 results; native account sign-ins require the account holder and remain in
 each CLI's credential store. Start with [quickstart.md](quickstart.md) for
 the shorter route. Stable APT can contain an older release, so check the
@@ -53,15 +53,15 @@ the package, then install it. The command chain stops before installation if
 a download or checksum check fails.
 
 ```bash
-mkdir -p ~/Downloads/helios-0.121.2 &&
-cd ~/Downloads/helios-0.121.2 &&
-curl -fLO https://github.com/spencernorton/helios/releases/download/v0.121.2/helios_0.121.2_all.deb &&
-curl -fLO https://github.com/spencernorton/helios/releases/download/v0.121.2/SHA256SUMS.txt &&
-grep '  helios_0.121.2_all.deb$' SHA256SUMS.txt | sha256sum --check - &&
-sudo apt install -y ./helios_0.121.2_all.deb
+mkdir -p ~/Downloads/helios-0.121.3 &&
+cd ~/Downloads/helios-0.121.3 &&
+curl -fLO https://github.com/spencernorton/helios/releases/download/v0.121.3/helios_0.121.3_all.deb &&
+curl -fLO https://github.com/spencernorton/helios/releases/download/v0.121.3/SHA256SUMS.txt &&
+grep '  helios_0.121.3_all.deb$' SHA256SUMS.txt | sha256sum --check - &&
+sudo apt install -y ./helios_0.121.3_all.deb
 ```
 
-Expected: `helios_0.121.2_all.deb: OK`. Stop on a checksum failure.
+Expected: `helios_0.121.3_all.deb: OK`. Stop on a checksum failure.
 [GitHub Releases](https://github.com/spencernorton/helios/releases/latest)
 has the current version and matching source. Use the package and checksums
 from the same release when selecting a newer version.
@@ -73,7 +73,7 @@ enabled for the full workspace.
 dpkg -s helios | grep -E '^(Status|Version):'
 ```
 
-Expected: `Status: install ok installed` and `Version: 0.121.2`. APT installs
+Expected: `Status: install ok installed` and `Version: 0.121.3`. APT installs
 WebKit for the browser and, by default, Git, VTE and desktop portal typelibs
 for review, the terminal and screenshots.
 
@@ -135,11 +135,11 @@ Expected: a version of `3.11` or newer.
 Step B3. Clone and read the version.
 
 ```bash
-git clone --branch v0.121.2 https://github.com/spencernorton/helios.git ~/helios
+git clone --branch v0.121.3 https://github.com/spencernorton/helios.git ~/helios
 PYTHONPATH=~/helios/src python3 -c "import helios; print(helios.__version__)"
 ```
 
-Expected: the clone prints `Note: switching to '<sha>'.` and a `You are in 'detached HEAD' state` paragraph (normal for a tag checkout), then `0.121.2`. Drop `--branch v0.121.2` to use development `main` instead; the version printed is then whatever `main` carries, and the `0.121.2` strings in this document, 7.3 and 12 are the release it was written for, not a mismatch.
+Expected: the clone prints `Note: switching to '<sha>'.` and a `You are in 'detached HEAD' state` paragraph (normal for a tag checkout), then `0.121.3`. Drop `--branch v0.121.3` to use development `main` instead; the version printed is then whatever `main` carries, and the `0.121.3` strings in this document, 7.3 and 12 are the release it was written for, not a mismatch.
 
 Step B4. Optional: app-grid entry and icon.
 
@@ -394,6 +394,7 @@ The file is written atomically (`ui-state.json.tmp` then rename) with `indent=2,
 | `permission_mode` | string | `"default"` | `default`, `acceptEdits`, `auto`, `bypassPermissions`, `plan`, `dontAsk` | Global default permission mode. Unknown strings are coerced to `default` and re-persisted at startup |
 | `permission_mode_confirmed` | boolean | `false` | `true`, `false` | Written `true` by Settings → "Save chat defaults". `bypassPermissions` is honoured at startup only when this is `true`; otherwise it is clamped to `default`. Leave it unset. For every mode except `bypassPermissions` it only stops a retired `project-perms.json` entry (6.2) from narrowing the default, so a fresh install does not need it; for `bypassPermissions` it is the person's confirmation (`resolve_startup_default` in `src/helios/backend/project_perms.py`), so never write it from a file. If the person wants Bypass as their global default, they choose it in Settings → "Save chat defaults" themselves |
 | `model` | string | `"fable[1m]"` | a Claude alias or id, an OpenAI id, or an OpenRouter `vendor/model` id | Sticky model for the next new chat. An empty or absent value resolves to `fable[1m]` at startup, so `""` cannot be pre-set from the file; the picker's `Default (from Claude settings)` entry (empty id, `--model` omitted) is a runtime choice that reverts to `fable[1m]` on the next launch. Classification: an id containing `/` is OpenRouter; an id starting with `gpt-<digit>`, `o<digit>`, `codex` or `chatgpt` is OpenAI; anything else is Anthropic |
+| `default_model` | string | unset | as `model`, or `""` | Model every new chat opens on (Settings → Defaults → Model, written as soon as a model is chosen there). Unset follows the sticky `model`; `""` delegates the choice to Claude Code |
 | `model_anthropic` | string | unset | as `model` | Last model used on the Claude side of the header toggle |
 | `model_openai` | string | unset | as `model` | Last model used on the GPT side |
 | `model_openrouter` | string | unset | as `model` | Last model used on the OpenRouter side |
@@ -418,7 +419,7 @@ The file is written atomically (`ui-state.json.tmp` then rename) with `indent=2,
 | `panel_context` | boolean | `false` | `true`, `false` | Right workspace pane shown |
 | `session_filter` | string | `"all"` | `all`, `local`, `temp` | Sidebar filter |
 
-Settings defers `permission_mode` and `model` to the "Save chat defaults" button, and `ollama_url` / `ollama_title_model` to Behavior → "Save and check" (editing the two rows only changes the status text to `Settings changed. Save and check to use this server and model.`); every other Settings control writes its key immediately.
+Settings defers `permission_mode` to the "Save chat defaults" button (Defaults → Model writes `default_model` as soon as a model is chosen), and `ollama_url` / `ollama_title_model` to Behavior → "Save and check" (editing the two rows only changes the status text to `Settings changed. Save and check to use this server and model.`); every other Settings control writes its key immediately.
 
 Merge keys atomically with the same permissions Helios uses (fails loudly on a malformed existing file, which is what you want). The example creates the project directory first (why: 6.3) and splices `$HOME` from the shell so the JSON value is absolute; it sets nothing about permissions:
 
@@ -538,7 +539,7 @@ python3 -c "import helios; print(helios.__version__)"                   # APT (m
 PYTHONPATH=~/helios/src python3 -c "import helios; print(helios.__version__)"    # source checkout
 ```
 
-Expected: `helios	0.121.2` from `dpkg-query`, `0.121.2` from the other two. `man helios` is also installed by the package.
+Expected: `helios	0.121.3` from `dpkg-query`, `0.121.3` from the other two. `man helios` is also installed by the package.
 
 ## 8. Reference
 
@@ -797,7 +798,7 @@ python3 -c 'import json, pathlib, os; d = json.loads((pathlib.Path.home()/".heli
 git -C "$(python3 -c 'import json, pathlib; print(json.loads((pathlib.Path.home()/".helios"/"ui-state.json").read_text())["default_cwd"])')" rev-parse --show-toplevel >/dev/null && echo 9_GIT_REPO_OK
 ```
 
-Expected, in order: `1_BINARY_OK`, `helios	0.121.2` (or `helios 0.121.2`), `2_PYTHON_OK`, `3_LIBS_OK`, `4_GIT_OK`, `5_CLAUDE_FOUND <path> (via ...)` (printed on stderr; the path alone goes to stdout and into `C`, so lines 6 and 7 test the binary Helios will run, not whatever `claude` is on the agent's `PATH`), `6_CLAUDE_VERSION 2.1.217` or newer, `7_CLAUDE_LOGGED_IN`, `8_DEFAULT_CWD_OK <path> <mode> False` (`True` only if the person has already used Settings → "Save chat defaults"), `9_GIT_REPO_OK`. Line 7 is the one the agent cannot fix alone: hand `claude auth login --claudeai` (or `--console`) back to the person and re-run from line 7. Line 9 is advisory (Rewind only). Optional providers: `codex login status` printing `logged in` with exit 0 (5.2), and `stat -c '%a' ~/.helios/openrouter.key` printing `600` plus the `key-ok` check (5.3).
+Expected, in order: `1_BINARY_OK`, `helios	0.121.3` (or `helios 0.121.3`), `2_PYTHON_OK`, `3_LIBS_OK`, `4_GIT_OK`, `5_CLAUDE_FOUND <path> (via ...)` (printed on stderr; the path alone goes to stdout and into `C`, so lines 6 and 7 test the binary Helios will run, not whatever `claude` is on the agent's `PATH`), `6_CLAUDE_VERSION 2.1.217` or newer, `7_CLAUDE_LOGGED_IN`, `8_DEFAULT_CWD_OK <path> <mode> False` (`True` only if the person has already used Settings → "Save chat defaults"), `9_GIT_REPO_OK`. Line 7 is the one the agent cannot fix alone: hand `claude auth login --claudeai` (or `--console`) back to the person and re-run from line 7. Line 9 is advisory (Rewind only). Optional providers: `codex login status` printing `logged in` with exit 0 (5.2), and `stat -c '%a' ~/.helios/openrouter.key` printing `600` plus the `key-ok` check (5.3).
 
 ### 12.2 Desktop session only (7.1)
 

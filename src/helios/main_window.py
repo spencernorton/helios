@@ -5247,6 +5247,7 @@ class MainWindow(
             return
         drv._helios_identity_confirmed = True
         if coordinator is not None and session_id:
+            stray_turn = False
             try:
                 if not work_id:
                     work = coordinator.ensure_work(
@@ -5286,7 +5287,20 @@ class MainWindow(
                     )
                     tag_driver(drv, participant)
                     session_goals.rekey_goal(session_id, work_id)
-                if session_id and MainWindow._work_id_has_continuity(self, work_id):
+                has_continuity = bool(session_id) and MainWindow._work_id_has_continuity(
+                    self, work_id
+                )
+                leads_work = MainWindow._provider_leads_work(self, work_id, provider)
+                # Helios sent this process nothing: a switched-away Claude
+                # waking on its own background task. Stopped below, before
+                # any of its later stdout (tool requests) is read.
+                stray_turn = (
+                    has_continuity
+                    and not leads_work
+                    and isinstance(drv, ClaudeCliDriver)
+                    and not drv.is_busy
+                )
+                if has_continuity and leads_work:
                     proj_path = ""
                     if cwd:
                         proj_path = str(
@@ -5312,6 +5326,11 @@ class MainWindow(
                     drv,
                     f"could not bind native session {session_id!r} to its Work",
                 )
+                return
+            if stray_turn:
+                # Synchronous, like an identity rejection: deferring to idle
+                # lets buffered stdout (a tool request) run first.
+                MainWindow._stop_unsolicited_turn(self, drv, work_id)
                 return
         if session_id:
             # Claude's first prompt was written before system/init could prove
@@ -7325,6 +7344,7 @@ class MainWindow(
         self._settings_dialog = dlg
         dlg.connect("closed", self._on_settings_closed)
         dlg.connect("apply", self._on_prefs_apply)
+        dlg.connect("default-model-changed", self._on_default_model_changed)
         # Pool-visibility toggle reshapes the session list right away.
         dlg.connect(
             "pool-visibility-changed",
@@ -7375,15 +7395,25 @@ class MainWindow(
         # picker changes cannot overwrite it; only switch the visible chat when
         # it is still a fresh, unbound one (a running conversation keeps its
         # model — changing that is the picker's job).
+        MainWindow._save_default_model(self, model)
+        self._toast(
+            f"Chat defaults saved — {MODE_LABELS.get(permission_mode, permission_mode)} "
+            f"permissions, new chats use {MainWindow._model_display_label(self, model)}."
+        )
+
+    def _save_default_model(self, model: str) -> None:
         self._ui_state.set(DEFAULT_MODEL_KEY, model)
         if getattr(self, "_driver", None) is None and not getattr(
             getattr(self, "_next_chat", None), "resume_id", ""
         ):
             self._apply_model_choice(model, quiet=True)
-        self._toast(
-            f"Chat defaults saved — {MODE_LABELS.get(permission_mode, permission_mode)} "
-            f"permissions, new chats use {MainWindow._model_display_label(self, model)}."
-        )
+
+    def _on_default_model_changed(self, _dlg, model: str) -> None:
+        """Settings → Defaults → Model saves on pick (no Save click needed)."""
+        if self._destroyed:
+            return
+        MainWindow._save_default_model(self, model)
+        self._toast(f"New chats use {MainWindow._model_display_label(self, model)}.")
 
     # --- close ---
 

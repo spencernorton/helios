@@ -844,3 +844,165 @@ def test_rejected_async_live_set_model_rolls_back_ui_and_never_persists_phantom_
         assert isinstance(after_ok[-1], HandoffDividerRow)
     finally:
         store.close()
+
+
+# ── A switched-away Claude must not take the conversation back ─────────────
+#
+# Reported 2026-11-25: a Fable chat was switched to GPT. GPT answered, then
+# two seconds later Fable's still-running process finished a background task,
+# began a turn by itself, and its `system/init` was recorded as the next Work
+# leg — the chat flipped back to Fable with no user action, and Fable then
+# rewrote the files GPT had just produced.
+
+
+class _SelfWakingClaude:
+    """Stands in for ClaudeCliDriver (isinstance is patched to this class)."""
+
+    def __init__(self, session_id: str, model: str, *, busy: bool = False) -> None:
+        self.provider = "anthropic"
+        self.session_id = session_id
+        self.model = model
+        self.is_running = True
+        self.is_accepting_input = True
+        self.is_busy = busy
+        self.has_background_work = False
+        self.permission_mode = ""
+        self.effort_key = ""
+        self.workflow_mode = ""
+        self.supports_native_goals = False
+
+
+def _switched_to_gpt_work(tmp_path):
+    store = WorkStore(tmp_path / "work" / "work.db")
+    coord = WorkCoordinator(store)
+    work = coord.ensure_work(cwd="/repo", lead_provider="anthropic")
+    claude_part = coord.bind_participant(
+        work.work_id, "anthropic", native_id="cl-1", model="fable[1m]"
+    )
+    coord.enable_continuity(work.work_id)
+    coord.ensure_initial_work_leg(
+        work.work_id, provider="anthropic", model="fable[1m]", native_session_id="cl-1"
+    )
+    # The user's switch to GPT: lead moves, GPT's leg becomes the tail.
+    coord.select_lead(work.work_id, "openai")
+    coord.bind_participant(work.work_id, "openai", native_id="th-1", model="gpt-6.2-sol")
+    coord.append_work_leg(
+        work.work_id, provider="openai", model="gpt-6.2-sol", native_session_id="th-1"
+    )
+    session_providers.set_provider("cl-1", "anthropic")
+    return store, coord, work.work_id, claude_part
+
+
+def _session_started_window(coord, *, torn: list, toasts: list, registered: list | None = None):
+    registered = registered if registered is not None else []
+    return types.SimpleNamespace(
+        _destroyed=False,
+        _driver_manager=types.SimpleNamespace(
+            starting=object(),
+            register_started=lambda d, sid: registered.append((d, sid)),
+        ),
+        _work_coordinator=coord,
+        _conversation_perms=conversation_perms.store(),
+        _next_chat=None,
+        _driver_provider=lambda d: d.provider,
+        _drv_is_current=lambda _d: False,
+        _teardown_driver=lambda d: torn.append(d),
+        _toast=lambda msg, **_kw: toasts.append(msg),
+    )
+
+
+@pytest.fixture
+def _claude_is_fake(monkeypatch):
+    import helios.main_window as mw
+
+    monkeypatch.setattr(mw, "ClaudeCliDriver", _SelfWakingClaude)
+    monkeypatch.setattr(mw.GLib, "timeout_add", lambda *_a, **_k: 0)
+    monkeypatch.setattr(MainWindow, "_sidebar_show_pending", lambda *_a, **_k: None)
+
+
+def test_switched_away_claude_waking_on_its_own_neither_retakes_the_chat_nor_keeps_running(
+    tmp_path, _claude_is_fake
+):
+    store, coord, work_id, claude_part = _switched_to_gpt_work(tmp_path)
+    try:
+        torn: list = []
+        toasts: list[str] = []
+        registered: list = []
+        win = _session_started_window(coord, torn=torn, toasts=toasts, registered=registered)
+        claude = _SelfWakingClaude("cl-1", "claude-fable-5-2")
+        tag_driver(claude, claude_part)
+
+        # Background task finished → the CLI's own turn → system/init.
+        MainWindow._on_session_started(win, claude, "cl-1", "/repo", "claude-fable-5-2")
+
+        legs = coord.list_work_legs(work_id)
+        assert [leg.provider for leg in legs] == ["anthropic", "openai"]
+        assert store.get_work(work_id).lead_provider == "openai"
+        # Stopped synchronously, inside the init handler: a deferred stop let
+        # the turn's next stdout records (tool requests) be read first.
+        assert torn == [claude]
+        assert registered == []
+        assert len(toasts) == 1
+        assert "Stopped" in toasts[0] and "on its own" in toasts[0]
+        assert "GPT" in toasts[0]
+    finally:
+        store.close()
+
+
+def test_helios_dispatched_or_leading_claude_turns_are_never_stopped(
+    tmp_path, _claude_is_fake
+):
+    store, coord, work_id, claude_part = _switched_to_gpt_work(tmp_path)
+    try:
+        torn: list = []
+        toasts: list[str] = []
+        win = _session_started_window(coord, torn=torn, toasts=toasts)
+
+        # A turn Helios sent (busy) is not a stray, even off-lead — but it
+        # does not become the conversation's leg either.
+        busy = _SelfWakingClaude("cl-1", "claude-fable-5-2", busy=True)
+        tag_driver(busy, claude_part)
+        MainWindow._on_session_started(win, busy, "cl-1", "/repo", "claude-fable-5-2")
+        assert torn == []
+        assert coord.list_work_legs(work_id)[-1].provider == "openai"
+
+        # Claude leads again (user switched back): its init records the leg.
+        coord.select_lead(work_id, "anthropic")
+        lead = _SelfWakingClaude("cl-1", "claude-fable-5-2")
+        tag_driver(lead, claude_part)
+        MainWindow._on_session_started(win, lead, "cl-1", "/repo", "claude-fable-5-2")
+        assert coord.list_work_legs(work_id)[-1].provider == "anthropic"
+        assert torn == [] and toasts == []
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("background", [True, False])
+def test_switching_provider_stops_the_old_claude_only_when_its_tasks_would_wake_it(
+    tmp_path, background
+):
+    win, store, coord, _transcript, _composer, toasts, _sent = _make_switch_window_harness(
+        tmp_path,
+        initial_model="claude-fable-4-7",
+        initial_provider="anthropic",
+        initial_sid="cl-bg-1",
+    )
+    try:
+        old = win._driver
+        old.has_background_work = background
+        torn: list = []
+        win._teardown_driver = lambda d: torn.append(d)
+
+        MainWindow._apply_model_choice(win, "gpt-6.1-sol")
+        _pump_gtk()
+
+        assert win._model == "gpt-6.1-sol"
+        if background:
+            assert torn == [old]
+            assert any("background" in t and "Switched to" in t for t in toasts)
+        else:
+            # Idle with nothing pending: kept warm for a cheap switch back.
+            assert torn == []
+            assert not any("background" in t for t in toasts)
+    finally:
+        store.close()
