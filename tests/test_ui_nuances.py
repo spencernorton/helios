@@ -225,8 +225,11 @@ def test_context_tooltip_reports_authoritative_usage_before_tween() -> None:
     meter.set_usage(50, 100)
 
     # The visual arc may still be animating (and headless it has already
-    # jumped to the end); neither may leak into the copy.
-    assert meter.get_tooltip_text() == "Context: 50 / 100 tokens (50%)"
+    # jumped to the end); neither may leak into the copy. It is the ring's
+    # accessible label, not a tooltip: hovering opens the popover, which
+    # already shows these figures.
+    assert meter.summary_text == "Context: 50 / 100 tokens (50%)"
+    assert meter.get_tooltip_text() is None
     meter.shutdown()
 
 

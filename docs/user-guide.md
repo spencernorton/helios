@@ -257,9 +257,13 @@ login exists. On per-token Claude billing the cap requires Claude Code
 2.1.217 or newer advertising `--max-budget-usd`; an older CLI refuses to
 start a chat (see [Troubleshooting](#troubleshooting)).
 
-The context meter in the toolbar shows how full the model's window is and
-what fills it (system prompt, tools, memory files, messages); its *Compact
-now* button runs the provider's native compaction. Claude sessions also
+The context meter in the toolbar is a ring coloured by what fills the
+model's window (system prompt, tools, memory files, skills, messages), in the
+same colours as the bar and legend that open when you hover it. The hatched
+end of the bar is the reserve where Claude auto-compacts; estimated splits
+are marked ≈, and the parts list (which memory files, skills and agents) is
+on the legend's tooltip. The popover's *Compact now* button runs the
+provider's native compaction. Claude sessions also
 auto-compact, and Helios shows the boundary in the transcript when that
 happens. Live rate-limit details for Claude and Codex are in the same
 toolbar.
