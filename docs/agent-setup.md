@@ -1,7 +1,7 @@
 # Helios for autonomous agents — install, configure, verify
 
 This is a shell-based installation and verification guide for Helios on
-Linux. The procedures describe source version 0.123.0 and include expected
+Linux. The procedures describe source version 0.124.0 and include expected
 results; native account sign-ins require the account holder and remain in
 each CLI's credential store. Start with [quickstart.md](quickstart.md) for
 the shorter route. Stable APT can contain an older release, so check the
@@ -53,15 +53,15 @@ the package, then install it. The command chain stops before installation if
 a download or checksum check fails.
 
 ```bash
-mkdir -p ~/Downloads/helios-0.123.0 &&
-cd ~/Downloads/helios-0.123.0 &&
-curl -fLO https://github.com/spencernorton/helios/releases/download/v0.123.0/helios_0.123.0_all.deb &&
-curl -fLO https://github.com/spencernorton/helios/releases/download/v0.123.0/SHA256SUMS.txt &&
-grep '  helios_0.123.0_all.deb$' SHA256SUMS.txt | sha256sum --check - &&
-sudo apt install -y ./helios_0.123.0_all.deb
+mkdir -p ~/Downloads/helios-0.124.0 &&
+cd ~/Downloads/helios-0.124.0 &&
+curl -fLO https://github.com/spencernorton/helios/releases/download/v0.124.0/helios_0.124.0_all.deb &&
+curl -fLO https://github.com/spencernorton/helios/releases/download/v0.124.0/SHA256SUMS.txt &&
+grep '  helios_0.124.0_all.deb$' SHA256SUMS.txt | sha256sum --check - &&
+sudo apt install -y ./helios_0.124.0_all.deb
 ```
 
-Expected: `helios_0.123.0_all.deb: OK`. Stop on a checksum failure.
+Expected: `helios_0.124.0_all.deb: OK`. Stop on a checksum failure.
 [GitHub Releases](https://github.com/spencernorton/helios/releases/latest)
 has the current version and matching source. Use the package and checksums
 from the same release when selecting a newer version.
@@ -73,7 +73,7 @@ enabled for the full workspace.
 dpkg -s helios | grep -E '^(Status|Version):'
 ```
 
-Expected: `Status: install ok installed` and `Version: 0.123.0`. APT installs
+Expected: `Status: install ok installed` and `Version: 0.124.0`. APT installs
 WebKit for the browser and, by default, Git, VTE and desktop portal typelibs
 for review, the terminal and screenshots.
 
@@ -135,11 +135,11 @@ Expected: a version of `3.11` or newer.
 Step B3. Clone and read the version.
 
 ```bash
-git clone --branch v0.123.0 https://github.com/spencernorton/helios.git ~/helios
+git clone --branch v0.124.0 https://github.com/spencernorton/helios.git ~/helios
 PYTHONPATH=~/helios/src python3 -c "import helios; print(helios.__version__)"
 ```
 
-Expected: the clone prints `Note: switching to '<sha>'.` and a `You are in 'detached HEAD' state` paragraph (normal for a tag checkout), then `0.123.0`. Drop `--branch v0.123.0` to use development `main` instead; the version printed is then whatever `main` carries, and the `0.123.0` strings in this document, 7.3 and 12 are the release it was written for, not a mismatch.
+Expected: the clone prints `Note: switching to '<sha>'.` and a `You are in 'detached HEAD' state` paragraph (normal for a tag checkout), then `0.124.0`. Drop `--branch v0.124.0` to use development `main` instead; the version printed is then whatever `main` carries, and the `0.124.0` strings in this document, 7.3 and 12 are the release it was written for, not a mismatch.
 
 Step B4. Optional: app-grid entry and icon.
 
@@ -413,6 +413,7 @@ The file is written atomically (`ui-state.json.tmp` then rename) with `indent=2,
 | `show_pool_sessions` | boolean | `false` | `true`, `false` | Show sessions from an optional shared session pool (`HELIOS_SESSION_POOL`); inert without one |
 | `openrouter_picker_models` | list of strings | `[]` | OpenRouter model ids | OpenRouter's list in the model picker. Empty or absent lists none up front; the catalog stays under *More* and in search |
 | `hidden_models` | list of strings | `[]` | model ids | Default picker models the user moved to *More*; also left out of the Settings default-model list unless selected |
+| `picker_show_more` | boolean | `false` | `true`, `false` | Settings → Providers → Model picker → *Show older models*: whether each picker section shows its *More* list. Search covers every model either way |
 | `model_order` | list of strings | `[]` | model ids, including `""` for the Claude Code default | The user's picker list in order; an id here is shown up front even when it is not a default |
 | `window_width` | integer | `1400` | pixels | Window width, rewritten on close |
 | `window_height` | integer | `900` | pixels | Window height, rewritten on close |
@@ -541,7 +542,7 @@ python3 -c "import helios; print(helios.__version__)"                   # APT (m
 PYTHONPATH=~/helios/src python3 -c "import helios; print(helios.__version__)"    # source checkout
 ```
 
-Expected: `helios	0.123.0` from `dpkg-query`, `0.123.0` from the other two. `man helios` is also installed by the package.
+Expected: `helios	0.124.0` from `dpkg-query`, `0.124.0` from the other two. `man helios` is also installed by the package.
 
 ## 8. Reference
 
@@ -800,7 +801,7 @@ python3 -c 'import json, pathlib, os; d = json.loads((pathlib.Path.home()/".heli
 git -C "$(python3 -c 'import json, pathlib; print(json.loads((pathlib.Path.home()/".helios"/"ui-state.json").read_text())["default_cwd"])')" rev-parse --show-toplevel >/dev/null && echo 9_GIT_REPO_OK
 ```
 
-Expected, in order: `1_BINARY_OK`, `helios	0.123.0` (or `helios 0.123.0`), `2_PYTHON_OK`, `3_LIBS_OK`, `4_GIT_OK`, `5_CLAUDE_FOUND <path> (via ...)` (printed on stderr; the path alone goes to stdout and into `C`, so lines 6 and 7 test the binary Helios will run, not whatever `claude` is on the agent's `PATH`), `6_CLAUDE_VERSION 2.1.217` or newer, `7_CLAUDE_LOGGED_IN`, `8_DEFAULT_CWD_OK <path> <mode> False` (`True` only if the person has already used Settings → "Save chat defaults"), `9_GIT_REPO_OK`. Line 7 is the one the agent cannot fix alone: hand `claude auth login --claudeai` (or `--console`) back to the person and re-run from line 7. Line 9 is advisory (Rewind only). Optional providers: `codex login status` printing `logged in` with exit 0 (5.2), and `stat -c '%a' ~/.helios/openrouter.key` printing `600` plus the `key-ok` check (5.3).
+Expected, in order: `1_BINARY_OK`, `helios	0.124.0` (or `helios 0.124.0`), `2_PYTHON_OK`, `3_LIBS_OK`, `4_GIT_OK`, `5_CLAUDE_FOUND <path> (via ...)` (printed on stderr; the path alone goes to stdout and into `C`, so lines 6 and 7 test the binary Helios will run, not whatever `claude` is on the agent's `PATH`), `6_CLAUDE_VERSION 2.1.217` or newer, `7_CLAUDE_LOGGED_IN`, `8_DEFAULT_CWD_OK <path> <mode> False` (`True` only if the person has already used Settings → "Save chat defaults"), `9_GIT_REPO_OK`. Line 7 is the one the agent cannot fix alone: hand `claude auth login --claudeai` (or `--console`) back to the person and re-run from line 7. Line 9 is advisory (Rewind only). Optional providers: `codex login status` printing `logged in` with exit 0 (5.2), and `stat -c '%a' ~/.helios/openrouter.key` printing `600` plus the `key-ok` check (5.3).
 
 ### 12.2 Desktop session only (7.1)
 

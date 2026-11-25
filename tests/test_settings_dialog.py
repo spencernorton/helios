@@ -715,3 +715,107 @@ def test_fable_can_be_picked_while_a_saved_gpt_default_is_still_loading(monkeypa
     row.set_selected(1)
 
     assert emitted == [("default-model-changed", "fable[1m]")]
+
+
+
+def test_save_chat_defaults_floats_on_the_settings_page_only():
+    """Reported: the Save button sat at the very end of a long page."""
+    from gi.repository import Adw, Gtk
+
+    Adw.init()
+    dlg = SettingsDialog("default", "fable[1m]")
+    try:
+        overlay = dlg.get_child()
+        assert isinstance(overlay, Gtk.Overlay)
+        assert dlg._save_btn.get_parent() is overlay
+        assert dlg._save_btn.get_halign() == Gtk.Align.START
+        assert dlg._save_btn.get_valign() == Gtk.Align.END
+        dlg.set_visible_page(dlg._settings_page)
+        assert dlg._save_btn.get_visible()
+        dlg.set_visible_page(dlg._providers_page)
+        assert not dlg._save_btn.get_visible()
+    finally:
+        dlg._closed = True
+
+
+def test_router_hold_is_explained_in_plain_words():
+    from gi.repository import Adw
+
+    Adw.init()
+    fake = types.SimpleNamespace(
+        _closed=False,
+        _router_generation=1,
+        _router_mutating=True,
+        _router_refresh=Adw.ActionRow(),
+        _router_status_row=Adw.ActionRow(),
+        _router_profiles_row=Adw.ActionRow(),
+        _router_tool_row=Adw.ActionRow(),
+        _router_switch=Adw.SwitchRow(),
+        _router_syncing=False,
+        _router_last_enabled=None,
+        _set_router_icon=lambda *_a: None,
+        _set_router_tool_icon=lambda *_a: None,
+    )
+    SettingsDialog._apply_router_status(fake, {
+        "enabled": False,
+        "automatic_dispatch": False,
+        "credential_status": "healthy",
+        "profiles": [{"stage": "manual_evaluation"}, {"stage": "quarantined"}],
+    }, 1)
+    assert fake._router_tool_row.get_title() == "Broker connected · nothing is delegated yet"
+    assert "keep all the work" in fake._router_tool_row.get_subtitle()
+
+
+
+@pytest.mark.parametrize(
+    "state, title",
+    [
+        (dict(automatic_dispatch=True, enabled=True, credential_ready=True, eligible=1),
+         "delegation dispatchable"),
+        (dict(automatic_dispatch=False, enabled=True, credential_ready=False, eligible=1),
+         "credential needs attention"),
+        (dict(automatic_dispatch=False, enabled=False, credential_ready=True, eligible=0),
+         "nothing is delegated yet"),
+        # Cross-model review: off-with-approved-profiles is not "no profile
+        # passed evaluation".
+        (dict(automatic_dispatch=False, enabled=False, credential_ready=True, eligible=2),
+         "Smart Routing is off"),
+        (dict(automatic_dispatch=False, enabled=True, credential_ready=True, eligible=2),
+         "delegation held"),
+    ],
+)
+def test_router_row_names_the_real_reason(state, title):
+    from helios.widgets.settings_dialog import _router_tool_state
+
+    got_title, subtitle = _router_tool_state(**state)
+    assert got_title.endswith(title)
+    if title == "Smart Routing is off":
+        assert "evaluation" not in subtitle
+
+
+def test_floating_save_lifts_above_the_narrow_page_switcher():
+    import time
+
+    from gi.repository import Adw, GLib
+
+    Adw.init()
+    win = Adw.Window()
+    win.set_default_size(420, 640)
+    win.present()
+    dlg = SettingsDialog("default", "fable[1m]")
+    try:
+        dlg.present(win)
+        ctx = GLib.MainContext.default()
+        end = time.time() + 1.5
+        while time.time() < end:
+            ctx.iteration(False)
+        from helios.widgets.settings_dialog import _descendants
+
+        bars = _descendants(dlg, Adw.ViewSwitcherBar)
+        if not any(bar.get_reveal() for bar in bars):
+            pytest.skip("narrow layout did not engage on this display")
+        assert dlg._save_btn.get_margin_bottom() > 16
+    finally:
+        dlg._closed = True
+        dlg.force_close()
+        win.destroy()

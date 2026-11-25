@@ -43,6 +43,7 @@ from helios.backend.ui_state import (
     DEFAULT_CWD_KEY,
     HIDDEN_MODELS_KEY,
     OPENROUTER_PICKER_KEY,
+    PICKER_SHOW_MORE_KEY,
     default_cwd,
     store as ui_state_store,
 )
@@ -108,6 +109,41 @@ def _router_awaiting_count(profiles: list[dict]) -> int:
     )
 
 
+def _router_tool_state(
+    *, automatic_dispatch: bool, enabled: bool, credential_ready: bool, eligible: int,
+) -> tuple[str, str]:
+    """Title and plain-words reason for the broker row: why work is or is not
+    being delegated. "Not delegating" has several causes; name the real one."""
+    if automatic_dispatch:
+        return (
+            "Broker connected · delegation dispatchable",
+            "delegate_task · explain_route · routing_status · specialty discovery",
+        )
+    if not credential_ready:
+        return (
+            "Broker connected · credential needs attention",
+            "Nothing is delegated until the OpenRouter key checks healthy; "
+            "Claude and GPT keep all the work.",
+        )
+    if not eligible:
+        return (
+            "Broker connected · nothing is delegated yet",
+            "No route profile has passed its evaluation, so Claude and GPT "
+            "keep all the work. Nothing to do here.",
+        )
+    if not enabled:
+        return (
+            "Broker connected · Smart Routing is off",
+            "Approved profiles are ready. Turn on Smart Routing under "
+            "Providers to let them take bounded work.",
+        )
+    return (
+        "Broker connected · delegation held",
+        "Smart Routing is on, but the broker is holding dispatch; Claude and "
+        "GPT keep all the work for now.",
+    )
+
+
 def _router_unavailable_subtitle(last_enabled: bool | None) -> str:
     if last_enabled is None:
         return (
@@ -119,6 +155,22 @@ def _router_unavailable_subtitle(last_enabled: bool | None) -> str:
         f"Current preview state is unknown; last confirmed {state}. "
         "Delegation fails closed."
     )
+
+
+def _descendants(widget: Gtk.Widget, kind: type) -> list:
+    found = []
+    child = widget.get_first_child()
+    while child is not None:
+        if isinstance(child, kind):
+            found.append(child)
+        found.extend(_descendants(child, kind))
+        child = child.get_next_sibling()
+    return found
+
+
+def _once(callback) -> bool:
+    callback()
+    return False
 
 
 class SettingsDialog(Adw.PreferencesDialog):
@@ -175,6 +227,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._build_settings_page(permission_mode, self._selected_model_id)
         self._build_providers_page()
         self._build_tools_page()
+        self._install_floating_save()
 
         # Kick off the live loads as soon as we're shown.
         self._reload_accounts()
@@ -721,14 +774,73 @@ class SettingsDialog(Adw.PreferencesDialog):
         log_row.add_suffix(open_log_btn)
         diag.add(log_row)
 
-        save_group = Adw.PreferencesGroup()
-        page.add(save_group)
+        # The Save button floats over the page's bottom-left corner (see
+        # _install_floating_save), so it never needs a scroll to reach. This
+        # spacer keeps the last row from ending up underneath it.
+        clearance = Adw.PreferencesGroup()
+        spacer = Gtk.Box()
+        spacer.set_size_request(-1, 40)
+        clearance.add(spacer)
+        page.add(clearance)
+        self._settings_page = page
         save_btn = Gtk.Button(label="Save chat defaults")
         save_btn.add_css_class("suggested-action")
         save_btn.add_css_class("pill")
-        save_btn.set_halign(Gtk.Align.END)
+        save_btn.add_css_class("helios-floating-save")
         save_btn.connect("clicked", self._on_save)
-        save_group.add(save_btn)
+        self._save_btn = save_btn
+
+    def _install_floating_save(self) -> None:
+        """Pin "Save chat defaults" to the bottom-left of the Settings page.
+
+        The page scrolls; the button used to sit at its very end. The
+        dialog's content goes under an overlay, and the button is shown
+        only while the Settings page is the one on screen.
+        """
+        button = self._save_btn
+        button.set_halign(Gtk.Align.START)
+        button.set_valign(Gtk.Align.END)
+        button.set_margin_start(18)
+        button.set_margin_bottom(16)
+        content = self.get_child()
+        if content is None:
+            # Unknown dialog internals: fall back to the end of the page.
+            group = Adw.PreferencesGroup()
+            group.add(button)
+            self._settings_page.add(group)
+            return
+        self.set_child(None)
+        overlay = Gtk.Overlay()
+        overlay.set_child(content)
+        overlay.add_overlay(button)
+        self.set_child(overlay)
+
+        def sync(*_args) -> None:
+            button.set_visible(self.get_visible_page() is self._settings_page)
+
+        self.connect("notify::visible-page", sync)
+        sync()
+
+        # Narrow windows turn the dialog into a bottom sheet with the page
+        # switcher in a bar along the bottom; the overlay spans it, so lift
+        # the button above that bar while it is revealed.
+        watched: list = []
+
+        def lift(*_args) -> None:
+            shown = [bar for bar in watched if bar.get_reveal()]
+            extra = max((bar.get_height() for bar in shown), default=0)
+            if shown and extra <= 0:
+                extra = 46
+            button.set_margin_bottom(16 + extra)
+
+        def watch(*_args) -> None:
+            for bar in _descendants(content, Adw.ViewSwitcherBar):
+                if bar not in watched:
+                    watched.append(bar)
+                    bar.connect("notify::reveal", lambda *_a: GLib.idle_add(_once, lift))
+            lift()
+
+        self.connect("map", watch)
 
     def _refresh_cwd_row(self) -> None:
         """Show the resolved directory, including HOME's read-only clamp.
@@ -1570,12 +1682,28 @@ class SettingsDialog(Adw.PreferencesDialog):
             "the newest of every Claude family, every model Codex, Gemini, "
             "Muse and Kimi offer (the first eight of a longer catalog), and "
             "your OpenRouter shortlist. "
-            "Older versions and anything you hide fold under More, and the "
-            "filter box searches everything. Hover a model in the picker to "
-            "hide or add it; the pencil button reorders. Hidden models also "
-            "stay out of the default-model list above."
+            "Older versions and anything you hide go under More (shown only "
+            "when the switch below is on), and the filter box searches "
+            "everything. Hover a model in the picker to hide or add it; the "
+            "pencil button reorders. Hidden models also stay out of the "
+            "default-model list above."
         )
         page.add(group)
+
+        self._picker_more_row = Adw.SwitchRow()
+        self._picker_more_row.set_title("Show older models")
+        self._picker_more_row.set_subtitle(
+            "Adds a folded “More … models” list under each provider in the "
+            "picker. Off: only your list, plus the model a chat is running on."
+        )
+        self._picker_more_row.set_active(
+            bool(ui_state_store().get(PICKER_SHOW_MORE_KEY, False))
+        )
+        self._picker_more_row.connect(
+            "notify::active",
+            lambda row, _p: ui_state_store().set(PICKER_SHOW_MORE_KEY, row.get_active()),
+        )
+        group.add(self._picker_more_row)
 
         self._picker_summary_row = Adw.ActionRow()
         icon = Gtk.Image.new_from_icon_name("view-list-symbolic")
@@ -1953,11 +2081,14 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._router_profiles_row.set_subtitle(
             _router_profile_summary(profiles)
         )
-        self._router_tool_row.set_title(
-            "Broker connected · delegation dispatchable"
-            if automatic_dispatch
-            else "Broker connected · evaluation hold"
+        title, subtitle = _router_tool_state(
+            automatic_dispatch=automatic_dispatch,
+            enabled=enabled,
+            credential_ready=credential_ready,
+            eligible=len(eligible),
         )
+        self._router_tool_row.set_title(title)
+        self._router_tool_row.set_subtitle(subtitle)
         if credential_ready:
             self._set_router_icon("object-select-symbolic", "success")
             self._set_router_tool_icon(

@@ -1,5 +1,45 @@
 # Helios — Session Journal
 
+## 2026-11-25 — Picker older-models switch, pinned twin, context flicker, floating Save (0.124.0)
+
+- Reported after 0.123.0: (1) Settings' Save button needed a scroll to the
+  bottom; (2) "Helios Router … evaluation hold" was unexplained; (3) a chat on
+  `claude-opus-5-5` opened the picker with *More Claude models* unfolded
+  (dozens of rows) though Opus 5.5 is the alias row up top; (4) hovering the
+  context ring during a Claude turn flickered between one orange band and
+  the coloured split.
+- (3) Cause: `model_picker.sections` lists a pinned alias twin in More when
+  it is the selection, and `_fill_model_rows` unfolds More when it holds the
+  selection. `model_catalog.claude_twin_alias` maps the pin to its alias, and
+  `_picker_selected_id` returns the alias. New `picker_show_more` (off by
+  default) hides More outside edit mode; the selection is always drawn.
+- (4) Cause: `_ContextPopover.set_usage` called `_bar.set_plain` (key
+  `tools`, terracotta) on every usage update, which arrives once per API
+  request, while `get_context_usage` repaints the split once per turn; and
+  `set_breakdown(None)` cleared a measured legend before checking
+  `_legend_measured`. Now: the last split rescaled (`_rescaled`, reserve
+  kept), the None guard after the measured check, a neutral `unsplit` key,
+  and the legend rebuilt in `set_window` only when the window changes.
+- (1) `SettingsDialog._install_floating_save` reparents the dialog content
+  (an `AdwToastOverlay` on libadwaita 1.9) into a `Gtk.Overlay` and pins the
+  button bottom-left, visible only on the Settings page; a 40 px spacer
+  group keeps the last row clear. Falls back to the old placement if the
+  dialog has no child.
+- (2) The router is the optional OpenRouter delegation broker. On the
+  reporting host it was off, with a healthy credential and 0 of 3 profiles
+  dispatchable (1 manual_evaluation, 2 quarantined), so "evaluation hold"
+  only meant nothing is delegated. The wording now says so.
+- Cross-model review (2 minor, both fixed): the overlay spans the narrow
+  bottom-sheet layout's page-switcher bar, so the button now lifts above any
+  revealed `Adw.ViewSwitcherBar`; and "not dispatching" has several causes
+  (credential, no eligible profile, routing off, broker hold), so
+  `_router_tool_state` names the real one instead of always blaming
+  evaluation.
+- Tests: `tests/test_model_picker_tiers.py` (fixture turns More on; new
+  default-off, older-selection, edit-mode and pinned-twin cases),
+  `tests/test_context_ring_legend.py` (flicker cases),
+  `tests/test_settings_dialog.py` (floating Save, router wording).
+
 ## 2026-11-25 — Context ring by category; popover text cut (0.123.0)
 
 - Asked for: the ring and popover to show what fills the window as colours,

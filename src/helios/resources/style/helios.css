@@ -1892,3 +1892,8 @@ paned > separator:hover {
     border: 1px solid @borders;
 }
 
+
+/* Settings → "Save chat defaults", pinned over the page's bottom-left. */
+.helios-floating-save {
+    box-shadow: 0 2px 6px alpha(black, 0.22), 0 0 0 1px alpha(black, 0.06);
+}

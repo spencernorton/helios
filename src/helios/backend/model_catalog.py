@@ -861,6 +861,30 @@ def claude_alias_twins(entries: Iterable[ModelEntry]) -> set[str]:
     return twins
 
 
+def claude_twin_alias(entries: Iterable[ModelEntry], model_id: str) -> str:
+    """The alias row naming the same model as pinned ``model_id``, or "".
+
+    A chat running on ``claude-opus-5-5`` is on the model the ``opus[1m]``
+    row ("Opus 5.5") offers; the picker marks that row rather than unfolding
+    its older-models list to show the pin.
+    """
+    rows = list(entries)
+    if model_id not in claude_alias_twins(rows):
+        return ""
+    pinned = next((entry for entry in rows if entry.id == model_id), None)
+    if pinned is None:
+        return ""
+    label = pinned.label
+    pin = _parse_pinned(model_id)
+    if pin and pin.date:
+        label = label.removesuffix(f" ({pin.date[:4]}-{pin.date[4:6]}-{pin.date[6:]})")
+        label = label.removesuffix(f" ({pin.date})")
+    return next(
+        (entry.id for entry in rows if entry.group == "Latest" and entry.label == label),
+        "",
+    )
+
+
 # ── Cross-provider helpers ─────────────────────────────────────────────────
 
 

@@ -51,12 +51,17 @@ def toolbar():
         pytest.skip("GTK display is unavailable")
     store = ui_state.store()
     previous = {key: store.get(key, []) for key in _KEYS}
+    previous_more = store.get(ui_state.PICKER_SHOW_MORE_KEY, False)
     store.update(**{key: [] for key in _KEYS})
+    # These tests are about the More tier, which Settings → "Show older
+    # models" turns on; the default-off picker has its own tests below.
+    store.set(ui_state.PICKER_SHOW_MORE_KEY, True)
     bar = ChatToolbar()
     bar.set_choices(_catalog())
     bar.set_model("opus[1m]")
     yield bar
     store.update(**previous)
+    store.set(ui_state.PICKER_SHOW_MORE_KEY, previous_more)
 
 
 def _fill(bar: ChatToolbar, query: str = "") -> None:
@@ -214,3 +219,49 @@ def test_search_marks_rows_by_tier(toolbar):
     ]
     assert _texts(toolbar, "helios-model-pick") == ["✓ Opus 5.5", "Opus 4.8"]
     assert actions == ["Hide from your list", "Add to your list"]
+
+
+# ── Settings → "Show older models" off (the default) ──────────────────────
+
+
+def test_older_models_are_hidden_by_default(toolbar):
+    ui_state.store().set(ui_state.PICKER_SHOW_MORE_KEY, False)
+    _fill(toolbar)
+    assert _expanders(toolbar) == []
+    assert _texts(toolbar, "helios-model-pick") == [
+        "Fable 5.2", "✓ Opus 5.5", "Sonnet 5.5", "Haiku 5.5",
+        "GPT-6.2 Sol", "GPT-6.2 Terra",
+    ]
+    # Search still reaches every model.
+    _fill(toolbar, "4.8")
+    assert _texts(toolbar, "helios-model-pick") == ["Opus 4.8"]
+
+
+def test_a_chat_on_an_older_model_still_sees_it_marked(toolbar):
+    ui_state.store().set(ui_state.PICKER_SHOW_MORE_KEY, False)
+    toolbar.set_model("claude-opus-4-8")
+    _fill(toolbar)
+    assert _expanders(toolbar) == []
+    assert "✓ Opus 4.8" in _texts(toolbar, "helios-model-pick")
+
+
+def test_editing_shows_older_models_to_add_from(toolbar):
+    ui_state.store().set(ui_state.PICKER_SHOW_MORE_KEY, False)
+    toolbar._model_edit_btn.set_active(True)
+    assert [e.get_label() for e in _expanders(toolbar)] == ["More Claude models (2)"]
+
+
+def test_a_pinned_twin_marks_its_alias_and_keeps_more_folded(toolbar):
+    """Reported: a chat on claude-opus-5-5 opened the picker with "More
+    Claude models" unfolded, though Opus 5.5 is the alias row up top."""
+    catalog = _catalog() + [ModelEntry("claude-opus-5-5", "Opus 5.5", "Opus")]
+    toolbar.set_choices(catalog)
+    toolbar.set_model("claude-opus-5-5")
+    _fill(toolbar)
+    picks = _texts(toolbar, "helios-model-pick")
+    assert "✓ Opus 5.5" in picks[:4]
+    (more,) = _expanders(toolbar)
+    assert not more.get_expanded()
+    more.set_expanded(True)
+    assert picks.count("✓ Opus 5.5") == 1
+    assert "Opus 5.5" not in _texts(toolbar, "helios-model-pick")[6:]

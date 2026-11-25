@@ -101,8 +101,12 @@ Kimi report (the first eight when a catalogue is longer), and the OpenRouter
 models ticked in Settings → Providers.
 Everything else the provider offers — older pinned versions, models you hid,
 and *Claude Code default* (no `--model`, so Claude Code uses its own
-`/model` or `settings.json` choice) — folds under *More <provider> models*.
-The filter box searches both. Hover a row for its hide or add button, or
+`/model` or `settings.json` choice) — goes under *More <provider> models*,
+which the picker shows only when Settings → Providers → Model picker →
+*Show older models* is on (or while you edit your list). The filter box
+always searches both, and the model a chat is running on is always shown.
+A pinned Claude id that is today's alias model (`claude-opus-5-5` while
+`opus[1m]` is Opus 5.5) is shown as that alias row. Hover a row for its hide or add button, or
 press the pencil button to drag or arrow-key rows into your own order; a
 section's *Reset* returns it to the default list. Settings → Providers →
 Model picker resets every provider at once.
@@ -365,7 +369,7 @@ an API key, so its row opens *Providers*; that key is stored in
 `~/.helios/openrouter.key`. Native CLI credentials are not copied by Helios.
 
 **Settings.** *Defaults* — permission mode for new chats (persisted only by
-the **Save chat defaults** button at the bottom of the page), and the model
+the **Save chat defaults** button, pinned to the page's bottom-left corner), and the model
 for new chats and default working directory (each saved as soon as you
 choose it). A saved default whose provider's models have not loaded yet stays
 listed as a placeholder row until they do. *Appearance* — colour scheme (auto, light, dark) and a
@@ -414,6 +418,7 @@ rewritten whole on every change, so edit it only while Helios is closed.
 | Behavior → Title model | `ollama_title_model` | default `qwen2.5-coder:14b` |
 | Behavior → Show other machines' sessions | `show_pool_sessions` | `true` · `false` (default) |
 | Providers → Models in the picker | `openrouter_picker_models` | list of model ids: OpenRouter's list in the model picker; empty = none up front, the catalog stays under *More* |
+| Providers → Model picker → Show older models | `picker_show_more` | `true` · `false` (default): the *More* list under each picker section |
 | Model picker → hide / add / reorder | `hidden_models`, `model_order` | lists of model ids: defaults moved to *More*, and your list in order; both empty = default lists |
 | Execution capsule → Reasoning (global default) | `effort_level` | `off` · `low` · `medium` · `high` (default) · `xhigh` · `max` |
 

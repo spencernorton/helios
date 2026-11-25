@@ -4,6 +4,17 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.124.0 — 2026-11-25
+
+### Model picker
+- **Older models hidden by default:** a new Settings → Providers → Model picker → *Show older models* switch (off by default) decides whether each provider's *More … models* list appears. Off, the picker is just your list; the filter box still searches every model, editing your list still shows them to add from, and a chat running on an older model still sees it, marked.
+- **A pinned twin no longer unfolds More:** a chat on `claude-opus-5-5` while the `opus[1m]` row is "Opus 5.5" opened the picker with *More Claude models* unfolded to show the pin. The alias row is now marked as the selection.
+
+### Fixes
+- **Context popover flicker:** usage arrives once per API request, Claude's measured split once per turn, and every usage update replaced the coloured bar with one band in the tool-output colour, so hovering during a turn flickered between the two. The last split is kept, stretched to the new total, until the next one arrives. An empty transcript estimate no longer clears a measured split (that dropped the ring to one accent arc), the band shown before any split is neutral, and the legend rows are rebuilt only when the window size actually changes.
+- **Save chat defaults stays in reach:** the button floats over the Settings page's bottom-left corner (above the page switcher in a narrow window) instead of sitting at the end of the page.
+- **Helios Router wording:** "Broker connected · evaluation hold" now names the actual reason nothing is delegated: no profile has passed evaluation, Smart Routing is off, the credential needs attention, or the broker is holding dispatch.
+
 ## 0.123.0 — 2026-11-25
 
 ### Context meter
