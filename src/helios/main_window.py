@@ -533,6 +533,9 @@ class MainWindow(
         self._staged_effort_key = ""
         self._staged_workflow_mode = ""
         self._pending_model_switch: _PendingModelSwitch | None = None
+        # (provider, session id) whose own model waits on a catalog; see
+        # WindowModelsMixin._restore_conversation_model.
+        self._deferred_conversation_model: tuple[str, str] | None = None
         self._pending_switch_qid_seq = -1
         # Default to the latest Fable with 1M context. The `fable` alias tracks
         # the newest Fable automatically, so this stays current as models ship.
@@ -2446,6 +2449,12 @@ class MainWindow(
         active_session = session
         if not session.project.read_only and session_provider:
             self._adopt_session_provider(session_provider)
+            # Adoption shows the provider's last-used model. This conversation
+            # keeps its own: before the Work lookup below, which records the
+            # header's model against the session.
+            MainWindow._restore_conversation_model(
+                self, session_provider, session.session_id, live
+            )
             coordinator = getattr(self, "_work_coordinator", None)
             if coordinator is not None:
                 try:
@@ -2920,6 +2929,9 @@ class MainWindow(
             adopt = getattr(self, "_adopt_session_provider", None)
             if callable(adopt):
                 adopt(viewed_provider)
+                MainWindow._restore_conversation_model(
+                    self, viewed_provider, str(getattr(target, "resume_id", "") or "")
+                )
             if (
                 viewed_provider != self._selected_provider()
                 and getattr(self, "_catalog_refresh_running", False)
@@ -2929,6 +2941,17 @@ class MainWindow(
                     "try sending again in a moment."
                 )
                 return False
+        if (
+            MainWindow._retry_deferred_conversation_model(self)
+            and getattr(self, "_catalog_refresh_running", False)
+        ):
+            # Same wait as above, for a conversation whose own model cannot
+            # be checked until its provider's catalog lands.
+            self._toast(
+                "Helios is still loading provider models for this session — "
+                "try sending again in a moment."
+            )
+            return False
         coordinator = getattr(self, "_work_coordinator", None)
         if target.work_id:
             budget_block = MainWindow._work_execution_block_reason(

@@ -245,6 +245,14 @@ class WindowModelsMixin:
                 adopt = getattr(self, "_adopt_session_provider", None)
                 if callable(adopt):
                     adopt(pending_provider)
+                    # The conversation's own model could not be checked
+                    # before this catalog existed.
+                    _mw().MainWindow._restore_conversation_model(
+                        self, pending_provider, str(target.resume_id)
+                    )
+        # A conversation opened on the provider already on screen leaves no
+        # pending adoption, yet may still be owed its own model.
+        _mw().MainWindow._retry_deferred_conversation_model(self)
         self._sync_effort_sensitivity()
         self._sync_execution_control()
         # The restored session's context fill was requested at selection
@@ -424,6 +432,9 @@ class WindowModelsMixin:
         settings): persist, remember per provider, reflect everywhere."""
         if not quiet:
             self._pending_session_provider_adoption = ""
+            # An explicit pick outranks a conversation model still waiting
+            # on its catalog.
+            self._deferred_conversation_model = None
         old_model = str(getattr(self, "_model", "") or "")
         old_provider = model_catalog.provider_for(old_model)
         provider = model_catalog.provider_for(alias)
@@ -1439,6 +1450,13 @@ class WindowModelsMixin:
                     drafts.stash(key, "\n\n".join(queued_texts + ([existing] if existing else [])))
             return False
 
+        if pending.to_model and model_catalog.canonical_model_id(
+            pending.to_model
+        ) != model_catalog.canonical_model_id(str(getattr(self, "_model", "") or "")):
+            # Reselecting the source session while the switch was queued put
+            # the header back on the source provider's model. The queued
+            # texts below are sent under the header, so repair it first.
+            self._apply_model_choice(pending.to_model, quiet=True)
         switched = _mw().MainWindow._execute_in_place_model_switch(
             self,
             work_id=pending.work_id,
@@ -1610,6 +1628,109 @@ class WindowModelsMixin:
             self._pending_session_provider_adoption = provider
         else:
             self._pending_session_provider_adoption = provider
+
+    def _conversation_model(self, provider: str, session_id: str, live=None) -> str:
+        """The model this conversation itself runs on, or "" when unknown.
+
+        A live driver knows exactly. Otherwise the Work binding recorded it at
+        the first send and on every confirmed switch.
+        """
+        if live is not None:
+            model = str(
+                getattr(live, "_helios_requested_model", "")
+                or getattr(live, "model", "")
+                or ""
+            ).strip()
+            if model:
+                return model
+        store = getattr(getattr(self, "_work_coordinator", None), "store", None)
+        if store is None or not session_id:
+            return ""
+        try:
+            work_id = store.work_id_for_native_session(provider, session_id)
+            binding = (
+                store.active_binding_for_work_provider(work_id, provider)
+                if work_id
+                else None
+            )
+        except Exception as exc:  # noqa: BLE001 - selection must still complete
+            _log.warning("could not read the model of session %s: %s", session_id, exc)
+            return ""
+        if binding is None or binding.native_id != session_id:
+            return ""
+        return str(binding.model or "").strip()
+
+    def _restore_conversation_model(self, provider: str, session_id: str, live=None) -> bool:
+        """Open a conversation on its own model, not the provider's last pick.
+
+        `_adopt_session_provider` only knows the provider, so it shows the
+        model last used with that provider anywhere. Left there, the next send
+        read that as a picker change and switched this conversation to it:
+        using Fable in one chat silently moved every other Claude chat to
+        Fable on its next message. Returns True when the header changed.
+        """
+        mw = _mw().MainWindow
+        # Each attempt decides afresh whether a retry is owed.
+        self._deferred_conversation_model = None
+        pending = getattr(self, "_pending_model_switch", None)
+        if pending is not None:
+            work_id = str(getattr(live, "_helios_work_id", "") or "")
+            store = getattr(getattr(self, "_work_coordinator", None), "store", None)
+            if not work_id and store is not None and session_id:
+                try:
+                    work_id = store.work_id_for_native_session(provider, session_id)
+                except Exception:  # noqa: BLE001
+                    work_id = ""
+            if work_id and pending.work_id == work_id:
+                # A switch the user queued for this conversation owns the
+                # header until it lands.
+                return False
+        model = mw._conversation_model(self, provider, session_id, live)
+        if not model or model_catalog.provider_for(model) != provider:
+            return False
+        current = str(getattr(self, "_model", "") or "")
+        if model_catalog.canonical_model_id(model) == model_catalog.canonical_model_id(current):
+            return False
+        if live is None and provider != model_catalog.PROVIDER_ANTHROPIC:
+            # Claude accepts ids its catalog no longer lists; every other
+            # provider must still offer a recorded model before a cold
+            # conversation is pointed at it.
+            entries = getattr(self, "_catalog_entries_by_id", None) or {}
+            entry = entries.get(model_catalog.canonical_model_id(model))
+            if entry is None or getattr(entry, "provider", "") != provider:
+                if not any(
+                    getattr(row, "provider", "") == provider for row in entries.values()
+                ):
+                    # This provider's catalog has not landed yet (fresh
+                    # boot). Owed again when it does; see
+                    # _retry_deferred_conversation_model.
+                    self._deferred_conversation_model = (provider, session_id)
+                return False
+        self._apply_model_choice(model, quiet=True)
+        return True
+
+    def _retry_deferred_conversation_model(self) -> bool:
+        """Restore a conversation model that had to wait for its catalog.
+
+        Only for the conversation still on screen with no driver started: a
+        send already made under the adopted model is not swapped afterwards.
+        Returns True while the restore is still owed.
+        """
+        deferred = getattr(self, "_deferred_conversation_model", None)
+        if not deferred:
+            return False
+        provider, session_id = deferred
+        target = getattr(self, "_next_chat", None)
+        if (
+            getattr(self, "_driver", None) is not None
+            or target is None
+            or str(getattr(target, "resume_id", "") or "") != session_id
+            or bool(getattr(getattr(target, "project", None), "read_only", False))
+        ):
+            self._deferred_conversation_model = None
+            return False
+        _mw().MainWindow._restore_conversation_model(self, provider, session_id)
+        return bool(getattr(self, "_deferred_conversation_model", None))
 
     def _selected_provider(self) -> str:
         return model_catalog.provider_for(self._model)

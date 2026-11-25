@@ -4,6 +4,12 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.121.2 — 2026-11-24
+
+### Fixes
+- **A conversation keeps its own model:** selecting a session only adopted its provider, so the header showed the model last used with that provider anywhere, and the next send applied it as a picker change. Using one Claude model in a chat silently switched every other Claude conversation to it on its next message. Selection now restores the conversation's own model first: the live driver's requested model, else the model recorded on its Work binding, with the provider's last-used model only as the fallback. A conversation opened before its provider's catalog has loaded is restored when the catalog lands (a send in that window waits, as it already did for a provider still loading). A switch queued for the conversation still owns the header, and now repairs it before sending its queued messages if a reselection moved it.
+- **Composer text area:** the message box drew an opaque square box inside its rounded card, because the text view's own node paints the view background and the stylesheet cleared only its `text` child. The node is now cleared for the composer and the Shared Context detail body, with a stylesheet guard for future text views. The busy hint is ellipsized so it stops at the text area in a narrow window.
+
 ## 0.121.1 — 2026-11-24
 
 ### Fixes
