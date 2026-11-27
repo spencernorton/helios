@@ -394,6 +394,11 @@ def list_mcp_servers() -> list[dict[str, str]]:
         return []
 
 
+def _antigravity_dir() -> Path:
+    """Antigravity's own state directory (resolved per call for tests)."""
+    return Path.home() / ".gemini" / "antigravity-cli"
+
+
 @dataclass(frozen=True, slots=True)
 class ConversationIdleSnapshot:
     """Read-only snapshot of an Antigravity conversation from its summary DB."""
@@ -442,7 +447,7 @@ def probe_conversation_idle(
     if not cid or "/" in cid or "\\" in cid:
         return None
     path = db_path if db_path is not None else (
-        Path.home() / ".gemini" / "antigravity-cli" / "conversation_summaries.db"
+        _antigravity_dir() / "conversation_summaries.db"
     )
     if not path.is_file():
         return None
@@ -483,3 +488,389 @@ def probe_conversation_idle(
         last_user_input_step_index=user_step,
         last_modified_epoch=mtime_epoch,
     )
+
+
+# ── Turn-completion evidence ────────────────────────────────────────────────
+#
+# Antigravity keeps two records of a conversation, and only one of them can
+# say whether a turn is over:
+#
+# * ``conversation_summaries.db`` is an index rewritten in batches. Its row
+#   routinely trails the conversation by tens of steps, even long after the
+#   conversation finished, and it reads CASCADE_RUN_STATUS_IDLE in the middle
+#   of a long generation and while a subagent works. Treating that row as
+#   proof of an idle turn let Helios close live turns mid-answer.
+# * ``conversations/<id>.db`` is the trajectory itself: one row per step with
+#   that step's own status, written while the step runs. A finished chat turn
+#   ends on a completed planner response that follows its user input.
+#
+# The summary row may therefore veto a recovery, but only the trajectory (and
+# the trajectories of the conversation's subagents) can confirm one.
+#
+# Values are Antigravity's CortexStepType and CortexStepStatus enums, as
+# compiled into the agy CLI.
+STEP_TYPE_USER_INPUT = 14
+STEP_TYPE_PLANNER_RESPONSE = 15
+STEP_STATUS_DONE = 3
+_STEP_STATUS_NAMES = {
+    0: "unspecified", 1: "pending", 2: "running", 3: "done", 4: "invalid",
+    5: "cleared", 6: "canceled", 7: "error", 8: "generating", 9: "waiting",
+    11: "queued", 12: "interrupted",
+}
+# PENDING, RUNNING, GENERATING, WAITING and QUEUED: the step has not settled.
+_STEP_STATUS_IN_PROGRESS = frozenset({1, 2, 8, 9, 11})
+# Clock skew allowed between Helios's wall clock and Antigravity's writes.
+_EVIDENCE_SKEW_SECONDS = 2.0
+# A conversation's subagents accumulate over its whole life. Past this many,
+# coverage is refused rather than truncated: an omitted child could be the
+# one still working.
+_MAX_SUBAGENTS = 4096
+_CONVERSATION_DB_NAME_RE = re.compile(
+    r"([0-9A-Za-z][0-9A-Za-z._-]*)\.db(?:-wal|-shm|-journal)?\Z"
+)
+
+
+def _safe_conversation_id(conversation_id: Any) -> str:
+    cid = str(conversation_id or "").strip()
+    if not cid or cid in {".", ".."} or any(c in cid for c in "/\\\x00"):
+        return ""
+    return cid
+
+
+def _db_last_write_epoch(path: Path) -> float | None:
+    """Newest write to an SQLite database: the file or its non-empty WAL.
+
+    Stat before connecting. A read-only reader can create an empty ``-wal`` and
+    rewrites ``-shm``, so neither of those counts as a write by Antigravity.
+    """
+    try:
+        newest = path.stat().st_mtime
+    except OSError:
+        return None
+    try:
+        wal = path.with_name(path.name + "-wal").stat()
+    except OSError:
+        return newest
+    if wal.st_size > 0:
+        newest = max(newest, wal.st_mtime)
+    return newest
+
+
+@dataclass(frozen=True, slots=True)
+class TrajectorySnapshot:
+    """The newest step of an Antigravity trajectory (``conversations/<id>.db``)."""
+
+    conversation_id: str
+    newest_index: int
+    newest_type: int
+    newest_status: int
+    last_user_input_index: int  # -1 when the trajectory holds no user input
+    last_write_epoch: float
+
+    @property
+    def in_progress(self) -> bool:
+        return self.newest_status in _STEP_STATUS_IN_PROGRESS
+
+    @property
+    def ends_with_final_response(self) -> bool:
+        return (
+            self.newest_type == STEP_TYPE_PLANNER_RESPONSE
+            and self.newest_status == STEP_STATUS_DONE
+            and self.newest_index > self.last_user_input_index
+        )
+
+    @property
+    def newest_status_name(self) -> str:
+        return _STEP_STATUS_NAMES.get(self.newest_status, f"status {self.newest_status}")
+
+
+def _trajectory_path(conversation_id: str, conversations_dir: Path | None) -> Path | None:
+    cid = _safe_conversation_id(conversation_id)
+    if not cid:
+        return None
+    base = conversations_dir if conversations_dir is not None else (
+        _antigravity_dir() / "conversations"
+    )
+    return base / f"{cid}.db"
+
+
+def probe_conversation_trajectory(
+    conversation_id: str,
+    *,
+    conversations_dir: Path | None = None,
+) -> TrajectorySnapshot | None:
+    """Read the newest step of one Antigravity trajectory, read-only.
+
+    Returns None when the trajectory is absent, locked or unreadable; callers
+    treat that as "not proven", never as finished. Safe on a worker thread.
+    """
+    path = _trajectory_path(conversation_id, conversations_dir)
+    if path is None:
+        return None
+    cid = path.name[: -len(".db")]
+    last_write = _db_last_write_epoch(path)
+    if last_write is None:
+        return None
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(
+            f"{path.absolute().as_uri()}?mode=ro", uri=True, timeout=0.5
+        )
+        newest = conn.execute(
+            "SELECT idx, step_type, status FROM steps ORDER BY idx DESC LIMIT 1"
+        ).fetchone()
+        last_user = conn.execute(
+            "SELECT MAX(idx) FROM steps WHERE step_type = ?", (STEP_TYPE_USER_INPUT,)
+        ).fetchone()
+    except (sqlite3.Error, OSError, ValueError):
+        return None
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+    if newest is None:
+        return None
+    values = (*newest, last_user[0] if last_user and last_user[0] is not None else -1)
+    if not all(isinstance(v, int) and not isinstance(v, bool) for v in values):
+        return None
+    index, step_type, status, user_index = values
+    return TrajectorySnapshot(
+        conversation_id=cid,
+        newest_index=index,
+        newest_type=step_type,
+        newest_status=status,
+        last_user_input_index=user_index,
+        last_write_epoch=last_write,
+    )
+
+
+def child_conversation_ids(
+    conversation_id: str,
+    *,
+    db_path: Path | None = None,
+) -> tuple[str, ...] | None:
+    """Every subagent conversation under ``conversation_id``, nearest first.
+
+    Parent links are written when a subagent is created, so they hold even
+    when the rest of a summary row is stale. The whole tree is returned or
+    nothing: None when the summary DB cannot be read or the tree is larger
+    than Helios will inspect, which callers treat as "not proven".
+    """
+    cid = _safe_conversation_id(conversation_id)
+    if not cid:
+        return None
+    path = db_path if db_path is not None else (
+        _antigravity_dir() / "conversation_summaries.db"
+    )
+    if not path.is_file():
+        return None
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(f"{path.absolute().as_uri()}?mode=ro", uri=True, timeout=0.5)
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(conversation_summaries)")
+        }
+        if "conversation_id" not in columns:
+            return None
+        if "parent_conversation_id" not in columns:
+            return ()  # an agy without subagents records no parent links
+        rows = conn.execute(
+            "SELECT conversation_id, parent_conversation_id FROM conversation_summaries "
+            "WHERE parent_conversation_id IS NOT NULL AND parent_conversation_id != ''"
+        ).fetchall()
+    except (sqlite3.Error, OSError, ValueError):
+        return None
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+    by_parent: dict[str, list[str]] = {}
+    for child, parent in rows:
+        if isinstance(child, str) and isinstance(parent, str):
+            by_parent.setdefault(parent, []).append(child)
+    found: list[str] = []
+    seen = {cid}
+    frontier = [cid]
+    while frontier:
+        nxt: list[str] = []
+        for parent in frontier:
+            for child in by_parent.get(parent, ()):
+                if child in seen:
+                    continue
+                if not _safe_conversation_id(child):
+                    return None  # a child Helios cannot inspect
+                seen.add(child)
+                found.append(child)
+                nxt.append(child)
+                if len(found) > _MAX_SUBAGENTS:
+                    return None
+        frontier = nxt
+    return tuple(found)
+
+
+def open_conversation_ids(
+    pid: int,
+    *,
+    proc_root: Path | None = None,
+    conversations_dir: Path | None = None,
+) -> frozenset[str] | None:
+    """Conversation databases an agy process currently holds open.
+
+    agy keeps a trajectory open while its cascade runs (a working subagent's
+    as much as the conversation's own) and closes it once the cascade settles,
+    so any open trajectory means work is still in flight. Returns None when the
+    process's descriptors cannot be listed.
+    """
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return None
+    root = proc_root if proc_root is not None else Path("/proc")
+    base = conversations_dir if conversations_dir is not None else (
+        _antigravity_dir() / "conversations"
+    )
+    prefix = os.path.realpath(base) + os.sep
+    fd_dir = root / str(pid) / "fd"
+    try:
+        entries = list(os.scandir(fd_dir))
+    except OSError:
+        return None
+    ids: set[str] = set()
+    for entry in entries:
+        try:
+            target = os.readlink(entry.path)
+        except OSError:
+            continue  # closed between the listing and the read
+        if not target.startswith(prefix):
+            continue
+        match = _CONVERSATION_DB_NAME_RE.fullmatch(target[len(prefix):])
+        if match:
+            ids.add(match.group(1))
+    return frozenset(ids)
+
+
+def accepted_input_index(accepted_turn_id: Any, conversation_id: str) -> int | None:
+    """The trajectory step index Helios recorded as a turn's accepted input.
+
+    Google acceptance ids are ``<conversation>/user_input/<step index>``.
+    """
+    cid = _safe_conversation_id(conversation_id)
+    prefix = f"{cid}/user_input/"
+    text = str(accepted_turn_id or "")
+    if not cid or not text.startswith(prefix):
+        return None
+    tail = text[len(prefix):]
+    return int(tail) if tail.isdigit() else None
+
+
+@dataclass(frozen=True, slots=True)
+class TurnEvidence:
+    """Whether Antigravity's own records prove a turn finished.
+
+    ``progress_epoch`` is the newest trajectory write in the conversation and
+    the subagents it started during the turn, so a caller can count writes the
+    stdout stream never mentions (long generations, subagent work) as
+    progress. 0.0 when unknown.
+    """
+
+    finished: bool
+    reason: str
+    progress_epoch: float = 0.0
+    trajectory: TrajectorySnapshot | None = None
+    summary: ConversationIdleSnapshot | None = None
+
+
+def assess_turn_completion(
+    conversation_id: str,
+    *,
+    turn_started_epoch: float,
+    accepted_input_index: int | None,
+    quiet_seconds: float,
+    now_epoch: float | None = None,
+    db_path: Path | None = None,
+    conversations_dir: Path | None = None,
+) -> TurnEvidence:
+    """Decide from Antigravity's records alone whether a turn has finished.
+
+    Finished means: the trajectory's newest step is a completed planner
+    response that follows this turn's own user input; nothing in the
+    conversation or any subagent it started this turn is still running or was
+    written within ``quiet_seconds``; and the summary row, read last, does not
+    disagree. Anything unreadable is "not proven". Safe on a worker thread.
+    """
+    now = time.time() if now_epoch is None else float(now_epoch)
+    quiet = max(0.0, float(quiet_seconds))
+    trajectory = probe_conversation_trajectory(
+        conversation_id, conversations_dir=conversations_dir
+    )
+    if trajectory is None:
+        return TurnEvidence(False, "its trajectory could not be read")
+    progress = trajectory.last_write_epoch
+    children = child_conversation_ids(conversation_id, db_path=db_path)
+    busy_child = ""
+    for child in children or ():
+        path = _trajectory_path(child, conversations_dir)
+        written = _db_last_write_epoch(path) if path is not None else None
+        if written is None:
+            # No trajectory to stat: not yet created, removed, or out of
+            # reach. Only the subagent's own summary row can show it belongs
+            # to an earlier turn; otherwise its state is unproven.
+            row = probe_conversation_idle(child, db_path=db_path)
+            if row is not None and row.last_modified_epoch < turn_started_epoch - _EVIDENCE_SKEW_SECONDS:
+                continue
+            if not busy_child:
+                busy_child = f"subagent {child[:8]} has no trajectory to check"
+            continue
+        if written < turn_started_epoch - _EVIDENCE_SKEW_SECONDS:
+            continue  # untouched since this turn began
+        progress = max(progress, written)
+        if busy_child:
+            continue
+        snap = probe_conversation_trajectory(child, conversations_dir=conversations_dir)
+        if snap is None:
+            # Touched this turn but unreadable (locked mid-write, or a layout
+            # this Helios does not know): not settled.
+            busy_child = f"subagent {child[:8]} was written this turn but could not be read"
+        elif snap.in_progress or now - snap.last_write_epoch < quiet:
+            busy_child = f"subagent {child[:8]} is still working"
+
+    def not_finished(reason: str) -> TurnEvidence:
+        return TurnEvidence(False, reason, progress, trajectory)
+
+    if children is None:
+        return not_finished("its subagent list could not be read")
+    if trajectory.in_progress:
+        return not_finished(
+            f"step {trajectory.newest_index} is still {trajectory.newest_status_name}"
+        )
+    if busy_child:
+        return not_finished(busy_child)
+    if not trajectory.ends_with_final_response:
+        return not_finished(
+            f"its newest step ({trajectory.newest_index}, "
+            f"{trajectory.newest_status_name}) is not a finished response"
+        )
+    if accepted_input_index is None or trajectory.last_user_input_index != accepted_input_index:
+        return not_finished("its newest user input is not this turn's prompt")
+    if now - trajectory.last_write_epoch < quiet:
+        return not_finished("its trajectory was written moments ago")
+    summary = probe_conversation_idle(conversation_id, db_path=db_path)
+    if summary is None:
+        return not_finished("it has no summary record")
+    if (
+        summary.status != "CASCADE_RUN_STATUS_IDLE"
+        or summary.not_fully_idle
+        or summary.killed
+    ):
+        return not_finished(
+            f"its summary reports {summary.status or 'no status'}"
+            + (" with work outstanding" if summary.not_fully_idle else "")
+            + (" (killed)" if summary.killed else "")
+        )
+    if summary.last_modified_epoch < turn_started_epoch - _EVIDENCE_SKEW_SECONDS:
+        return not_finished("its summary record predates this turn")
+    if now - summary.last_modified_epoch < quiet:
+        return not_finished("its summary record was written moments ago")
+    return TurnEvidence(True, "", progress, trajectory, summary)

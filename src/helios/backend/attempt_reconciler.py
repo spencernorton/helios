@@ -18,10 +18,14 @@ terminal outcome can be proven:
   records. Correlates the dispatched prompt by SHA-256 ``prompt_digest`` and
   accepts only a subsequent non-sidechain terminal ``stop_reason`` (without
   dangling ``tool_use``), ``result`` record, or explicit user interrupt marker.
-* **Google (``google``)**: queries Antigravity's read-only
-  ``conversation_summaries.db`` via :func:`google_env.probe_conversation_idle`
-  with the same ``CASCADE_RUN_STATUS_IDLE`` + quiet-window proof bar used by the
-  live liveness watchdog.
+* **Google (``google``)**: reads Antigravity's trajectory
+  (``conversations/<id>.db``) through :func:`google_env.assess_turn_completion`,
+  the evidence bar the live liveness watchdog also uses. Completion is
+  confirmed only when the newest step is this turn's finished response, nothing
+  in the conversation or its subagents is still running, the records have been
+  quiet past the stability window, and the ``conversation_summaries.db`` row
+  agrees it is ``CASCADE_RUN_STATUS_IDLE``. The summary row alone never
+  confirms anything: it trails the trajectory and reads idle mid-generation.
 * **OpenRouter (``openrouter``)**: stateless HTTP/SSE has no remote session
   status API, and the local mirror can contain partial output on connection
   drops. Always returns ``uncertain`` with forensic detail from local history so
@@ -37,7 +41,6 @@ import json
 import os
 import re
 import stat as stat_mod
-import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,7 +60,6 @@ __all__ = [
 _MAX_TAIL_BYTES = 2 * 1024 * 1024
 _MAX_DETAIL_CHARS = 320
 _CLOCK_SKEW_SECONDS = 5.0
-_GOOGLE_SKEW_SECONDS = 2.0
 _DEFAULT_GOOGLE_QUIET_SECONDS = 30.0
 
 _CLAUDE_TERMINAL_STOP_REASONS = frozenset(
@@ -575,33 +577,35 @@ def _probe_google_attempt(
     attempt: ExecutionAttempt,
     *,
     google_db_path: Path | None = None,
+    google_conversations_dir: Path | None = None,
     google_quiet_seconds: float = _DEFAULT_GOOGLE_QUIET_SECONDS,
     now_epoch: float | None = None,
 ) -> AttemptProbeResult:
     native_id = attempt.native_binding_id
-    snap = google_env.probe_conversation_idle(native_id, db_path=google_db_path)
-    if snap is None:
+    started_epoch = _parse_iso_epoch(attempt.started_at)
+    if started_epoch is None:
         return AttemptProbeResult(
             attempt_id=attempt.attempt_id,
             provider=attempt.provider,
             verdict="uncertain",
-            source="antigravity_summary_db",
-            detail=_scrub_detail(
-                f"No Antigravity summary record found for conversation {native_id}."
-            ),
+            source="antigravity_trajectory",
+            detail=_scrub_detail("The attempt has no recorded start time."),
         )
-    started_epoch = _parse_iso_epoch(attempt.started_at)
-    now = time.time() if now_epoch is None else float(now_epoch)
-    quiet = now - snap.last_modified_epoch
-    if (
-        snap.status == "CASCADE_RUN_STATUS_IDLE"
-        and not snap.not_fully_idle
-        and not snap.killed
-        and snap.step_count > snap.last_user_input_step_index
-        and started_epoch is not None
-        and snap.last_modified_epoch >= started_epoch - _GOOGLE_SKEW_SECONDS
-        and quiet >= max(0.0, float(google_quiet_seconds))
-    ):
+    # The summary index alone is not evidence: it trails the trajectory and
+    # reads idle mid-generation. Only the trajectory can prove the turn's own
+    # final response exists.
+    evidence = google_env.assess_turn_completion(
+        native_id,
+        turn_started_epoch=started_epoch,
+        accepted_input_index=google_env.accepted_input_index(
+            attempt.accepted_turn_id, native_id
+        ),
+        quiet_seconds=google_quiet_seconds,
+        now_epoch=now_epoch,
+        db_path=google_db_path,
+        conversations_dir=google_conversations_dir,
+    )
+    if evidence.finished and evidence.trajectory is not None:
         return AttemptProbeResult(
             attempt_id=attempt.attempt_id,
             provider=attempt.provider,
@@ -609,21 +613,20 @@ def _probe_google_attempt(
             provider_status="CASCADE_RUN_STATUS_IDLE",
             matched_turn_id=attempt.accepted_turn_id,
             matched_native_id=native_id,
-            source="antigravity_summary_db",
+            source="antigravity_trajectory",
             detail=_scrub_detail(
-                f"Antigravity summary DB confirmed CASCADE_RUN_STATUS_IDLE "
-                f"(steps {snap.step_count}, quiet {int(quiet)}s)."
+                "Antigravity's trajectory ends with this turn's finished response "
+                f"(step {evidence.trajectory.newest_index}) and its summary is idle."
             ),
         )
     return AttemptProbeResult(
         attempt_id=attempt.attempt_id,
         provider=attempt.provider,
         verdict="uncertain",
-        source="antigravity_summary_db",
+        source="antigravity_trajectory",
         detail=_scrub_detail(
-            f"Antigravity summary reports status={snap.status or 'unknown'}, "
-            f"not_fully_idle={snap.not_fully_idle}, killed={snap.killed}, "
-            f"steps={snap.step_count}/{snap.last_user_input_step_index}."
+            f"Antigravity has not confirmed that conversation {native_id} "
+            f"finished this turn: {evidence.reason}."
         ),
     )
 
@@ -668,6 +671,7 @@ def probe_attempt(
     claude_projects_dir: Path | None = None,
     codex_sessions_dir: Path | None = None,
     google_db_path: Path | None = None,
+    google_conversations_dir: Path | None = None,
     openrouter_history_dir: Path | None = None,
     google_quiet_seconds: float = _DEFAULT_GOOGLE_QUIET_SECONDS,
     now_epoch: float | None = None,
@@ -730,6 +734,7 @@ def probe_attempt(
         return _probe_google_attempt(
             attempt,
             google_db_path=google_db_path,
+            google_conversations_dir=google_conversations_dir,
             google_quiet_seconds=google_quiet_seconds,
             now_epoch=now_epoch,
         )

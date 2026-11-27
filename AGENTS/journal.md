@@ -1,5 +1,77 @@
 # Helios — Session Journal
 
+## 2026-11-27 — Gemini silent-turn recovery no longer closes live turns (0.125.1)
+
+- **Symptom:** two Gemini chats in one morning showed the blinking amber
+  "stuck" dot (last message unanswered, nothing running). In both, Helios had
+  closed a turn that was still working: the log showed `Reconciling silent
+  Gemini turn … from Antigravity summary DB (status=CASCADE_RUN_STATUS_IDLE
+  step_count=10 user_step=-1)`. The Work ledger recorded both attempts as
+  `completed / provider_result.reconciled_idle`. One chat recovered only
+  when its prompt was resent. Neither got its answer.
+- **Root cause:** `_apply_idle_probe` trusted the summary index row. That row is
+  a batched index. At the moment of the first kill it said 10 idle steps while
+  the trajectory (`conversations/<id>.db`) held 86, the newest a planner
+  response in `GENERATING`. The second kill left a planner response
+  `CANCELED` at the step where Helios stopped it. An audit of 504 finished
+  local conversations found the row's `step_count` behind the trajectory in
+  282 of them, so the row is not trustworthy even at rest. A later
+  20-minute turn on the same day rested its parent trajectory on a `DONE`
+  planner response while a subagent generated. Its parent row read `IDLE`,
+  and only `not_fully_idle=1` kept it alive. Before this fix the watchdog had
+  fired twice in this install's history (logs back to June), and both were
+  false.
+- **Fix:** `google_env.assess_turn_completion` is the shared evidence rule for
+  the live watchdog and the post-exit orphan probe. A turn is finished only
+  when every one of these holds:
+  - the trajectory's newest step is a `DONE` planner response after this
+    turn's accepted `user_input` index;
+  - no subagent trajectory touched since the turn began (found through
+    summary parent links, depth 3) is in progress or was written within the
+    quiet window;
+  - the trajectory has been quiet for 60 s;
+  - the summary row (now a veto only) reads idle, postdates the turn and is
+    quiet.
+
+  The driver also requires that it saw that final response finish on stdout,
+  that it holds the text, and that agy holds no `conversations/*.db` open (`/proc/<pid>/fd`).
+  During the subagent phase the agy process held the subagent's DB open, and
+  once idle it held none. Trajectory writes newer than the last stdout record
+  restart the quiet clock. The silence threshold went from 45 s to 90 s.
+  Enum values (CortexStepType 14/15, CortexStepStatus 3/6/8…) were read
+  from the descriptors compiled into agy 1.5.18. Stdout `step_index`
+  matches trajectory `idx` (an accepted `user_input/44` is trajectory step 44).
+- **Reads stay side-effect-light:** stat before connecting, and ignore a
+  zero-length `-wal`, because a read-only SQLite reader can create one.
+- **Review:** two cross-model review rounds found seven gaps. All were
+  fixed, with tests, before merge.
+  - Round one:
+    - An unreadable subagent trajectory was treated as settled.
+    - The subagent list was silently cut at 64. It now covers the whole tree
+      and refuses past 4096.
+    - Earlier narration could stand in for a final response that had no text
+      of its own. Text is now tracked per step.
+    - The 20-minute stall notice was judged before the probe applied
+      progress. It is now judged after.
+  - Round two:
+    - A subagent whose trajectory could not even be statted still counted as
+      settled. It is now unproven unless its own summary row predates the
+      turn.
+    - The stall notice never reached the status line: its text sat in a
+      field the strip ignores, so it read "Using waiting". A `stalled` state
+      now shows it with an amber icon.
+    - Stdout progress after a stall left the notice switched off for the
+      rest of the turn. It is now retracted and re-armed.
+
+  Separately, a probe that raises can no longer leave the watchdog stuck
+  in flight.
+- **Validation:** new `tests/test_google_turn_evidence.py` (backend) and
+  `tests/test_gemini_silent_turn.py` (native). The driver regressions and the
+  orphan regression fail on 0.125.0. The driver ones fail while logging the
+  production warning line. Two existing tests were updated to the trajectory
+  rule. Backend lane: 1995 passed, 142 skipped. Native lane under Xvfb:
+  NATIVE_RESULT. `ruff check .` is clean.
+
 ## 2026-11-25 — Helios Router removed (0.125.0)
 
 - Spencer: remove the router entirely; it was never used and only confused.
