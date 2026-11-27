@@ -129,3 +129,24 @@ schema. User and queued-message bubbles wait for Google's acceptance event.
 If delivery becomes uncertain, Helios keeps the Work blocked and does not
 automatically replay the prompt. Inspect the native conversation before
 starting replacement work that may already have run.
+
+A turn's result event can fail to arrive even though Antigravity finished
+the turn. After 90 seconds without progress, Helios reads Antigravity's own
+records read-only: the conversation's trajectory
+(`~/.gemini/antigravity-cli/conversations/<id>.db`), the trajectories of the
+subagents it started, and the summary index (`conversation_summaries.db`).
+A write to any of those trajectories counts as progress, so a long reasoning
+step or subagent work does not count as silence. Helios closes the turn itself
+only when all of these hold:
+
+- The trajectory's newest step is that turn's finished response.
+- Helios watched that response finish and holds its text.
+- Nothing has been written for a minute.
+- `agy` holds no conversation open.
+- The summary index also reads idle.
+
+Otherwise it keeps waiting. After 20 minutes with no progress at all, the
+status line says so, and Stop stays available. The summary index alone never
+ends a turn, because it trails the trajectory and can read idle while a
+response is still being generated. The trajectory checks follow the step
+layout of Antigravity CLI **1.5.18**.

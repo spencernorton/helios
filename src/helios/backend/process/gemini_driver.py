@@ -14,6 +14,7 @@ import signal
 import subprocess
 import threading
 import time
+from dataclasses import replace
 from typing import Any
 
 import gi
@@ -51,8 +52,13 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
     display_name = "gemini"
     provider = "google"
     _LIVENESS_CHECK_INTERVAL_SECONDS = 15
-    _IDLE_RECONCILE_SILENCE_SECONDS = 45.0
-    _IDLE_DB_QUIET_SECONDS = 30.0
+    # A turn is only probed after this long without any progress. A long
+    # reasoning step or a subagent can keep stdout quiet for minutes; the
+    # probe treats trajectory writes as progress, so this is the quiet
+    # spell before Helios looks, never proof that the turn is over.
+    _IDLE_RECONCILE_SILENCE_SECONDS = 90.0
+    # Antigravity's records must also have been still for this long.
+    _IDLE_DB_QUIET_SECONDS = 60.0
     _HARD_STALL_NOTICE_SECONDS = 1200.0
 
     __gsignals__ = {
@@ -99,6 +105,9 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         self._accepting_input = False
         self._stopped = False
         self._last_activity = time.monotonic()
+        # Wall-clock twin of _last_activity, comparable with Antigravity's
+        # file times when the liveness probe looks for unreported progress.
+        self._last_activity_wall = time.time()
         self._streaming: StreamingAssistant | None = None
         self._pending_text = ""
         self._prepared_prompt = None
@@ -111,6 +120,16 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         self._completed_turns = 0
         self._seen_result_turns = 0
         self._last_step_index = -1
+        # The newest stdout step and this turn's accepted input index: the
+        # silent-turn recovery may only close a turn whose final response
+        # Helios itself watched finish.
+        self._last_step_kind = ""
+        self._last_step_state = ""
+        self._accepted_input_index: int | None = None
+        # Response text by trajectory step for the current turn, so recovery
+        # can require the final step's own text, not earlier narration.
+        self._response_text_by_step: dict[int, str] = {}
+        self._probe_refusal_logged = False
         self._dispatch_step_floor = -1
         self._turn_started_wall = 0.0
         self._liveness_source_id = 0
@@ -256,7 +275,7 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
                 return MessageDelivery("rejected")
             self._startup_pending_text = text
             self._is_busy = True
-            self._last_activity = time.monotonic()
+            self._touch_activity()
             return MessageDelivery("pending")
         reason = self._execution_block_reason()
         if reason:
@@ -304,6 +323,11 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         self._pending_text = text
         self._prepared_prompt = prepared
         self._dispatch_step_floor = self._last_step_index
+        self._last_step_kind = ""
+        self._last_step_state = ""
+        self._accepted_input_index = None
+        self._response_text_by_step = {}
+        self._probe_refusal_logged = False
         self._streaming = StreamingAssistant(model=self._model)
         line = (json.dumps({"event": "user", "message": {"content": wire_text}}) + "\n").encode()
         try:
@@ -319,7 +343,7 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
             self.end_input()
             self.emit("error", "Google delivery is uncertain. This Work remains blocked until provider-backed recovery confirms the outcome.")
             return MessageDelivery("uncertain")
-        self._last_activity = time.monotonic()
+        self._touch_activity()
         self._turn_started_wall = time.time()
         self._stall_notice_emitted = False
         self._start_liveness_watchdog()
@@ -423,7 +447,7 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
                 self._hold_accounting_failure("Helios could not save the Google session identity. The session remains blocked.")
                 return False
             self._session_id = sid
-            self._last_activity = time.monotonic()
+            self._touch_activity()
             self._accepting_input = True
             pending, self._startup_pending_text = self._startup_pending_text, None
             self._is_busy = False
@@ -451,14 +475,23 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
                 # response deltas remain valid within their own active step.
                 return False
             self._last_step_index = index
-            self._last_activity = time.monotonic()
+            self._last_step_kind = str(kind or "")
+            self._last_step_state = str(step.get("state") or "")
+            self._touch_activity()
+            self._clear_stall_notice()
             self._emit_step_context(step)
             if kind == "user_input":
                 # Antigravity identifies accepted input by its conversation
                 # and durable step index, rather than a separate turn UUID.
-                self._accept_prompt(f"{self._session_id}/user_input/{index}")
+                was_accepted = self._accepted
+                if self._accept_prompt(f"{self._session_id}/user_input/{index}") and not was_accepted:
+                    self._accepted_input_index = index
             elif kind == "agent_response":
                 delta = step.get("text_delta")
+                if isinstance(delta, str) and delta:
+                    self._response_text_by_step[index] = (
+                        self._response_text_by_step.get(index, "") + delta
+                    )
                 if isinstance(delta, str) and delta and self._streaming is not None:
                     if not self._streaming.blocks:
                         self._streaming.blocks.append(Block(type="text"))
@@ -559,7 +592,7 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
             self._completed_turns = count
             self._streaming = None
             self._cancel_liveness_watchdog()
-            self._last_activity = time.monotonic()
+            self._touch_activity()
             if status != "SUCCESS":
                 detail, _ = scrub_sensitive(str(result.get("error") or status))
                 self.emit("error", detail[:2000])
@@ -615,6 +648,10 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
             except Exception:
                 pass
 
+    def _touch_activity(self) -> None:
+        self._last_activity = time.monotonic()
+        self._last_activity_wall = time.time()
+
     def _on_liveness_tick(self) -> bool:
         if (
             not self._is_busy
@@ -628,39 +665,100 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         silence = time.monotonic() - self._last_activity
         if silence >= self._IDLE_RECONCILE_SILENCE_SECONDS and not self._liveness_probe_in_flight:
             self._liveness_probe_in_flight = True
-            attempt_id = self.execution_attempt_id
-            session_id = self._session_id
+            proc = self._proc
             threading.Thread(
                 target=self._probe_idle_worker,
-                args=(attempt_id, session_id),
+                args=(
+                    self.execution_attempt_id,
+                    self._session_id,
+                    self._turn_started_wall,
+                    self._accepted_input_index,
+                    proc.pid if proc is not None else 0,
+                ),
                 daemon=True,
                 name="google-liveness-probe",
             ).start()
-        if silence >= self._HARD_STALL_NOTICE_SECONDS and not self._stall_notice_emitted:
-            self._stall_notice_emitted = True
-            minutes = max(1, int(silence // 60))
-            _log.warning(
-                "Gemini turn %s silent on stdout for %dm without idle confirmation",
-                self._session_id[:8],
-                minutes,
-            )
-            self.emit(
-                "activity-updated",
-                {
-                    "tool": "waiting",
-                    "state": f"No output from Antigravity for {minutes}+ minutes",
-                },
-            )
         return True
 
-    def _probe_idle_worker(self, attempt_id: str, session_id: str) -> None:
-        snap = google_env.probe_conversation_idle(session_id)
-        GLib.idle_add(self._apply_idle_probe, attempt_id, snap)
+    def _note_stall(self) -> None:
+        """Say so once when nothing anywhere has moved for a long time. Judged
+        after a probe, so unreported trajectory progress is counted first."""
+        silence = time.monotonic() - self._last_activity
+        if silence < self._HARD_STALL_NOTICE_SECONDS or self._stall_notice_emitted:
+            return
+        self._stall_notice_emitted = True
+        minutes = max(1, int(silence // 60))
+        _log.warning(
+            "Gemini turn %s shows no progress for %dm without idle confirmation",
+            self._session_id[:8],
+            minutes,
+        )
+        self.emit(
+            "activity-updated",
+            {
+                "category": "stalled",
+                "message": f"No output from Antigravity for {minutes}+ minutes",
+            },
+        )
+
+    def _clear_stall_notice(self) -> None:
+        """Work moved again: retract a shown stall notice and re-arm it."""
+        if self._stall_notice_emitted:
+            self._stall_notice_emitted = False
+            self.emit("activity-updated", {"category": "phase", "phase": "requesting"})
+
+    def _probe_idle_worker(
+        self,
+        attempt_id: str,
+        session_id: str,
+        turn_started_wall: float = 0.0,
+        accepted_input_index: int | None = None,
+        pid: int = 0,
+    ) -> None:
+        try:
+            evidence = google_env.assess_turn_completion(
+                session_id,
+                turn_started_epoch=turn_started_wall,
+                accepted_input_index=accepted_input_index,
+                quiet_seconds=self._IDLE_DB_QUIET_SECONDS,
+            )
+            if evidence.finished:
+                # agy holds a trajectory open while any of its cascades runs,
+                # including a subagent that the summary index has not listed yet.
+                open_ids = google_env.open_conversation_ids(pid)
+                if open_ids is None:
+                    evidence = replace(
+                        evidence, finished=False,
+                        reason="agy's open conversations could not be listed",
+                    )
+                elif open_ids:
+                    evidence = replace(
+                        evidence, finished=False,
+                        reason="agy still has a conversation open",
+                    )
+        except Exception as exc:  # noqa: BLE001 - the in-flight flag must always clear
+            evidence = google_env.TurnEvidence(
+                False, f"the liveness probe failed ({type(exc).__name__})"
+            )
+        GLib.idle_add(self._apply_idle_probe, attempt_id, evidence)
+
+    def _saw_final_response(self, trajectory: google_env.TrajectorySnapshot | None) -> bool:
+        """Helios watched the trajectory's final response finish on stdout,
+        and that response step itself carried text."""
+        return (
+            trajectory is not None
+            and self._accepted
+            and self._accepted_input_index is not None
+            and self._last_step_kind == "agent_response"
+            and self._last_step_state == "DONE"
+            and self._last_step_index == trajectory.newest_index
+            and bool(self._response_text_by_step.get(trajectory.newest_index, "").strip())
+        )
 
     def _apply_idle_probe(
         self,
         attempt_id: str,
-        snap: google_env.ConversationIdleSnapshot | None,
+        evidence: google_env.TurnEvidence,
     ) -> bool:
         self._liveness_probe_in_flight = False
         if (
@@ -671,52 +769,75 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
             or not self._session_id
         ):
             return False
+        now_wall = time.time()
+        if self._last_activity_wall + 0.5 < evidence.progress_epoch <= now_wall + 2.0:
+            # Antigravity wrote the trajectory (its own or a subagent's) after
+            # the last stdout record: a long generation or delegated work is
+            # progress, so the quiet spell starts again from that write. A
+            # write stamped in the future (a clock step) is not progress.
+            self._last_activity_wall = evidence.progress_epoch
+            self._last_activity = time.monotonic() - max(
+                0.0, now_wall - evidence.progress_epoch
+            )
+            self._clear_stall_notice()
+            return False
         if (time.monotonic() - self._last_activity) < self._IDLE_RECONCILE_SILENCE_SECONDS:
             return False
-        if snap is None or snap.conversation_id != self._session_id:
-            return False
-        if snap.status != "CASCADE_RUN_STATUS_IDLE" or snap.not_fully_idle or snap.killed:
-            return False
-        if snap.last_modified_epoch < (self._turn_started_wall - 2.0):
-            return False
-        if (time.time() - snap.last_modified_epoch) < self._IDLE_DB_QUIET_SECONDS:
-            return False
-        min_step = max(self._dispatch_step_floor, snap.last_user_input_step_index)
-        if snap.step_count <= min_step:
-            return False
-        _log.warning(
-            "Reconciling silent Gemini turn %s from Antigravity summary DB "
-            "(status=%s step_count=%d user_step=%d)",
-            self._session_id[:8],
-            snap.status,
-            snap.step_count,
-            snap.last_user_input_step_index,
-        )
-        if not self._accept_prompt(f"{self._session_id}/reconciled/{snap.step_count}"):
-            return False
+        self._note_stall()
         streamed_text = ""
         if self._streaming is not None:
             streamed_text = "".join(
                 block.text for block in self._streaming.blocks if block.text
             ).strip()
-        if streamed_text:
-            turn = Turn(role="assistant")
-            turn.add("text", streamed_text)
-            if not self._record_execution_contribution(turn):
-                self._hold_accounting_failure(
-                    "Helios could not save the reconciled Google response. This Work remains blocked."
+        refusal = ""
+        if not evidence.finished:
+            refusal = f"Antigravity has not finished it: {evidence.reason}"
+        elif not self._saw_final_response(evidence.trajectory):
+            refusal = "Helios did not see its final response finish with text"
+        elif not streamed_text:
+            refusal = "Helios holds no response text for it"
+        if refusal:
+            # Keep waiting. Closing a turn without its reply loses the work and
+            # leaves the conversation looking stuck; a turn that never settles
+            # still reaches the stall notice, and Stop stays available.
+            if not self._probe_refusal_logged:
+                self._probe_refusal_logged = True
+                _log.info(
+                    "Gemini turn %s quiet on stdout; not closing it: %s",
+                    self._session_id[:8],
+                    refusal,
                 )
-                return False
-            try:
-                self._transcript.append_assistant(
-                    turn, model=self._model, result={"usage": {}}
-                )
-            except Exception:
-                self._hold_accounting_failure(
-                    "Helios could not save the reconciled Google transcript. This Work remains blocked."
-                )
-                return False
-            self.emit("turn-appended", turn)
+            return False
+        trajectory = evidence.trajectory
+        summary = evidence.summary
+        if trajectory is None:  # _saw_final_response already requires one
+            return False
+        _log.warning(
+            "Reconciling silent Gemini turn %s: its trajectory ends with finished "
+            "response step %d and no result record arrived (summary %s)",
+            self._session_id[:8],
+            trajectory.newest_index,
+            summary.status if summary is not None else "absent",
+        )
+        if not self._accept_prompt(f"{self._session_id}/reconciled/{trajectory.newest_index}"):
+            return False
+        turn = Turn(role="assistant")
+        turn.add("text", streamed_text)
+        if not self._record_execution_contribution(turn):
+            self._hold_accounting_failure(
+                "Helios could not save the reconciled Google response. This Work remains blocked."
+            )
+            return False
+        try:
+            self._transcript.append_assistant(
+                turn, model=self._model, result={"usage": {}}
+            )
+        except Exception:
+            self._hold_accounting_failure(
+                "Helios could not save the reconciled Google transcript. This Work remains blocked."
+            )
+            return False
+        self.emit("turn-appended", turn)
         if not self._finish_execution_with_evidence(
             ExecutionTerminalEvidence(
                 evidence_type="provider_terminal",
@@ -739,7 +860,7 @@ class GeminiCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         self._seen_result_turns = max(self._seen_result_turns + 1, self._completed_turns)
         self._streaming = None
         self._cancel_liveness_watchdog()
-        self._last_activity = time.monotonic()
+        self._touch_activity()
         self.emit(
             "result",
             {

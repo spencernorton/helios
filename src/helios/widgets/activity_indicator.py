@@ -55,6 +55,8 @@ STATE_GENERIC_TOOL = "generic_tool"
 # either one from the stream, because during both of them the stream is silent:
 # a retrying request produces no deltas, and compaction happens between turns.
 STATE_RETRYING = "retrying"
+# Nothing has moved for a long time; the provider has not said why.
+STATE_STALLED = "stalled"
 STATE_COMPACTING = "compacting"
 STATE_REVIEWING = "reviewing"
 
@@ -68,7 +70,7 @@ _DOT_STATES = {
 
 #: States that mean "this is not normal forward progress" — the icon goes
 #: amber so a retry storm does not look like ordinary work.
-_WARN_STATES = {STATE_RETRYING}
+_WARN_STATES = {STATE_RETRYING, STATE_STALLED}
 
 # Icon name per tool state.
 _STATE_ICONS = {
@@ -84,6 +86,7 @@ _STATE_ICONS = {
     STATE_TODO: "checkbox-checked-symbolic",
     STATE_GENERIC_TOOL: "emblem-system-symbolic",
     STATE_RETRYING: "view-refresh-symbolic",
+    STATE_STALLED: "dialog-warning-symbolic",
 }
 
 # Title prefix per state. Detail text gets appended as a dim suffix.
@@ -91,6 +94,7 @@ _STATE_LABELS = {
     STATE_THINKING: "Thinking",
     STATE_RESPONDING: "Responding",
     STATE_RETRYING: "Retrying",
+    STATE_STALLED: "Waiting",
     STATE_COMPACTING: "Compacting context",
     STATE_REVIEWING: "Reviewing changes",
     STATE_READING: "Reading",
@@ -197,6 +201,8 @@ class ActivityIndicator(Gtk.Revealer):
             img = Gtk.Image.new_from_icon_name(icon_name)
             img.set_pixel_size(15)
             img.add_css_class("helios-activity-icon")
+            if state == STATE_STALLED:
+                img.add_css_class("helios-activity-warn")  # always a warning
             img.set_valign(Gtk.Align.CENTER)
             self._icon_stack.add_named(img, state)
 
@@ -449,6 +455,10 @@ def native_activity_state(payload: dict) -> tuple[str, str]:
     # ── Claude provider-truth phases ──────────────────────────
     if category == "retry":
         return STATE_RETRYING, _retry_detail(payload)
+
+    if category == "stalled":
+        message = str(payload.get("message") or "").strip()
+        return STATE_STALLED, _shorten(message, 120)
 
     if category == "phase":
         phase = str(payload.get("phase") or "")

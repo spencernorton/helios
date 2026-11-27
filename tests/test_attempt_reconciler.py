@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import types
 from datetime import datetime, timezone
@@ -43,7 +44,8 @@ def _make_summary_db(path: Path, rows: list[tuple]) -> Path:
             killed NUMERIC NOT NULL DEFAULT 0,
             step_count INTEGER NOT NULL DEFAULT 0,
             last_user_input_step_index INTEGER NOT NULL DEFAULT -1,
-            last_modified_time DATETIME NOT NULL
+            last_modified_time DATETIME NOT NULL,
+            parent_conversation_id TEXT NOT NULL DEFAULT ''
         )
         """
     )
@@ -537,15 +539,30 @@ def test_google_summary_db_probe_confirmed_vs_running(tmp_path):
     try:
         coordinator = WorkCoordinator(store)
         cid = "905ea6fa-1111-2222-3333-444444444444"
+        accepted = f"{cid}/user_input/122"
         _, _, att = _admit_dispatched(
             store,
             tmp_path,
             provider=model_catalog.PROVIDER_GOOGLE,
             native_id=cid,
-            accepted_turn_id="step-122",
+            accepted_turn_id=accepted,
         )
         started_epoch = attempt_reconciler._parse_iso_epoch(att.started_at)
         assert started_epoch is not None
+
+        # The trajectory ends on this turn's finished response (step 128).
+        conversations = tmp_path / "conversations"
+        conversations.mkdir()
+        trajectory = conversations / f"{cid}.db"
+        conn = sqlite3.connect(trajectory)
+        conn.execute("CREATE TABLE steps (idx integer PRIMARY KEY, step_type integer, status integer)")
+        conn.executemany(
+            "INSERT INTO steps VALUES (?, ?, ?)",
+            [(122, 14, 3), (123, 132, 3), (128, 15, 3)],
+        )
+        conn.commit()
+        conn.close()
+        os.utime(trajectory, (started_epoch + 10, started_epoch + 10))
 
         db_running = _make_summary_db(
             tmp_path / "running.db",
@@ -554,6 +571,7 @@ def test_google_summary_db_probe_confirmed_vs_running(tmp_path):
         p_running = attempt_reconciler.probe_attempt(
             att,
             google_db_path=db_running,
+            google_conversations_dir=conversations,
             now_epoch=started_epoch + 60,
         )
         assert p_running.verdict == "uncertain"
@@ -566,21 +584,33 @@ def test_google_summary_db_probe_confirmed_vs_running(tmp_path):
         p_fresh = attempt_reconciler.probe_attempt(
             att,
             google_db_path=db_idle,
+            google_conversations_dir=conversations,
             now_epoch=started_epoch + 20,
         )
         assert p_fresh.verdict == "uncertain"
 
-        # Quiet >= 30s confirms completed and settles cleanly.
+        # An idle summary with no trajectory behind it proves nothing.
+        p_blind = attempt_reconciler.probe_attempt(
+            att,
+            google_db_path=db_idle,
+            google_conversations_dir=tmp_path / "no-trajectories",
+            now_epoch=started_epoch + 50,
+        )
+        assert p_blind.verdict == "uncertain"
+
+        # Quiet >= 30s with the trajectory's finished response confirms
+        # completed and settles cleanly.
         p_idle = attempt_reconciler.probe_attempt(
             att,
             google_db_path=db_idle,
+            google_conversations_dir=conversations,
             now_epoch=started_epoch + 50,
         )
         assert p_idle.verdict == "confirmed_completed"
         assert p_idle.provider_status == "CASCADE_RUN_STATUS_IDLE"
         settled = coordinator.reconcile_provider_verified_attempt(att.attempt_id, p_idle)
         assert settled.status == "completed"
-        assert settled.terminal_receipt["turn_id"] == "step-122"
+        assert settled.terminal_receipt["turn_id"] == accepted
     finally:
         store.close()
 

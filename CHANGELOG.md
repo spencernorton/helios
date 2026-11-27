@@ -4,6 +4,18 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.125.1 — 2026-11-27
+
+### Fixes
+- **Gemini turns are no longer closed while they are still working.** Since 0.118.0 Helios ended a Google turn itself after 45 seconds of stdout silence whenever Antigravity's summary index (`conversation_summaries.db`) read `CASCADE_RUN_STATUS_IDLE`. That row is rewritten in batches. It routinely trails the conversation by tens of steps, even after the conversation finishes, and it reads idle in the middle of a long generation and while a subagent works. So Helios stopped live turns mid-answer. The reply was lost, the turn was recorded as completed, and the chat showed as stuck in the sidebar until the prompt was resent. Ending a turn now needs Antigravity's trajectory (`conversations/<id>.db`) to agree:
+  - its newest step must be this turn's finished response, and Helios must have watched that response finish and hold its text;
+  - nothing in the conversation, or in any subagent it started, may still be running or have written in the last minute;
+  - `agy` must hold no conversation open;
+  - the summary row, now only a veto, must also read idle.
+
+  Trajectory and subagent writes count as progress, so long reasoning steps and subagent work are no longer treated as silence. Helios looks after 90 quiet seconds instead of 45. The 20-minute stall notice now appears only when nothing at all has moved, and it shows its message with an amber icon instead of reading "Using waiting".
+- **Crash recovery no longer marks an unfinished Gemini turn as completed.** The post-exit probe that settles a turn left running by a driver that exited used the same summary row. It now applies the same trajectory evidence, so a turn that died mid-answer stays open for you to confirm.
+
 ## 0.125.0 — 2026-11-25
 
 ### Removed

@@ -1,7 +1,7 @@
 # Helios for autonomous agents — install, configure, verify
 
 This is a shell-based installation and verification guide for Helios on
-Linux. The procedures describe source version 0.125.0 and include expected
+Linux. The procedures describe source version 0.125.1 and include expected
 results; native account sign-ins require the account holder and remain in
 each CLI's credential store. Start with [quickstart.md](quickstart.md) for
 the shorter route. Stable APT can contain an older release, so check the
@@ -53,15 +53,15 @@ the package, then install it. The command chain stops before installation if
 a download or checksum check fails.
 
 ```bash
-mkdir -p ~/Downloads/helios-0.125.0 &&
-cd ~/Downloads/helios-0.125.0 &&
-curl -fLO https://github.com/spencernorton/helios/releases/download/v0.125.0/helios_0.125.0_all.deb &&
-curl -fLO https://github.com/spencernorton/helios/releases/download/v0.125.0/SHA256SUMS.txt &&
-grep '  helios_0.125.0_all.deb$' SHA256SUMS.txt | sha256sum --check - &&
-sudo apt install -y ./helios_0.125.0_all.deb
+mkdir -p ~/Downloads/helios-0.125.1 &&
+cd ~/Downloads/helios-0.125.1 &&
+curl -fLO https://github.com/spencernorton/helios/releases/download/v0.125.1/helios_0.125.1_all.deb &&
+curl -fLO https://github.com/spencernorton/helios/releases/download/v0.125.1/SHA256SUMS.txt &&
+grep '  helios_0.125.1_all.deb$' SHA256SUMS.txt | sha256sum --check - &&
+sudo apt install -y ./helios_0.125.1_all.deb
 ```
 
-Expected: `helios_0.125.0_all.deb: OK`. Stop on a checksum failure.
+Expected: `helios_0.125.1_all.deb: OK`. Stop on a checksum failure.
 [GitHub Releases](https://github.com/spencernorton/helios/releases/latest)
 has the current version and matching source. Use the package and checksums
 from the same release when selecting a newer version.
@@ -73,7 +73,7 @@ enabled for the full workspace.
 dpkg -s helios | grep -E '^(Status|Version):'
 ```
 
-Expected: `Status: install ok installed` and `Version: 0.125.0`. APT installs
+Expected: `Status: install ok installed` and `Version: 0.125.1`. APT installs
 WebKit for the browser and, by default, Git, VTE and desktop portal typelibs
 for review, the terminal and screenshots.
 
@@ -682,6 +682,8 @@ Session archival moves transcripts. 15 s after the window opens and every 24 h, 
 Throwaway rule for display: sessions whose working directory is `/tmp`, under `/tmp/`, or has a `_tmp_*` component are hidden from the All and Local sidebar filters and shown only under Temporary.
 
 Agent-launched rule for display: a local Claude transcript whose first `entrypoint` starts with `sdk` (headless `claude -p` or the Agent SDK) is hidden from the All, Local and per-folder filters and shown only under Agent-launched, unless `~/.helios/work/work.db` binds it to a Work that Helios has sent a turn in (an `execution_attempts` row or a `user.message` event). Opening a session alone does not count. Interactive `claude` (`entrypoint: cli`), Helios's non-Claude transcripts and other machines' sessions are never classified. If the Work store cannot be read, nothing is hidden.
+
+Antigravity state (read-only, Google sessions only): `~/.gemini/antigravity-cli/conversation_summaries.db` (the summary index), `~/.gemini/antigravity-cli/conversations/<id>.db` (a conversation's trajectory and those of its subagents), and `/proc/<pid>/fd` of the running `agy` (which trajectories it holds open). Helios reads them only when a turn has gone quiet, or when it checks a turn left running after a driver exited, to decide whether Antigravity finished it ([Google setup](google-subscription.md#transport-and-recovery)). Helios never writes them. A read-only SQLite reader can leave an empty `-wal` and a `-shm` file beside a trajectory, and SQLite reuses both.
 
 ### 9.3 Network
 

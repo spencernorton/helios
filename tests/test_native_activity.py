@@ -9,6 +9,7 @@ from helios.widgets.activity_indicator import (  # noqa: E402
     STATE_BASH,
     STATE_EDITING,
     STATE_GENERIC_TOOL,
+    STATE_STALLED,
     native_activity_state,
 )
 
@@ -46,3 +47,11 @@ def test_native_subagent_progress_reuses_agent_state():
     assert native_activity_state(
         {"category": "subagent", "message": "Reviewing permission flow"}
     ) == (STATE_AGENT, "Reviewing permission flow")
+
+
+def test_stalled_activity_renders_its_explanation():
+    """A provider that has gone quiet says why, instead of a bare tool name."""
+    assert native_activity_state(
+        {"category": "stalled", "message": "No output from Antigravity for 21+ minutes"}
+    ) == (STATE_STALLED, "No output from Antigravity for 21+ minutes")
+    assert native_activity_state({"category": "stalled"}) == (STATE_STALLED, "")

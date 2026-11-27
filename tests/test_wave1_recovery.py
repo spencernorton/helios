@@ -5,9 +5,11 @@ stuck-turn recovery without replay, Codex thread/closed, and approval code detai
 from __future__ import annotations
 
 import io
+import os
 import sqlite3
 import time
 import types
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -22,6 +24,10 @@ from helios.backend.work_store import (
 )
 
 
+def _iso_utc(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _make_summary_db(path: Path, rows: list[tuple]) -> Path:
     conn = sqlite3.connect(path)
     conn.execute(
@@ -33,7 +39,8 @@ def _make_summary_db(path: Path, rows: list[tuple]) -> Path:
             killed NUMERIC NOT NULL DEFAULT 0,
             step_count INTEGER NOT NULL DEFAULT 0,
             last_user_input_step_index INTEGER NOT NULL DEFAULT -1,
-            last_modified_time DATETIME NOT NULL
+            last_modified_time DATETIME NOT NULL,
+            parent_conversation_id TEXT NOT NULL DEFAULT ''
         )
         """
     )
@@ -282,37 +289,61 @@ def test_gemini_driver_reconciles_silent_idle_turn_and_flushes_streamed_text(
             }
         )
 
-        # Simulate silence exceeding threshold, with DB showing IDLE + quiet for 40s.
+        # The final response finished on stdout, then the result record never
+        # came: two quiet minutes since that last record.
+        now = time.time()
         driver._last_activity = time.monotonic() - 120.0
-        driver._turn_started_wall = time.time() - 90.0
+        driver._last_activity_wall = now - 120.0
+        driver._turn_started_wall = now - 150.0
 
-        # Non-idle DB snapshot must NOT reconcile.
-        busy_snap = google_env.ConversationIdleSnapshot(
-            conversation_id=cid,
-            status="CASCADE_RUN_STATUS_RUNNING",
-            not_fully_idle=True,
-            killed=False,
-            step_count=129,
-            last_user_input_step_index=122,
-            last_modified_epoch=time.time() - 40.0,
+        # Antigravity's records: the trajectory ends on this turn's finished
+        # response, written with that last stdout record, and agy has released
+        # every trajectory.
+        agy = tmp_path / "antigravity-cli"
+        conversations = agy / "conversations"
+        conversations.mkdir(parents=True)
+        monkeypatch.setattr(google_env, "_antigravity_dir", lambda: agy)
+        monkeypatch.setattr(google_env, "open_conversation_ids", lambda pid: frozenset())
+        trajectory = conversations / f"{cid}.db"
+        conn = sqlite3.connect(trajectory)
+        conn.execute("CREATE TABLE steps (idx integer PRIMARY KEY, step_type integer, status integer)")
+        conn.executemany(
+            "INSERT INTO steps VALUES (?, ?, ?)",
+            [(i, 132, 3) for i in range(122)]
+            + [(122, 14, 3)]
+            + [(i, 132, 3) for i in range(123, 128)]
+            + [(128, 15, 3)],
         )
-        driver._apply_idle_probe(aid, busy_snap)
+        conn.commit()
+        conn.close()
+        os.utime(trajectory, (now - 120.0, now - 120.0))
+
+        def probe():
+            driver._probe_idle_worker(
+                aid, cid, driver._turn_started_wall, driver._accepted_input_index,
+                proc.pid,
+            )
+            while GLib.MainContext.default().iteration(False):
+                pass
+
+        # A summary that still reports a running cascade must NOT reconcile.
+        _make_summary_db(
+            agy / "conversation_summaries.db",
+            [(cid, "CASCADE_RUN_STATUS_RUNNING", 1, 0, 129, 122,
+              _iso_utc(now - 70.0))],
+        )
+        probe()
         assert driver.is_busy is True
         assert driver.execution_attempt_id == aid
 
-        # Authoritative IDLE snapshot reconciles, saves text, frees slot, closes wedged child.
-        idle_snap = google_env.ConversationIdleSnapshot(
-            conversation_id=cid,
-            status="CASCADE_RUN_STATUS_IDLE",
-            not_fully_idle=False,
-            killed=False,
-            step_count=129,
-            last_user_input_step_index=122,
-            last_modified_epoch=time.time() - 40.0,
+        # Once every record agrees, the turn reconciles: it saves the text,
+        # frees the slot and closes the wedged child.
+        (agy / "conversation_summaries.db").unlink()
+        _make_summary_db(
+            agy / "conversation_summaries.db",
+            [(cid, "CASCADE_RUN_STATUS_IDLE", 0, 0, 129, 122, _iso_utc(now - 70.0))],
         )
-        driver._apply_idle_probe(aid, idle_snap)
-        while GLib.MainContext.default().iteration(False):
-            pass
+        probe()
 
         assert driver.is_busy is False
         assert driver.execution_attempt_id == ""
