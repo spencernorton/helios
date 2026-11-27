@@ -1053,6 +1053,17 @@ class WindowExecutionMixin:
     def _work_execution_block_reason(self, work_id: str) -> str:
         """Return a fail-closed reason when a Work may not start another turn."""
 
+        from helios.backend.process import child_registry
+
+        if getattr(self, "_orphan_cleanup_block_reason", "") or child_registry.has_uncleaned_aborts():
+            from helios.window_recovery import WindowRecoveryMixin
+
+            if not WindowRecoveryMixin._ensure_orphan_cleanup_cleared(self):
+                return str(
+                    getattr(self, "_orphan_cleanup_block_reason", "")
+                    or child_registry.incomplete_cleanup_reason()
+                    or "Helios could not confirm previous agent processes stopped."
+                )
         if not work_id:
             return (
                 "Helios could not establish a bounded Work, so it did not "

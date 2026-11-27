@@ -447,3 +447,105 @@ def test_app_quit_runs_window_close_request_before_quitting():
     )
     types.MethodType(HeliosApplication._on_quit, fake_app)()
     assert events == ["close-request", "window-close", "app-quit"]
+
+
+def test_close_request_passes_bounded_wait_timeout_to_stop_all(monkeypatch):
+    from helios.main_window import MainWindow
+
+    calls = []
+    fake_hub = types.SimpleNamespace(
+        has_live_transport=True,
+        shutdown=lambda: calls.append(("hub-shutdown",)),
+    )
+    monkeypatch.setattr("helios.main_window.get_shared_hub", lambda: fake_hub)
+    noop = types.SimpleNamespace(shutdown=lambda **_k: None)
+    f = types.SimpleNamespace(
+        _destroyed=False,
+        _reap_timer_id=0,
+        _archive_timer_id=0,
+        _startup_archive_timer_id=0,
+        _orphan_sweep_timer_id=0,
+        _catalog_tick_id=0,
+        _follow_debounce_id=0,
+        _stop_following=lambda: None,
+        _ctx_fill_runner=noop,
+        _sessions=noop,
+        _transcript=noop,
+        _chat_toolbar=noop,
+        _composer=noop,
+        _context=noop,
+        _shared=noop,
+        _activity=noop,
+        _agent_dock=noop,
+        _plan=noop,
+        _missions=noop,
+        _goal_strip=noop,
+        _plan_progress=noop,
+        _save_window_layout=lambda: None,
+        _driver_manager=types.SimpleNamespace(
+            stop_all=lambda **kw: calls.append(("stop-all", kw))
+        ),
+    )
+    assert types.MethodType(MainWindow._on_close_request, f)() is False
+    assert calls[0][0] == "stop-all"
+    assert calls[0][1]["interrupt"] is False
+    assert calls[0][1]["wait_timeout"] > 0
+    assert calls[1] == ("hub-shutdown",)
+
+
+def test_close_request_sweeps_remaining_owned_registry_entries(tmp_path, monkeypatch):
+    from helios.backend.process.child_registry import OrphanReapOutcome, ProcessTreeTarget
+    from helios.main_window import MainWindow
+
+    reg = tmp_path / "live-children.json"
+    calls = []
+    fake_hub = types.SimpleNamespace(
+        has_live_transport=True,
+        shutdown=lambda: calls.append(("hub-shutdown",)),
+    )
+    monkeypatch.setattr("helios.main_window.get_shared_hub", lambda: fake_hub)
+    monkeypatch.setattr(
+        "helios.main_window.child_registry.owned_child_targets",
+        lambda *, registry_path=None, lock_timeout=0.5: [
+            ProcessTreeTarget(pid=4242, pgid=4242, registry_path=registry_path)
+        ],
+    )
+    monkeypatch.setattr(
+        "helios.main_window.child_registry.reap_owned_children",
+        lambda *, registry_path=None, grace_seconds=1.0, lock_timeout=None: (
+            calls.append(("reap-owned", registry_path, grace_seconds)) or OrphanReapOutcome()
+        ),
+    )
+    noop = types.SimpleNamespace(shutdown=lambda **_k: None)
+    f = types.SimpleNamespace(
+        _destroyed=False,
+        _child_registry_path=reg,
+        _reap_timer_id=0,
+        _archive_timer_id=0,
+        _startup_archive_timer_id=0,
+        _orphan_sweep_timer_id=0,
+        _catalog_tick_id=0,
+        _follow_debounce_id=0,
+        _stop_following=lambda: None,
+        _ctx_fill_runner=noop,
+        _sessions=noop,
+        _transcript=noop,
+        _chat_toolbar=noop,
+        _composer=noop,
+        _context=noop,
+        _shared=noop,
+        _activity=noop,
+        _agent_dock=noop,
+        _plan=noop,
+        _missions=noop,
+        _goal_strip=noop,
+        _plan_progress=noop,
+        _save_window_layout=lambda: None,
+        _driver_manager=types.SimpleNamespace(
+            stop_all=lambda **kw: calls.append(("stop-all", kw))
+        ),
+    )
+    assert types.MethodType(MainWindow._on_close_request, f)() is False
+    assert calls[0] == ("stop-all", {"interrupt": False, "wait_timeout": 1.5, "registry_path": reg})
+    assert calls[1] == ("hub-shutdown",)
+    assert calls[2] == ("reap-owned", reg, 0.5)

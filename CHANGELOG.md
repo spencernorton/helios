@@ -4,6 +4,15 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.125.2 — 2026-11-27
+
+### Fixes
+- **Agent child processes no longer survive Helios exiting or crashing.**
+  - Closing the window previously relied on asynchronous `GLib.timeout_add` timers and daemon threads for `SIGKILL` escalation, which exited with the application before firing; stopped (`T`/`t`-state) process groups ignored `SIGTERM` until woken; `CodexAppServer.stop()` stopped escalating once its leader exited even if descendants remained; and independently exited/forgotten drivers left surviving descendants outside shutdown tracking. `_on_close_request`, `DriverManager.stop_all()`, and `CodexAppServer.stop()` now synchronously reap all tracked, tearing-down, and registry-owned child process groups within a bounded deadline (waking stopped groups with `SIGCONT` and escalating survivors to `SIGKILL`).
+  - Helios now durably records verified spawned agent child process groups across all CLI/serve/ACP/App-Server drivers in `$HELIOS_STATE_DIR/live-children.json` (`0600`, `O_NOFOLLOW`, deadline-bounded thread and `flock` locks) keyed by kernel boot ID, Linux `/proc/<pid>/stat` start ticks, a per-launch `HELIOS_CHILD_GROUP` env marker, and snapshotted descendant identities. Recycled leaderless PGIDs and stale pre-reboot entries are never signalled. If durable registration fails on a newly spawned child, Helios immediately terminates that child and rejects launch.
+  - After an abrupt crash, startup reaps verified dead-owner orphan process groups before releasing orphaned Work execution lanes while leaving children of still-live Helios instances untouched. If orphan cleanup fails, times out, or leaves surviving/unresolved entries, Helios keeps orphaned attempts and new agent execution blocked (including through conversation reconciliation) until a retry confirms cleanup succeeded.
+  - `MuseServeDriver` and `KimiAcpDriver` now terminate their freshly spawned subprocess if initial handshake submission fails.
+
 ## 0.125.1 — 2026-11-27
 
 ### Fixes

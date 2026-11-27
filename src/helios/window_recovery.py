@@ -17,7 +17,10 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib  # noqa: E402
 
+from pathlib import Path
+
 from helios.backend import attempt_reconciler, model_catalog
+from helios.backend.process import child_registry
 from helios.backend.project_perms import canonical_cwd
 from helios.log import get_logger
 from helios.widgets.activity_indicator import STATE_THINKING
@@ -31,16 +34,104 @@ class WindowRecoveryMixin:
     _CAPACITY_RETRY_TIMEOUT_SECONDS = 6.0
     _CAPACITY_RETRY_POLL_MS = 200
 
-    def _reclaim_orphaned_execution_lanes(self) -> None:
-        """Free execution lanes a Helios that exited mid-turn still holds.
+    def _resolve_child_registry_path(self) -> Path | None:
+        registry_path = getattr(self, "_child_registry_path", None)
+        if registry_path is not None:
+            return Path(registry_path)
+        coordinator = getattr(self, "_work_coordinator", None)
+        if coordinator is not None:
+            store_path = getattr(getattr(coordinator, "store", None), "path", None)
+            if isinstance(store_path, Path):
+                state_root = (
+                    store_path.parent.parent
+                    if store_path.parent.name == "work"
+                    else store_path.parent
+                )
+                return state_root / "live-children.json"
+        return None
 
-        Startup only, and it must stay that way: a Helios killed mid-turn
-        leaves its attempt 'running', and per-Work admission then refuses every
-        later message in that chat with "already executing" — permanently,
-        since the driver that would produce a terminal receipt died with the
-        process. Nothing is live this early, so any running row is an orphan.
+    def _run_orphan_child_cleanup(self) -> bool:
+        """Attempt orphan child cleanup and record/clear the global admission block."""
+        registry_path = WindowRecoveryMixin._resolve_child_registry_path(self)
+        if registry_path is None:
+            self._orphan_cleanup_block_reason = ""
+            return True
+        try:
+            outcome = child_registry.reap_orphaned_children(
+                registry_path=registry_path
+            )
+        except Exception as exc:
+            _log.warning(
+                "could not reap orphaned child processes; keeping orphaned "
+                "execution lanes blocked: %s",
+                exc,
+            )
+            self._orphan_cleanup_block_reason = (
+                "Helios could not confirm that previous agent processes stopped "
+                f"({exc}). New agent runs remain blocked until cleanup succeeds."
+            )
+            return False
+        for entry in outcome.reaped:
+            _log.warning(
+                "reaped orphaned %s child process (pid=%s, pgid=%s) "
+                "from dead Helios (pid=%s)",
+                entry.get("provider") or "agent",
+                entry.get("pid"),
+                entry.get("pgid"),
+                entry.get("owner_pid"),
+            )
+        if not outcome.ok:
+            _log.warning(
+                "orphan child cleanup incomplete (remaining=%d, "
+                "unresolved=%d, error=%s); keeping orphaned execution "
+                "lanes blocked",
+                len(outcome.remaining),
+                len(outcome.unresolved),
+                outcome.error or "none",
+            )
+            detail_parts: list[str] = []
+            if outcome.remaining:
+                detail_parts.append(f"{len(outcome.remaining)} surviving")
+            if outcome.unresolved:
+                detail_parts.append(f"{len(outcome.unresolved)} unresolved")
+            if outcome.error:
+                detail_parts.append(outcome.error)
+            detail = ", ".join(detail_parts) or "incomplete cleanup"
+            self._orphan_cleanup_block_reason = (
+                "Helios could not confirm that previous agent processes stopped "
+                f"({detail}). New agent runs remain blocked until cleanup succeeds."
+            )
+            return False
+        self._orphan_cleanup_block_reason = ""
+        return True
+
+    def _ensure_orphan_cleanup_cleared(self) -> bool:
+        """Retry failed orphan or launch-abort cleanup; return True only when clear."""
+        aborts_clear = True
+        if child_registry.has_uncleaned_aborts():
+            aborts_clear = child_registry.retry_uncleaned_aborts()
+            if not aborts_clear:
+                self._orphan_cleanup_block_reason = (
+                    child_registry.incomplete_cleanup_reason()
+                )
+                return False
+        if not getattr(self, "_orphan_cleanup_block_reason", ""):
+            return aborts_clear
+        return WindowRecoveryMixin._run_orphan_child_cleanup(self)
+
+    def _reclaim_orphaned_execution_lanes(self) -> None:
+        """Reap surviving children and free lanes left by a dead Helios.
+
+        Startup only, and it must stay that way: a Helios killed mid-turn can
+        leave both live child process groups and 'running' attempt rows behind.
+        Reap verified dead-owner child groups first so resuming a chat cannot
+        start a duplicate agent concurrently in the same workspace, then
+        release any orphaned running attempts. If orphan cleanup fails or stays
+        unresolved, keep lanes blocked globally until a retry succeeds.
         """
 
+        if not WindowRecoveryMixin._run_orphan_child_cleanup(self):
+            return
         coordinator = getattr(self, "_work_coordinator", None)
         if coordinator is None:
             return
@@ -200,6 +291,9 @@ class WindowRecoveryMixin:
             in_flight.discard(work_id)
         if getattr(self, "_destroyed", False):
             return False
+        if not WindowRecoveryMixin._ensure_orphan_cleanup_cleared(self):
+            WindowRecoveryMixin._sync_stuck_attempt_banner(self)
+            return False
 
         coordinator = getattr(self, "_work_coordinator", None)
         verify_fn = getattr(coordinator, "reconcile_provider_verified_attempt", None)
@@ -257,11 +351,13 @@ class WindowRecoveryMixin:
     ) -> int:
         """Execute operator-confirmed reconciliation without replaying any prompt."""
 
+        if not work_id or not attempt_ids:
+            return 0
+        if not WindowRecoveryMixin._ensure_orphan_cleanup_cleared(self):
+            return 0
         coordinator = getattr(self, "_work_coordinator", None)
         reconcile_fn = getattr(coordinator, "reconcile_uncertain_attempt", None)
         verify_fn = getattr(coordinator, "reconcile_provider_verified_attempt", None)
-        if not work_id or not attempt_ids:
-            return 0
         still_orphaned = {
             att.attempt_id
             for att in WindowRecoveryMixin._orphaned_attempts_for_work(self, work_id)
@@ -374,6 +470,14 @@ class WindowRecoveryMixin:
         """Probe provider-native state and confirm with the user before clearing."""
 
         if getattr(self, "_destroyed", False):
+            return
+        if not WindowRecoveryMixin._ensure_orphan_cleanup_cleared(self):
+            toast = getattr(self, "_toast", None)
+            if callable(toast):
+                toast(
+                    getattr(self, "_orphan_cleanup_block_reason", "")
+                    or "Previous agent processes could not be confirmed stopped."
+                )
             return
         work_id = str(self._current_work_id() or "")
         if not work_id:

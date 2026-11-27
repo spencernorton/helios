@@ -346,3 +346,167 @@ def test_initializing_resume_driver_is_found_by_session_and_work_before_session_
     assert mgr.driver_for_session("muse-resume-1") is starting
     assert mgr.driver_for_work_participant("work-1", "muse", generation=1) is starting
     assert mgr.live_ids() == {"muse-resume-1"}
+
+
+def test_stop_all_wait_timeout_reaps_sigterm_ignoring_live_and_tearing_down_children(tmp_path):
+    import subprocess
+    import sys
+    import pytest
+    from helios.backend.process.child_registry import (
+        ProcessTreeTarget,
+        is_process_tree_live,
+        register_child,
+    )
+
+    if sys.platform != "linux":
+        pytest.skip("Linux /proc process identity required")
+
+    def spawn_stubborn():
+        return subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)",
+            ],
+            start_new_session=True,
+        )
+
+    reg = tmp_path / "live-children.json"
+    p_live = spawn_stubborn()
+    p_tearing = spawn_stubborn()
+    try:
+        id_live = register_child(p_live.pid, pgid=p_live.pid, own_group=True, registry_path=reg)
+        id_tearing = register_child(p_tearing.pid, pgid=p_tearing.pid, own_group=True, registry_path=reg)
+        assert id_live is not None and id_tearing is not None
+
+        class RealFakeDriver(FakeDriver):
+            def __init__(self, sid, proc, ident):
+                self._proc = proc
+                self._ident = ident
+                super().__init__(sid)
+
+            @property
+            def is_running(self):
+                return self._proc.poll() is None
+
+            @is_running.setter
+            def is_running(self, _value):
+                pass
+
+            def process_tree_target(self):
+                return ProcessTreeTarget(
+                    pid=self._ident.pid,
+                    pgid=self._ident.pid,
+                    start_ticks=self._ident.start_ticks,
+                    poll=self._proc.poll,
+                    provider="anthropic",
+                    registry_path=reg,
+                )
+
+        d_live = RealFakeDriver("live", p_live, id_live)
+        d_tearing = RealFakeDriver("tearing", p_tearing, id_tearing)
+        mgr = DriverManager(max_live=4, idle_seconds=60)
+        mgr.live = {"live": d_live}
+        mgr._tearing_down.add(d_tearing)
+
+        mgr.stop_all(interrupt=False, wait_timeout=0.2)
+
+        assert d_live.stopped == [False]
+        assert not is_process_tree_live(p_live.pid, p_live.pid, expected_start_ticks=id_live.start_ticks)
+        assert not is_process_tree_live(p_tearing.pid, p_tearing.pid, expected_start_ticks=id_tearing.start_ticks)
+        assert d_tearing not in mgr._tearing_down
+    finally:
+        for p in (p_live, p_tearing):
+            try:
+                p.kill()
+                p.wait(timeout=2)
+            except Exception:
+                pass
+
+
+def test_stop_all_reaps_forgotten_driver_surviving_descendant(tmp_path):
+    """Finding 4: an independently exited/forgotten driver's surviving group is reaped."""
+    import os
+    import signal
+    import subprocess
+    import sys
+    import pytest
+    from helios.backend.process.child_registry import (
+        CHILD_GROUP_ENV,
+        is_process_tree_live,
+        new_group_token,
+        read_process_identity,
+        register_child,
+        unregister_if_dead,
+    )
+
+    if sys.platform != "linux":
+        pytest.skip("Linux /proc process identity required")
+
+    reg = tmp_path / "live-children.json"
+    token = new_group_token()
+    env = dict(os.environ)
+    env[CHILD_GROUP_ENV] = token
+    gc_code = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"
+    leader_code = (
+        "import subprocess, sys, time\n"
+        f"gc = subprocess.Popen([sys.executable, '-c', {gc_code!r}])\n"
+        "print(gc.pid, flush=True)\n"
+        "time.sleep(0.15)\n"
+    )
+    leader = subprocess.Popen(
+        [sys.executable, "-c", leader_code],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        env=env,
+        start_new_session=True,
+    )
+    assert leader.stdout is not None
+    gc_pid = int(leader.stdout.readline().decode().strip())
+    ident = register_child(
+        leader.pid,
+        pgid=leader.pid,
+        own_group=True,
+        provider="anthropic",
+        group_token=token,
+        registry_path=reg,
+    )
+    assert ident is not None
+    leader.wait(timeout=2)
+    try:
+        assert (
+            unregister_if_dead(
+                ident.pid,
+                pgid=ident.pid,
+                start_ticks=ident.start_ticks,
+                group_token=token,
+                registry_path=reg,
+            )
+            is False
+        )
+        mgr = DriverManager(max_live=4, idle_seconds=60)
+        d = FakeDriver("exited-chat")
+        mgr.live = {"exited-chat": d}
+        mgr.forget(d)
+        assert d not in mgr.live.values()
+        assert d not in mgr._tearing_down
+
+        mgr.stop_all(interrupt=False, wait_timeout=0.3, registry_path=reg)
+
+        assert not is_process_tree_live(
+            ident.pid,
+            ident.pid,
+            expected_start_ticks=ident.start_ticks,
+            expected_group_token=token,
+        )
+        gc_now = read_process_identity(gc_pid)
+        assert gc_now is None or gc_now.state == "Z"
+    finally:
+        try:
+            os.kill(gc_pid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            os.killpg(ident.pid, signal.SIGKILL)
+        except OSError:
+            pass

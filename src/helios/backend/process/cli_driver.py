@@ -59,6 +59,20 @@ from helios.backend.claude_binary import (
 from helios.backend.codex_context import EXTRA_SYSTEM_PROMPT, build_claude_system_prompt
 from helios.backend.model_catalog import context_window_for
 from helios.backend.process.spend_accounting import SpendAccumulator
+from helios.backend.process.child_registry import (
+    CHILD_GROUP_ENV,
+    ChildRegistryPersistenceError,
+    ProcessIdentity,
+    ProcessTreeTarget,
+    abort_unregistered_child,
+    capture_child_identity,
+    is_real_subprocess,
+    new_group_token,
+    register_child,
+    snapshot_group_descendants,
+    unregister_if_dead,
+    wake_if_stopped,
+)
 from helios.backend.process.env_scrub import (
     CLAUDE_AUTH_ENV,
     INFISICAL_ENV,
@@ -346,6 +360,8 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
         # bare kill of claude's pid would orphan.
         self._own_group = False
         self._process_group_id: int | None = None
+        self._child_identity: ProcessIdentity | None = None
+        self._child_group_token: str | None = None
         self._stdin: Gio.OutputStream | None = None
         self._stdout: Gio.DataInputStream | None = None
         self._stderr: Gio.DataInputStream | None = None
@@ -713,19 +729,67 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
         )
         for key, value in INTERACTIVE_CHILD_ENV.items():
             launcher.setenv(key, value, True)
+        group_token = new_group_token()
+        launcher.setenv(CHILD_GROUP_ENV, group_token, True)
 
         _dbg(f"spawn argv={argv} cwd={self._cwd}")
         try:
-            self._proc = launcher.spawnv(argv)
+            proc = launcher.spawnv(argv)
         except GLib.Error as e:
             _dbg(f"SPAWN FAILED: {e.message}")
             # Raise instead of emitting: emitting from inside start() runs
             # the window's handlers mid-_ensure_driver and previously left a
             # dead driver registered in _handlers forever (review M3).
             raise DriverSpawnError(f"Failed to spawn claude: {e.message}") from e
-        _dbg(f"spawned pid={self._proc.get_identifier()}")
+        _dbg(f"spawned pid={proc.get_identifier()}")
+
+        try:
+            spawned_pid = int(proc.get_identifier())
+        except (AttributeError, GLib.Error, TypeError, ValueError):
+            spawned_pid = 0
+        is_real_proc = is_real_subprocess(proc)
+        process_group_id = _capture_process_group(
+            spawned_pid,
+            expected_new_session=using_setsid,
+        )
+        own_group = process_group_id is not None
+        if using_setsid and not own_group and is_real_proc:
+            live_child = capture_child_identity(spawned_pid, own_group=False)
+            abort_unregistered_child(
+                spawned_pid,
+                start_ticks=live_child.start_ticks if live_child is not None else None,
+                group_token=group_token,
+            )
+            raise DriverSpawnError(
+                "Claude did not enter its own process group before registration."
+            )
+        try:
+            child_identity = register_child(
+                spawned_pid,
+                pgid=process_group_id,
+                own_group=own_group,
+                provider="anthropic",
+                group_token=group_token,
+                require_live=is_real_proc,
+            )
+        except ChildRegistryPersistenceError as exc:
+            abort_unregistered_child(
+                spawned_pid,
+                pgid=process_group_id,
+                start_ticks=(
+                    exc.child_identity.start_ticks
+                    if exc.child_identity is not None
+                    else None
+                ),
+                group_token=group_token,
+                descendants=exc.descendants,
+            )
+            raise DriverSpawnError(
+                f"Could not record Claude child process for crash recovery: {exc}"
+            ) from exc
+
         # Spend is counted per PROCESS, and this is where a process begins, so
-        # this is where the counter does. Today the assignment above is the
+        # this is where the counter does. Today the assignment below is the
         # only one in the class and `start()` returns early when `_proc` is
         # set, so a driver is structurally one process and this line can only
         # ever run on a fresh accumulator. It is here anyway because the
@@ -735,17 +799,12 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
         # `modelUsage` that restarted at zero, driving the split negative and
         # clamping it to nothing. That failure hides delegated spend, which is
         # the one thing this feature exists to show.
+        self._proc = proc
         self._spend = SpendAccumulator()
-
-        try:
-            spawned_pid = int(self._proc.get_identifier())
-        except (GLib.Error, TypeError, ValueError):
-            spawned_pid = 0
-        self._process_group_id = _capture_process_group(
-            spawned_pid,
-            expected_new_session=using_setsid,
-        )
-        self._own_group = self._process_group_id is not None
+        self._process_group_id = process_group_id
+        self._own_group = own_group
+        self._child_group_token = group_token
+        self._child_identity = child_identity
 
         self._stdin = self._proc.get_stdin_pipe()
         self._stdout = Gio.DataInputStream.new(self._proc.get_stdout_pipe())
@@ -2515,10 +2574,28 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
         # go straight to SIGTERM of the whole group — no marker injected, and
         # Bash-tool children die with claude. stdin is already closed above, so
         # a terminated turn also hits EOF.
+        child_identity = getattr(self, "_child_identity", None)
+        expected_ticks = child_identity.start_ticks if child_identity is not None else None
+        group_token = getattr(self, "_child_group_token", None)
+        snap_descendants = (
+            snapshot_group_descendants(process_group_id, pid, expected_ticks)
+            if not interrupt and child_identity is not None and process_group_id is not None
+            else ()
+        )
+        if snap_descendants:
+            self._stopped_descendants = snap_descendants
         if interrupt:
             _safe_kill(pid, signal.SIGINT)
         else:
             _signal_process_tree(process_group_id, pid, signal.SIGTERM)
+            if child_identity is not None:
+                wake_if_stopped(
+                    process_group_id,
+                    pid,
+                    expected_start_ticks=expected_ticks,
+                    expected_descendants=snap_descendants,
+                    expected_group_token=group_token,
+                )
 
         # Stage 2 + 3 scheduled — if claude exits cleanly before they fire,
         # the alive-check noops.
@@ -2538,10 +2615,34 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
                     proc.force_exit()
                 except GLib.Error:
                     _safe_kill(pid, signal.SIGKILL)
+            if child_identity is not None:
+                unregister_if_dead(
+                    pid,
+                    pgid=process_group_id,
+                    start_ticks=expected_ticks,
+                    group_token=group_token,
+                )
             return False
 
         GLib.timeout_add(self._STOP_TERM_AFTER_MS, _stage_term)
         GLib.timeout_add(self._STOP_KILL_AFTER_MS, _stage_kill)
+
+    def process_tree_target(self) -> ProcessTreeTarget | None:
+        ident = getattr(self, "_child_identity", None)
+        if ident is None:
+            return None
+        pgid = self._process_group_id if self._own_group else None
+        return ProcessTreeTarget(
+            pid=ident.pid,
+            pgid=pgid,
+            start_ticks=ident.start_ticks,
+            provider="anthropic",
+            group_token=getattr(self, "_child_group_token", None),
+            descendants=(
+                *getattr(self, "_stopped_descendants", ()),
+                *snapshot_group_descendants(pgid, ident.pid, ident.start_ticks),
+            ),
+        )
 
     # --- async readers ---
 
@@ -2618,6 +2719,14 @@ class ClaudeCliDriver(UserMessageQueueMixin, GObject.Object):
 
     def _on_exit(self, proc: Gio.Subprocess, _res, _data) -> None:
         self._closed = True
+        ident = getattr(self, "_child_identity", None)
+        if ident is not None:
+            unregister_if_dead(
+                ident.pid,
+                pgid=self._process_group_id if self._own_group else None,
+                start_ticks=ident.start_ticks,
+                group_token=getattr(self, "_child_group_token", None),
+            )
         self._clear_pending_prompts(include_children=True)
         self._fail_pending_control("the Claude process exited before acknowledging the change")
         # If we killed it via signal, get_exit_status would assert. Check
@@ -3585,7 +3694,7 @@ def _capture_process_group(
         parent_group = os.getpgrp()
     except OSError:
         parent_group = -1
-    deadline = time.monotonic() + 0.1
+    deadline = time.monotonic() + 0.5
     while True:
         try:
             pgid = os.getpgid(pid)

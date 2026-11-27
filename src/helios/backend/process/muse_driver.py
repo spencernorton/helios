@@ -36,6 +36,21 @@ from helios.backend.muse_binary import MuseBinaryNotFound, find_muse_binary
 from helios.backend import browser_tools, muse_env
 from helios.backend.muse_env import CLIENT_NAME, uuid7
 from helios.backend.process.codex_transcript import CodexTranscriptWriter
+from helios.backend.process.child_registry import (
+    CHILD_GROUP_ENV,
+    ChildRegistryPersistenceError,
+    ProcessIdentity,
+    ProcessTreeTarget,
+    abort_unregistered_child,
+    is_real_subprocess,
+    inspect_process_tree,
+    new_group_token,
+    reap_process_trees,
+    register_child,
+    snapshot_group_descendants,
+    unregister_if_dead,
+    wake_if_stopped,
+)
 from helios.backend.process.env_scrub import (
     MUSE_AUTH_ENV,
     NORVI_TRACKER_ENV,
@@ -165,6 +180,8 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
             permission_mode, cwd, provider=self.provider)
         self._resume_session_id = resume_session_id or ""
         self._proc: subprocess.Popen[bytes] | None = None
+        self._child_identity: ProcessIdentity | None = None
+        self._child_group_token: str | None = None
         self._session_id = ""
         self._is_busy = False
         self._accepting_input = False
@@ -425,14 +442,45 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         except MuseBinaryNotFound as exc:
             raise MuseDriverSpawnError(str(exc)) from exc
         cmd = [str(binary.path), *serve_args(self._model, self._permission_mode)]
+        group_token = new_group_token()
+        spawn_env = dict(scrubbed_child_env(keep=MUSE_INTERACTIVE_ENV))
+        spawn_env[CHILD_GROUP_ENV] = group_token
         try:
             self._proc = subprocess.Popen(
                 cmd, cwd=self._cwd, stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                env=scrubbed_child_env(keep=MUSE_INTERACTIVE_ENV),
+                env=spawn_env,
                 bufsize=0, start_new_session=True)
         except OSError as exc:
             raise MuseDriverSpawnError("Could not start `muse serve`.") from exc
+        self._child_group_token = group_token
+        is_real_proc = is_real_subprocess(self._proc)
+        try:
+            self._child_identity = register_child(
+                self._proc.pid,
+                pgid=self._proc.pid,
+                own_group=True,
+                provider="muse",
+                group_token=group_token,
+                require_live=is_real_proc,
+            )
+        except ChildRegistryPersistenceError as exc:
+            abort_unregistered_child(
+                self._proc.pid,
+                pgid=self._proc.pid,
+                start_ticks=(
+                    exc.child_identity.start_ticks
+                    if exc.child_identity is not None
+                    else None
+                ),
+                group_token=group_token,
+                descendants=exc.descendants,
+                poll=self._proc.poll,
+            )
+            self._proc = None
+            raise MuseDriverSpawnError(
+                f"Could not record Muse child process for crash recovery: {exc}"
+            ) from exc
         self._stopped = False
         self._accepting_input = False
         threading.Thread(target=self._read_stderr, daemon=True, name="muse-stderr").start()
@@ -443,6 +491,7 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
                 "clientInfo": {"name": CLIENT_NAME, "version": helios_version},
                 "capabilities": {"experimentalApi": True,
                                  "requestedCapabilities": ["sessionMcp"]}}):
+            self.stop(interrupt=False)
             raise MuseDriverSpawnError("Could not start `muse serve`.")
 
     def _begin_session(self) -> None:
@@ -1366,15 +1415,70 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
             self._send("turn/interrupt", {
                 "commandId": uuid7(), "sessionId": self._session_id,
                 "turnId": self._root_turn_id})
-        if self._proc is not None and self._proc.poll() is None:
+        proc = self._proc
+        ident = getattr(self, "_child_identity", None)
+        if proc is not None and proc.poll() is None:
+            group_token = getattr(self, "_child_group_token", None)
+            descendants = (
+                snapshot_group_descendants(ident.pid, ident.pid, ident.start_ticks)
+                if ident is not None
+                else ()
+            )
+            if descendants:
+                self._stopped_descendants = descendants
             try:
-                os.killpg(self._proc.pid, signal.SIGTERM)
+                os.killpg(proc.pid, signal.SIGTERM)
             except OSError:
                 pass
-            threading.Thread(target=self._reap_stopped, args=(self._proc,), daemon=True).start()
+            reap_kwargs: dict[str, Any] = {}
+            if ident is not None:
+                wake_if_stopped(
+                    ident.pid,
+                    ident.pid,
+                    expected_start_ticks=ident.start_ticks,
+                    expected_descendants=descendants,
+                    expected_group_token=group_token,
+                )
+                reap_kwargs = {
+                    "start_ticks": ident.start_ticks,
+                    "group_token": group_token,
+                    "descendants": descendants,
+                }
+            elif group_token is not None:
+                reap_kwargs = {"group_token": group_token}
+            threading.Thread(
+                target=self._reap_stopped,
+                args=(proc,),
+                kwargs=reap_kwargs,
+                daemon=True,
+            ).start()
+
+    def process_tree_target(self) -> ProcessTreeTarget | None:
+        ident = getattr(self, "_child_identity", None)
+        if ident is None:
+            return None
+        proc = self._proc
+        return ProcessTreeTarget(
+            pid=ident.pid,
+            pgid=ident.pid,
+            start_ticks=ident.start_ticks,
+            poll=proc.poll if proc is not None else None,
+            provider="muse",
+            group_token=getattr(self, "_child_group_token", None),
+            descendants=(
+                *getattr(self, "_stopped_descendants", ()),
+                *snapshot_group_descendants(ident.pid, ident.pid, ident.start_ticks),
+            ),
+        )
 
     @staticmethod
-    def _reap_stopped(proc: subprocess.Popen) -> None:
+    def _reap_stopped(
+        proc: subprocess.Popen,
+        *,
+        start_ticks: int | None = None,
+        group_token: str | None = None,
+        descendants: tuple[tuple[int, int], ...] = (),
+    ) -> None:
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -1382,6 +1486,36 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
                 os.killpg(proc.pid, signal.SIGKILL)
             except OSError:
                 pass
+        pid = getattr(proc, "pid", None)
+        if not (isinstance(pid, int) and pid > 1):
+            return
+        if start_ticks is None and group_token is None:
+            return
+        target = ProcessTreeTarget(
+            pid=pid,
+            pgid=pid,
+            start_ticks=start_ticks,
+            provider="muse",
+            group_token=group_token,
+            descendants=descendants,
+        )
+        status, target = inspect_process_tree(target)
+        if status == "live":
+            reap_process_trees(
+                [target],
+                timeout=0.0,
+                kill_wait=0.25,
+                send_term=False,
+                unregister=True,
+            )
+        elif status in ("dead", "recycled"):
+            unregister_if_dead(
+                pid,
+                pgid=pid,
+                start_ticks=start_ticks,
+                group_token=group_token,
+                descendants=target.descendants,
+            )
 
     def stop_task(self, actor_id: str) -> bool:
         """Stop one observed subagent/workflow actor, when Muse exposes it."""
@@ -1412,6 +1546,14 @@ class MuseServeDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
 
     def _on_exit(self, code: int) -> bool:
         self._accepting_input = False
+        ident = getattr(self, "_child_identity", None)
+        if ident is not None:
+            unregister_if_dead(
+                ident.pid,
+                pgid=ident.pid,
+                start_ticks=ident.start_ticks,
+                group_token=getattr(self, "_child_group_token", None),
+            )
         self._open_tool_calls.clear()
         if self.background_task_rows:
             self.background_task_rows = []

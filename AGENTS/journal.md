@@ -1,5 +1,22 @@
 # Helios — Session Journal
 
+## 2026-11-27 — Reap surviving agent child process groups on shutdown and crash recovery (0.125.2)
+
+- **Symptom:** After an abrupt crash or window close while sessions were busy, live and stopped (`T`-state) child agent process groups survived under the desktop session manager. Reopening Helios released the orphaned `running` Work attempts assuming no child survived, so resuming a chat spawned a second live agent editing the same transcript and workspace concurrently while stopped orphans held idle MCP servers indefinitely.
+- **Root cause:**
+  - `CliDriver.stop(interrupt=False)` and `CodexCliDriver.stop(interrupt=False)` scheduled `SIGKILL` escalation on `GLib.timeout_add`, and `GeminiCliDriver`, `MuseServeDriver`, and `KimiAcpDriver` scheduled `wait(5) -> SIGKILL` in `daemon=True` threads. On window close, the GLib loop and Python interpreter exited immediately before any `SIGKILL` backstop ran; stopped (`T`/`t`) process groups ignored `SIGTERM` without `SIGCONT`; `CodexAppServer.stop()` stopped escalating once its leader exited even if descendants remained; and independently exited/forgotten drivers left surviving descendants outside shutdown tracking.
+  - On an abrupt crash, `_on_close_request` never ran at all, and startup `_reclaim_orphaned_execution_lanes()` had no record of spawned child process groups to reap before releasing lanes.
+- **Fix:**
+  - Added `backend/process/child_registry.py` (`$HELIOS_STATE_DIR/live-children.json`, `0600`, `O_NOFOLLOW`, deadline-bounded thread and nonblocking `flock` locks) recording kernel-verified `(boot_id, owner_pid, owner_start_ticks, child_pid, child_pgid, child_start_ticks, own_group, group_token, descendants)` across all six subprocess drivers (`CliDriver`, `CodexCliDriver`, `CodexAppServer`, `GeminiCliDriver`, `MuseServeDriver`, `KimiAcpDriver`) with a per-launch `HELIOS_CHILD_GROUP` marker (scrubbed from Helios's own env via `env_scrub.HELIOS_INTERNAL_ENV`). Leaderless PGIDs require positive proof (recorded descendant identity or matching `HELIOS_CHILD_GROUP`) and recycled or pre-reboot entries are never signalled.
+  - Enforced strict durable registration: if `register_child()` fails for a real spawned child (lock timeout, full disk, symlink/corrupt registry), every spawn caller immediately terminates the child via `abort_unregistered_child()` and rejects launch; `CodexCliDriver` waits for `setsid` PGID formation before registering.
+  - Wired bounded parallel `reap_process_trees()` (`SIGTERM` + `SIGCONT` -> shared deadline -> `SIGKILL`) into `DriverManager.stop_all(..., wait_timeout=1.5)` (including `_tearing_down` drivers and `owned_child_targets()` for forgotten drivers), `CodexAppServer.stop()` (continuing to reap verified descendants after leader exit), and `MainWindow._on_close_request()` (plus shared Codex hub shutdown and a final owned-target sweep).
+  - Wired `reap_orphaned_children()` (`OrphanReapOutcome`) into `WindowRecoveryMixin._reclaim_orphaned_execution_lanes()` ahead of Work lane release. When orphan cleanup fails, times out, or leaves remaining/unresolved entries, `_orphan_cleanup_block_reason` blocks both conversation reconciliation (`_reconcile_orphaned_attempts_confirmed`, `_apply_orphaned_attempt_probes`, `_on_reconcile_stuck_turn`) and global Work/driver admission (`_work_execution_block_reason`, `_ensure_driver`) until a retry succeeds.
+  - Stopped freshly spawned `muse` and `kimi` processes if `initialize` submission fails in `start()`.
+- **Validation:**
+  - `ruff check .` clean.
+  - Backend lane (`gi` hidden, isolated `HOME`/`HELIOS_STATE_DIR`): 2037 passed, 147 skipped.
+  - Native GTK4/Xvfb lane (isolated `HOME`/`HELIOS_STATE_DIR`): 3785 passed, 0 failed.
+
 ## 2026-11-27 — 0.125.1 released; final validation (supersedes the line below)
 
 - The entry below shipped with an unfilled `NATIVE_RESULT` placeholder and a

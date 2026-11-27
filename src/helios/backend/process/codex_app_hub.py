@@ -331,6 +331,22 @@ class CodexAppServerHub:
             if final:
                 self._stop_transport(transport)
 
+    @property
+    def has_live_transport(self) -> bool:
+        with self._lock:
+            return self._transport is not None
+
+    def transport_process_tree_target(self) -> Any | None:
+        with self._lock:
+            transport = self._transport
+        getter = getattr(transport, "process_tree_target", None)
+        if not callable(getter):
+            return None
+        try:
+            return getter()
+        except Exception:
+            return None
+
     def shutdown(self) -> None:
         """Boundedly stop the current shared connection exactly once."""
         with self._lifecycle_lock:

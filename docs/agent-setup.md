@@ -1,7 +1,7 @@
 # Helios for autonomous agents — install, configure, verify
 
 This is a shell-based installation and verification guide for Helios on
-Linux. The procedures describe source version 0.125.1 and include expected
+Linux. The procedures describe source version 0.125.2 and include expected
 results; native account sign-ins require the account holder and remain in
 each CLI's credential store. Start with [quickstart.md](quickstart.md) for
 the shorter route. Stable APT can contain an older release, so check the
@@ -53,15 +53,15 @@ the package, then install it. The command chain stops before installation if
 a download or checksum check fails.
 
 ```bash
-mkdir -p ~/Downloads/helios-0.125.1 &&
-cd ~/Downloads/helios-0.125.1 &&
-curl -fLO https://github.com/spencernorton/helios/releases/download/v0.125.1/helios_0.125.1_all.deb &&
-curl -fLO https://github.com/spencernorton/helios/releases/download/v0.125.1/SHA256SUMS.txt &&
-grep '  helios_0.125.1_all.deb$' SHA256SUMS.txt | sha256sum --check - &&
-sudo apt install -y ./helios_0.125.1_all.deb
+mkdir -p ~/Downloads/helios-0.125.2 &&
+cd ~/Downloads/helios-0.125.2 &&
+curl -fLO https://github.com/spencernorton/helios/releases/download/v0.125.2/helios_0.125.2_all.deb &&
+curl -fLO https://github.com/spencernorton/helios/releases/download/v0.125.2/SHA256SUMS.txt &&
+grep '  helios_0.125.2_all.deb$' SHA256SUMS.txt | sha256sum --check - &&
+sudo apt install -y ./helios_0.125.2_all.deb
 ```
 
-Expected: `helios_0.125.1_all.deb: OK`. Stop on a checksum failure.
+Expected: `helios_0.125.2_all.deb: OK`. Stop on a checksum failure.
 [GitHub Releases](https://github.com/spencernorton/helios/releases/latest)
 has the current version and matching source. Use the package and checksums
 from the same release when selecting a newer version.
@@ -73,7 +73,7 @@ enabled for the full workspace.
 dpkg -s helios | grep -E '^(Status|Version):'
 ```
 
-Expected: `Status: install ok installed` and `Version: 0.125.1`. APT installs
+Expected: `Status: install ok installed` and `Version: 0.125.2`. APT installs
 WebKit for the browser and, by default, Git, VTE and desktop portal typelibs
 for review, the terminal and screenshots.
 

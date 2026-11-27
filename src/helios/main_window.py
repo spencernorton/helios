@@ -42,6 +42,7 @@ from helios.backend.process.codex_app_driver import (
     NATIVE_DELIVERY_WIRE,
     CodexAppServerDriver,
 )
+from helios.backend.process import child_registry
 from helios.backend.process.codex_app_hub import get_shared_hub
 from helios.backend.process.codex_transcript import clone_transcript_for_fork
 from helios.backend.process.message_queue import MessageDelivery
@@ -390,6 +391,8 @@ class MainWindow(
         except Exception as exc:
             _log.warning("Work graph unavailable; using legacy sessions: %s", exc)
             self._work_coordinator = None
+        self._child_registry_path = child_registry.REGISTRY_PATH
+        self._orphan_cleanup_block_reason = ""
         self._reclaim_orphaned_execution_lanes()
         if self._work_coordinator is not None:
             threading.Thread(
@@ -2893,6 +2896,16 @@ class MainWindow(
     def _ensure_driver(self) -> bool:
         """Spawn a driver if one isn't already running. Returns True if ready."""
         self._last_capacity_wait_provider = ""
+        if getattr(self, "_orphan_cleanup_block_reason", "") or child_registry.has_uncleaned_aborts():
+            if not WindowRecoveryMixin._ensure_orphan_cleanup_cleared(self):
+                self._toast(
+                    str(
+                        getattr(self, "_orphan_cleanup_block_reason", "")
+                        or child_registry.incomplete_cleanup_reason()
+                        or "Helios could not confirm previous agent processes stopped."
+                    )
+                )
+                return False
         target = self._next_chat
         if target is None:
             self._toast("Pick a project first.")
@@ -7519,7 +7532,33 @@ class MainWindow(
         # happened to be running at quit (including background ones the user
         # never looked at). interrupt=False closes stdin + SIGTERMs the whole
         # process group, delivered synchronously here before teardown.
-        self._driver_manager.stop_all(interrupt=False)
+        registry_path = getattr(self, "_child_registry_path", None)
+        if registry_path is not None:
+            self._driver_manager.stop_all(
+                interrupt=False,
+                wait_timeout=1.5,
+                registry_path=registry_path,
+            )
+        else:
+            self._driver_manager.stop_all(interrupt=False, wait_timeout=1.5)
+        try:
+            hub = get_shared_hub()
+            if getattr(hub, "has_live_transport", False):
+                hub.shutdown()
+        except Exception:
+            pass
+        if registry_path is not None:
+            try:
+                if child_registry.owned_child_targets(
+                    registry_path=registry_path, lock_timeout=0.1
+                ):
+                    child_registry.reap_owned_children(
+                        registry_path=registry_path,
+                        grace_seconds=0.5,
+                        lock_timeout=0.1,
+                    )
+            except Exception:
+                pass
         # Driver stop/exits are asynchronous and their final callbacks may
         # still append canonical events. Keep the lightweight SQLite handle
         # alive until process teardown rather than closing it underneath them.
