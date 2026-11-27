@@ -25,6 +25,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeAlias
 
+from helios.backend.process.child_registry import (
+    CHILD_GROUP_ENV,
+    ChildRegistryPersistenceError,
+    ProcessIdentity,
+    ProcessTreeTarget,
+    abort_unregistered_child,
+    inspect_process_tree,
+    is_real_subprocess,
+    new_group_token,
+    reap_process_trees,
+    register_child,
+    snapshot_group_descendants,
+    unregister_if_dead,
+    wake_if_stopped,
+)
 from helios.backend.process.env_scrub import (
     NORVI_TRACKER_ENV,
     scrubbed_child_env,
@@ -162,6 +177,8 @@ class CodexAppServer:
         self._write_lock = threading.Lock()
         self._handshake_lock = threading.Lock()
         self._proc: Any | None = None
+        self._child_identity: ProcessIdentity | None = None
+        self._child_group_token: str | None = None
         self._started = False
         self._running = False
         self._stopping = False
@@ -267,8 +284,10 @@ class CodexAppServer:
         # is deliberately out of H1. The tracker token is the one exception,
         # and it is not provider auth: it is the work record a session
         # reads for context and records its checkpoints against.
-        child_env = scrubbed_child_env(self._source_env, keep=NORVI_TRACKER_ENV)
+        child_env = dict(scrubbed_child_env(self._source_env, keep=NORVI_TRACKER_ENV))
         child_env.setdefault("RUST_LOG", "error")
+        group_token = new_group_token()
+        child_env[CHILD_GROUP_ENV] = group_token
         try:
             proc = self._popen_factory(
                 [binary, "app-server"],
@@ -294,9 +313,40 @@ class CodexAppServer:
                 "Codex App Server did not provide stdio pipes"
             )
 
+        child_identity: ProcessIdentity | None = None
+        raw_pid = getattr(proc, "pid", None)
+        is_real_proc = is_real_subprocess(proc)
+        if isinstance(raw_pid, int) and not isinstance(raw_pid, bool) and raw_pid > 1:
+            try:
+                child_identity = register_child(
+                    raw_pid,
+                    pgid=raw_pid,
+                    own_group=True,
+                    provider="openai",
+                    group_token=group_token,
+                    require_live=is_real_proc,
+                )
+            except ChildRegistryPersistenceError as exc:
+                abort_unregistered_child(
+                    raw_pid,
+                    pgid=raw_pid,
+                    start_ticks=(
+                        exc.child_identity.start_ticks
+                        if exc.child_identity is not None
+                        else None
+                    ),
+                    group_token=group_token,
+                    descendants=exc.descendants,
+                    poll=getattr(proc, "poll", None),
+                )
+                raise CodexAppServerStartError(
+                    f"could not record Codex App Server process for crash recovery: {exc}"
+                ) from exc
         with self._state_lock:
             self._binary = binary
             self._proc = proc
+            self._child_identity = child_identity
+            self._child_group_token = group_token
             self._started = True
             self._running = True
             self._stopping = False
@@ -377,10 +427,49 @@ class CodexAppServer:
         deadline = time.monotonic() + budget
         with self._state_lock:
             proc = self._proc
-            if proc is None:
+            child_identity = self._child_identity
+            group_token = self._child_group_token
+            if proc is not None:
+                self._stopping = True
+                self._initialized = False
+        if proc is None:
+            if child_identity is None:
                 return True
-            self._stopping = True
-            self._initialized = False
+            rem = max(0.0, deadline - time.monotonic())
+            target = ProcessTreeTarget(
+                pid=child_identity.pid,
+                pgid=child_identity.pid,
+                start_ticks=child_identity.start_ticks,
+                provider="openai",
+                group_token=group_token,
+            )
+            status, target = inspect_process_tree(target)
+            if status == "live":
+                tail = min(0.15, max(0.05, rem * 0.25))
+                reap_result = reap_process_trees(
+                    [target],
+                    timeout=max(0.0, rem - tail),
+                    kill_wait=tail,
+                    send_term=True,
+                    unregister=True,
+                )
+                return not reap_result.remaining and not reap_result.unresolved
+            if status == "unresolved":
+                return False
+            unregister_if_dead(
+                child_identity.pid,
+                pgid=child_identity.pid,
+                start_ticks=child_identity.start_ticks,
+                group_token=group_token,
+            )
+            return True
+        descendants = (
+            snapshot_group_descendants(
+                child_identity.pid, child_identity.pid, child_identity.start_ticks
+            )
+            if child_identity is not None
+            else ()
+        )
         self._fail_all_pending(CodexAppServerStateError("Codex App Server is stopping"))
 
         # A large write can be blocked by a wedged server. Keep shutdown
@@ -418,6 +507,42 @@ class CodexAppServer:
             _terminate_process_group(proc, signal.SIGKILL)
             returncode = _wait_for_process(proc, max(0.0, deadline - time.monotonic()))
 
+        group_cleared = True
+        if child_identity is not None:
+            target = ProcessTreeTarget(
+                pid=child_identity.pid,
+                pgid=child_identity.pid,
+                start_ticks=child_identity.start_ticks,
+                poll=getattr(proc, "poll", None),
+                provider="openai",
+                group_token=group_token,
+                descendants=descendants,
+            )
+            status, target = inspect_process_tree(target)
+            if status == "live":
+                rem = max(0.0, deadline - time.monotonic())
+                tail = min(0.15, max(0.05, rem * 0.25))
+                reap_result = reap_process_trees(
+                    [target],
+                    timeout=max(0.0, rem - tail),
+                    kill_wait=tail,
+                    send_term=not term_sent,
+                    unregister=True,
+                )
+                group_cleared = (
+                    not reap_result.remaining and not reap_result.unresolved
+                )
+            elif status == "unresolved":
+                group_cleared = False
+            else:
+                unregister_if_dead(
+                    child_identity.pid,
+                    pgid=child_identity.pid,
+                    start_ticks=child_identity.start_ticks,
+                    group_token=group_token,
+                    descendants=descendants,
+                )
+
         _close_stream(getattr(proc, "stdout", None))
         _close_stream(getattr(proc, "stderr", None))
         self._handle_exit(proc, returncode)
@@ -428,7 +553,26 @@ class CodexAppServer:
             if thread is threading.current_thread():
                 continue
             thread.join(timeout=max(0.0, deadline - time.monotonic()))
-        return returncode is not None
+        return returncode is not None and group_cleared
+
+    def process_tree_target(self) -> ProcessTreeTarget | None:
+        with self._state_lock:
+            ident = self._child_identity
+            group_token = self._child_group_token
+            proc = self._proc
+        if ident is None:
+            return None
+        return ProcessTreeTarget(
+            pid=ident.pid,
+            pgid=ident.pid,
+            start_ticks=ident.start_ticks,
+            poll=getattr(proc, "poll", None) if proc is not None else None,
+            provider="openai",
+            group_token=group_token,
+            descendants=snapshot_group_descendants(
+                ident.pid, ident.pid, ident.start_ticks
+            ),
+        )
 
     # ── client -> server messages ─────────────────────────────────────
 
@@ -778,6 +922,15 @@ class CodexAppServer:
             self._returncode = returncode
             self._inbound_pending.clear()
             handler = self._on_exit
+            child_identity = self._child_identity
+            group_token = self._child_group_token
+        if child_identity is not None:
+            unregister_if_dead(
+                child_identity.pid,
+                pgid=child_identity.pid,
+                start_ticks=child_identity.start_ticks,
+                group_token=group_token,
+            )
         self._fail_all_pending(CodexAppServerExited(returncode))
         if handler is not None:
             try:
@@ -849,6 +1002,8 @@ def _terminate_process_group(proc: Any, sig: signal.Signals) -> None:
     if os.name == "posix" and isinstance(pid, int) and pid > 0:
         try:
             os.killpg(pid, sig)
+            if sig == signal.SIGTERM:
+                wake_if_stopped(pid, pid)
             return
         except ProcessLookupError:
             return

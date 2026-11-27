@@ -19,6 +19,21 @@ from helios.backend import browser_tools, kimi_env, model_catalog
 from helios.backend.attachments import kimi_blocks
 from helios.backend.kimi_binary import KimiBinaryNotFound, find_kimi_binary
 from helios.backend.process.codex_transcript import CodexTranscriptWriter
+from helios.backend.process.child_registry import (
+    CHILD_GROUP_ENV,
+    ChildRegistryPersistenceError,
+    ProcessIdentity,
+    ProcessTreeTarget,
+    abort_unregistered_child,
+    is_real_subprocess,
+    inspect_process_tree,
+    new_group_token,
+    reap_process_trees,
+    register_child,
+    snapshot_group_descendants,
+    unregister_if_dead,
+    wake_if_stopped,
+)
 from helios.backend.process.env_scrub import NORVI_TRACKER_ENV, scrubbed_child_env
 from helios.backend.process.message_queue import (
     ExecutionAcceptanceEvidence, ExecutionDispatchEvidence,
@@ -172,6 +187,8 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
         self._permission_mode = effective_execution_mode(permission_mode, cwd, provider=self.provider)
         self._resume_session_id = resume_session_id or ""
         self._proc: subprocess.Popen[bytes] | None = None
+        self._child_identity: ProcessIdentity | None = None
+        self._child_group_token: str | None = None
         self._session_id = ""
         self._is_busy = False
         self._accepting_input = False
@@ -360,14 +377,45 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
             binary = find_kimi_binary()
         except KimiBinaryNotFound as exc:
             raise KimiDriverSpawnError(str(exc)) from exc
+        group_token = new_group_token()
+        spawn_env = dict(scrubbed_child_env(keep=KIMI_INTERACTIVE_ENV))
+        spawn_env[CHILD_GROUP_ENV] = group_token
         try:
             self._proc = subprocess.Popen(
                 [str(binary.path), "acp"], cwd=self._cwd, stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                env=scrubbed_child_env(keep=KIMI_INTERACTIVE_ENV), bufsize=0,
+                env=spawn_env, bufsize=0,
                 start_new_session=True)
         except OSError as exc:
             raise KimiDriverSpawnError("Could not start `kimi acp`.") from exc
+        self._child_group_token = group_token
+        is_real_proc = is_real_subprocess(self._proc)
+        try:
+            self._child_identity = register_child(
+                self._proc.pid,
+                pgid=self._proc.pid,
+                own_group=True,
+                provider="kimi",
+                group_token=group_token,
+                require_live=is_real_proc,
+            )
+        except ChildRegistryPersistenceError as exc:
+            abort_unregistered_child(
+                self._proc.pid,
+                pgid=self._proc.pid,
+                start_ticks=(
+                    exc.child_identity.start_ticks
+                    if exc.child_identity is not None
+                    else None
+                ),
+                group_token=group_token,
+                descendants=exc.descendants,
+                poll=self._proc.poll,
+            )
+            self._proc = None
+            raise KimiDriverSpawnError(
+                f"Could not record Kimi child process for crash recovery: {exc}"
+            ) from exc
         self._stopped = False
         self._accepting_input = False
         threading.Thread(target=self._read_stderr, daemon=True, name="kimi-stderr").start()
@@ -378,6 +426,7 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
                 "protocolVersion": 1,
                 "clientInfo": {"name": kimi_env.CLIENT_NAME, "version": helios_version},
                 "clientCapabilities": {"elicitation": {"form": {}}}}):
+            self.stop(interrupt=False)
             raise KimiDriverSpawnError("Could not initialize `kimi acp`.")
 
     def _begin_session(self) -> None:
@@ -956,15 +1005,70 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
         self._finish_predispatch_attempt()
         if interrupt and self._session_id and self._is_busy:
             self._send("session/cancel", {"sessionId": self._session_id}, notify=True)
-        if self._proc is not None and self._proc.poll() is None:
+        proc = self._proc
+        ident = getattr(self, "_child_identity", None)
+        if proc is not None and proc.poll() is None:
+            group_token = getattr(self, "_child_group_token", None)
+            descendants = (
+                snapshot_group_descendants(ident.pid, ident.pid, ident.start_ticks)
+                if ident is not None
+                else ()
+            )
+            if descendants:
+                self._stopped_descendants = descendants
             try:
-                os.killpg(self._proc.pid, signal.SIGTERM)
+                os.killpg(proc.pid, signal.SIGTERM)
             except OSError:
                 pass
-            threading.Thread(target=self._reap_stopped, args=(self._proc,), daemon=True).start()
+            reap_kwargs: dict[str, Any] = {}
+            if ident is not None:
+                wake_if_stopped(
+                    ident.pid,
+                    ident.pid,
+                    expected_start_ticks=ident.start_ticks,
+                    expected_descendants=descendants,
+                    expected_group_token=group_token,
+                )
+                reap_kwargs = {
+                    "start_ticks": ident.start_ticks,
+                    "group_token": group_token,
+                    "descendants": descendants,
+                }
+            elif group_token is not None:
+                reap_kwargs = {"group_token": group_token}
+            threading.Thread(
+                target=self._reap_stopped,
+                args=(proc,),
+                kwargs=reap_kwargs,
+                daemon=True,
+            ).start()
+
+    def process_tree_target(self) -> ProcessTreeTarget | None:
+        ident = getattr(self, "_child_identity", None)
+        if ident is None:
+            return None
+        proc = self._proc
+        return ProcessTreeTarget(
+            pid=ident.pid,
+            pgid=ident.pid,
+            start_ticks=ident.start_ticks,
+            poll=proc.poll if proc is not None else None,
+            provider="kimi",
+            group_token=getattr(self, "_child_group_token", None),
+            descendants=(
+                *getattr(self, "_stopped_descendants", ()),
+                *snapshot_group_descendants(ident.pid, ident.pid, ident.start_ticks),
+            ),
+        )
 
     @staticmethod
-    def _reap_stopped(proc: subprocess.Popen) -> None:
+    def _reap_stopped(
+        proc: subprocess.Popen,
+        *,
+        start_ticks: int | None = None,
+        group_token: str | None = None,
+        descendants: tuple[tuple[int, int], ...] = (),
+    ) -> None:
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -972,6 +1076,36 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
                 os.killpg(proc.pid, signal.SIGKILL)
             except OSError:
                 pass
+        pid = getattr(proc, "pid", None)
+        if not (isinstance(pid, int) and pid > 1):
+            return
+        if start_ticks is None and group_token is None:
+            return
+        target = ProcessTreeTarget(
+            pid=pid,
+            pgid=pid,
+            start_ticks=start_ticks,
+            provider="kimi",
+            group_token=group_token,
+            descendants=descendants,
+        )
+        status, target = inspect_process_tree(target)
+        if status == "live":
+            reap_process_trees(
+                [target],
+                timeout=0.0,
+                kill_wait=0.25,
+                send_term=False,
+                unregister=True,
+            )
+        elif status in ("dead", "recycled"):
+            unregister_if_dead(
+                pid,
+                pgid=pid,
+                start_ticks=start_ticks,
+                group_token=group_token,
+                descendants=target.descendants,
+            )
 
     def stop_task(self, actor_id: str) -> bool:
         return False
@@ -987,6 +1121,14 @@ class KimiAcpDriver(UserMessageQueueMixin, GObject.Object):
 
     def _on_exit(self, code: int) -> bool:
         self._accepting_input = False
+        ident = getattr(self, "_child_identity", None)
+        if ident is not None:
+            unregister_if_dead(
+                ident.pid,
+                pgid=ident.pid,
+                start_ticks=ident.start_ticks,
+                group_token=getattr(self, "_child_group_token", None),
+            )
         self._retire_pending_requests()
         self._finish_predispatch_attempt()
         if self.execution_attempt_id:

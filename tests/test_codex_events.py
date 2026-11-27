@@ -387,3 +387,146 @@ class _Launcher:
 
     def spawnv(self, _argv):
         return self._proc
+
+
+def test_codex_cli_driver_waits_for_setsid_and_aborts_on_registration_failure(
+    tmp_path, monkeypatch
+):
+    """Pass 2 Findings 1 & 2: real Gio+setsid launch registers cleanly and aborts on failure."""
+    import json
+    import shutil
+    import sys
+
+    if sys.platform != "linux" or not shutil.which("setsid"):
+        pytest.skip("Linux + setsid required")
+    gi = pytest.importorskip("gi")
+    gi.require_version("Gtk", "4.0")
+    from helios.backend.process.child_registry import (
+        ChildRegistryPersistenceError,
+        read_process_identity,
+    )
+    from helios.backend.process.codex_driver import CodexCliDriver
+
+    monkeypatch.setenv("HELIOS_STATE_DIR", str(tmp_path))
+    script = tmp_path / "fake-codex-exec"
+    script.write_text(
+        f"#!/bin/sh\nexec {sys.executable} -c 'import sys, time; sys.stdin.read(); time.sleep(30)'\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+
+    # 1. Normal real Gio+setsid launch must capture own_group=True and persist row.
+    driver = CodexCliDriver(cwd=str(tmp_path), permission_mode="dontAsk", model="gpt-5.5")
+    driver._binary = str(script)
+    monkeypatch.setattr(driver, "_prepare_prompt_context", lambda text: _Prepared(text))
+    monkeypatch.setattr(driver, "_read_next_stdout_line", lambda: None)
+    monkeypatch.setattr(driver, "_read_next_stderr_line", lambda: None)
+    delivery = driver.send_user_text("hello")
+    assert delivery.state == "accepted"
+    assert driver._own_group is True
+    assert driver._child_identity is not None
+    assert driver._process_group_id == driver._child_identity.pid
+    reg = tmp_path / "live-children.json"
+    rows = json.loads(reg.read_text(encoding="utf-8"))["children"]
+    assert any(r["child_pid"] == driver._child_identity.pid and r["own_group"] is True for r in rows)
+    # Clean up the live child group cleanly.
+    from helios.backend.process.child_registry import reap_process_trees
+
+    reap_process_trees([driver.process_tree_target()], timeout=0.2)
+
+    # 2. Persistence failure must kill the newly spawned child and reject delivery.
+    driver2 = CodexCliDriver(cwd=str(tmp_path), permission_mode="dontAsk", model="gpt-5.5")
+    driver2._binary = str(script)
+    monkeypatch.setattr(driver2, "_prepare_prompt_context", lambda text: _Prepared(text))
+    seen_pids: list[int] = []
+    errors: list[str] = []
+    driver2.connect("error", lambda _d, msg: errors.append(msg))
+
+    def fail_reg(pid, **_kw):
+        seen_pids.append(pid)
+        raise ChildRegistryPersistenceError("simulated write failure")
+
+    monkeypatch.setattr("helios.backend.process.codex_driver.register_child", fail_reg)
+    delivery2 = driver2.send_user_text("hello again")
+    assert delivery2.state == "rejected"
+    assert errors and "crash recovery" in errors[0]
+    assert len(seen_pids) == 1
+    ident = read_process_identity(seen_pids[0])
+    assert ident is None or ident.state == "Z"
+
+
+def test_codex_cli_driver_rejects_and_cleans_up_early_exiting_leader_with_descendant(
+    tmp_path, monkeypatch
+):
+    """Pass 3 Finding 1: early leader exit leaving a live descendant fails launch and kills descendant."""
+    import os
+    import shutil
+    import signal
+    import sys
+
+    if sys.platform != "linux" or not shutil.which("setsid"):
+        pytest.skip("Linux + setsid required")
+    gi = pytest.importorskip("gi")
+    gi.require_version("Gtk", "4.0")
+    from helios.backend.process.child_registry import read_process_identity
+    from helios.backend.process.codex_driver import CodexCliDriver
+
+    monkeypatch.setenv("HELIOS_STATE_DIR", str(tmp_path))
+    gc_pid_file = tmp_path / "early_exit_gc.pid"
+    gc_code = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"
+    helper = tmp_path / "early_exit_codex.py"
+    helper.write_text(
+        (
+            "import os, subprocess, sys\n"
+            f"gc = subprocess.Popen([sys.executable, '-c', {gc_code!r}])\n"
+            f"open({str(gc_pid_file)!r}, 'w').write(str(gc.pid))\n"
+            "os._exit(0)\n"
+        ),
+        encoding="utf-8",
+    )
+    script = tmp_path / "fake-codex-early-exit"
+    script.write_text(f"#!/bin/sh\nexec {sys.executable} {helper}\n", encoding="utf-8")
+    script.chmod(0o755)
+
+    import time
+    from gi.repository import GLib
+    from helios.backend.process import child_registry as cr
+
+    orig_wait = cr.wait_for_process_group
+
+    def delayed_wait(pid, *, expected_new_session, timeout=0.5):
+        # Simulate scheduler delay so the leader forks its descendant, exits,
+        # and is reaped by Gio before identity capture runs.
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not gc_pid_file.exists():
+            time.sleep(0.01)
+        ctx = GLib.MainContext.default()
+        end = time.monotonic() + 1.0
+        while time.monotonic() < end and cr.read_process_identity(pid) is not None:
+            while ctx.pending():
+                ctx.iteration(False)
+            time.sleep(0.01)
+        return orig_wait(pid, expected_new_session=expected_new_session, timeout=0.05)
+
+    monkeypatch.setattr("helios.backend.process.codex_driver.wait_for_process_group", delayed_wait)
+    driver = CodexCliDriver(cwd=str(tmp_path), permission_mode="dontAsk", model="gpt-5.5")
+    driver._binary = str(script)
+    monkeypatch.setattr(driver, "_prepare_prompt_context", lambda text: _Prepared(text))
+    errors: list[str] = []
+    driver.connect("error", lambda _d, msg: errors.append(msg))
+
+    gc_pid = None
+    try:
+        delivery = driver.send_user_text("trigger early exit")
+        assert delivery.state == "rejected"
+        assert errors
+        if gc_pid_file.exists():
+            gc_pid = int(gc_pid_file.read_text(encoding="utf-8").strip())
+            gc_ident = read_process_identity(gc_pid)
+            assert gc_ident is None or gc_ident.state == "Z"
+    finally:
+        if gc_pid is not None:
+            try:
+                os.kill(gc_pid, signal.SIGKILL)
+            except OSError:
+                pass

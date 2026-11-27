@@ -94,6 +94,7 @@ HELIOS_INTERNAL_ENV = (
     "HELIOS_CODEX_BINARY",
     "HELIOS_CODEX_TRANSPORT",
     "HELIOS_TANDEM_BINARY",
+    "HELIOS_CHILD_GROUP",
 )
 
 # Layer 4 — sockets DROPPED by explicit policy (see module doc). SSH_AUTH_SOCK is

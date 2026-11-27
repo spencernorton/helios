@@ -1584,6 +1584,18 @@ class CodexAppServerDriver(CodexCliDriver):
         _log.info("Codex App Server closed idle thread %s; detaching driver", self.session_id)
         self._finalize_native(0)
 
+    def process_tree_target(self) -> Any | None:
+        if not self._native_mode:
+            return super().process_tree_target()
+        hub = self._hub or get_shared_hub()
+        getter = getattr(hub, "transport_process_tree_target", None)
+        if callable(getter):
+            try:
+                return getter()
+            except Exception:
+                return None
+        return None
+
     def _finalize_native(self, code: int) -> None:
         if self._closed:
             return

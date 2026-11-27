@@ -540,3 +540,105 @@ def test_handshake_timeout_is_bounded_and_closes_process():
     assert elapsed < 0.5
     assert not server.running
     assert process.stdin.closed
+
+
+def test_codex_app_server_stop_reaps_surviving_descendant_after_leader_exits(tmp_path, monkeypatch):
+    """Finding 3: stop() must reap descendants even when the leader exits on EOF."""
+    import os
+    import signal
+    import sys
+    from helios.backend.process.child_registry import read_process_identity
+    from helios.backend.process.codex_app_server import CodexAppServer
+
+    if sys.platform != "linux":
+        pytest.skip("Linux /proc process identity required")
+
+    monkeypatch.setenv("HELIOS_STATE_DIR", str(tmp_path))
+    pid_file = tmp_path / "gc.pid"
+    gc_code = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"
+    wrapper = tmp_path / "fake_codex.py"
+    wrapper.write_text(
+        (
+            "import subprocess, sys\n"
+            f"gc = subprocess.Popen([sys.executable, '-c', {gc_code!r}])\n"
+            f"open({str(pid_file)!r}, 'w').write(str(gc.pid))\n"
+            "sys.stdin.read()\n"
+        ),
+        encoding="utf-8",
+    )
+    launcher = tmp_path / "fake-codex"
+    launcher.write_text(f"#!/bin/sh\nexec {sys.executable} {wrapper}\n", encoding="utf-8")
+    launcher.chmod(0o755)
+
+    server = CodexAppServer(binary=str(launcher), cwd=str(tmp_path), stop_timeout=1.5)
+    server.start()
+    gc_pid = None
+    try:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not pid_file.exists():
+            time.sleep(0.02)
+        assert pid_file.exists()
+        gc_pid = int(pid_file.read_text(encoding="utf-8").strip())
+        assert read_process_identity(gc_pid) is not None
+
+        stopped = server.stop(timeout=1.5)
+        assert stopped is True
+        gc_now = read_process_identity(gc_pid)
+        assert gc_now is None or gc_now.state == "Z"
+        reg_path = tmp_path / "live-children.json"
+        if reg_path.exists():
+            assert json.loads(reg_path.read_text(encoding="utf-8"))["children"] == []
+    finally:
+        if gc_pid is not None:
+            try:
+                os.kill(gc_pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+
+def test_codex_app_server_start_aborts_child_when_registration_fails(tmp_path, monkeypatch):
+    """Pass 2 Finding 2: failed durable registration kills the newly spawned process."""
+    import sys
+    from helios.backend.process import child_registry
+    from helios.backend.process.child_registry import read_process_identity
+    from helios.backend.process.codex_app_server import (
+        CodexAppServer,
+        CodexAppServerStartError,
+    )
+
+    if sys.platform != "linux":
+        pytest.skip("Linux /proc process identity required")
+
+    pid_file = tmp_path / "spawned.pid"
+    wrapper = tmp_path / "fake_codex_persist_fail.py"
+    wrapper.write_text(
+        f"import os, time\nopen({str(pid_file)!r}, 'w').write(str(os.getpid()))\ntime.sleep(60)\n",
+        encoding="utf-8",
+    )
+    launcher = tmp_path / "fake-codex-fail"
+    launcher.write_text(f"#!/bin/sh\nexec {sys.executable} {wrapper}\n", encoding="utf-8")
+    launcher.chmod(0o755)
+
+    captured_pids: list[int] = []
+    real_register = child_registry.register_child
+
+    def fail_register(pid, **kw):
+        captured_pids.append(pid)
+        return real_register(pid, **kw)
+
+    monkeypatch.setattr(child_registry, "REGISTRY_PATH", tmp_path / "live-children.json")
+    monkeypatch.setattr(
+        child_registry,
+        "_write_entries_locked",
+        lambda _path, _entries: "disk full",
+    )
+    monkeypatch.setattr(
+        "helios.backend.process.codex_app_server.register_child",
+        fail_register,
+    )
+    server = CodexAppServer(binary=str(launcher), cwd=str(tmp_path))
+    with pytest.raises(CodexAppServerStartError, match="disk full"):
+        server.start()
+    assert len(captured_pids) == 1
+    ident = read_process_identity(captured_pids[0])
+    assert ident is None or ident.state == "Z"

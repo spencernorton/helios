@@ -10,7 +10,14 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Literal
+
+from helios.backend.process.child_registry import (
+    ProcessTreeTarget,
+    owned_child_targets,
+    reap_process_trees,
+)
 
 
 Driver = Any
@@ -230,9 +237,50 @@ class DriverManager:
         self.stop_driver(old, interrupt=interrupt)
         return old
 
-    def stop_all(self, *, interrupt: bool = False) -> None:
-        for driver in self.drivers_for_shutdown():
+    def stop_all(
+        self,
+        *,
+        interrupt: bool = False,
+        wait_timeout: float = 0.0,
+        registry_path: Path | None = None,
+    ) -> None:
+        started = time.monotonic()
+        drivers = self.drivers_for_shutdown()
+        tracked = drivers | set(self._tearing_down)
+        targets: list[ProcessTreeTarget] = []
+        if wait_timeout > 0:
+            for driver in tracked:
+                getter = getattr(driver, "process_tree_target", None)
+                if not callable(getter):
+                    continue
+                try:
+                    target = getter()
+                except Exception:
+                    target = None
+                if isinstance(target, ProcessTreeTarget):
+                    targets.append(target)
+        for driver in drivers:
             self.stop_driver(driver, interrupt=interrupt)
+        if wait_timeout > 0 and not interrupt:
+            lock_budget = min(0.25, max(0.0, wait_timeout * 0.25))
+            targets.extend(
+                owned_child_targets(
+                    registry_path=registry_path,
+                    lock_timeout=lock_budget,
+                )
+            )
+        if wait_timeout > 0 and targets:
+            remaining_timeout = max(0.0, (started + wait_timeout) - time.monotonic())
+            reap_process_trees(
+                targets,
+                timeout=remaining_timeout,
+                send_term=not interrupt,
+            )
+            self._tearing_down = {
+                driver
+                for driver in self._tearing_down
+                if getattr(driver, "is_running", False)
+            }
 
     def reap_idle(self, *, now: float | None = None) -> None:
         now = time.monotonic() if now is None else now

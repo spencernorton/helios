@@ -34,6 +34,21 @@ from gi.repository import Gio, GLib, GObject  # noqa: E402
 from helios.backend.effort_policy import EffortPolicyMixin
 from helios.backend import codex_env, model_catalog
 from helios.backend.process import codex_events
+from helios.backend.process.child_registry import (
+    CHILD_GROUP_ENV,
+    ChildRegistryPersistenceError,
+    ProcessIdentity,
+    ProcessTreeTarget,
+    abort_unregistered_child,
+    capture_child_identity,
+    is_real_subprocess,
+    new_group_token,
+    register_child,
+    snapshot_group_descendants,
+    unregister_if_dead,
+    wait_for_process_group,
+    wake_if_stopped,
+)
 from helios.backend.process.env_scrub import CODEX_EXEC_ENV, scrub_helios_env
 from helios.backend.process.cli_driver import (
     DriverSpawnError,
@@ -119,6 +134,9 @@ class CodexCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         self._binary = ""
         self._proc: Gio.Subprocess | None = None
         self._own_group = False
+        self._process_group_id: int | None = None
+        self._child_identity: ProcessIdentity | None = None
+        self._child_group_token: str | None = None
         self._stdout: Gio.DataInputStream | None = None
         self._stderr: Gio.DataInputStream | None = None
         self._busy = False
@@ -318,9 +336,11 @@ class CodexCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
             effort=self._effort,
         )
         setsid_path = shutil.which("setsid")
+        using_setsid = bool(setsid_path)
         if setsid_path:
             argv = [setsid_path, *argv]
-            self._own_group = True
+        self._own_group = False
+        self._process_group_id = None
 
         launcher = Gio.SubprocessLauncher.new(
             Gio.SubprocessFlags.STDIN_PIPE
@@ -335,12 +355,73 @@ class CodexCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         # vars, unrelated credentials, and Anthropic auth out; forward at most
         # CODEX_API_KEY.
         scrub_helios_env(launcher, keep=CODEX_EXEC_ENV)
+        group_token = new_group_token()
+        launcher.setenv(CHILD_GROUP_ENV, group_token, True)
 
         _log.debug("codex spawn argv=%s cwd=%s", argv, self._cwd)
         try:
             self._proc = launcher.spawnv(argv)
         except GLib.Error as e:
             self.emit("error", f"Failed to spawn codex: {e.message}")
+            return MessageDelivery("rejected")
+        spawned_pid = self._pid()
+        is_real_proc = is_real_subprocess(self._proc)
+        self._process_group_id = wait_for_process_group(
+            spawned_pid,
+            expected_new_session=using_setsid,
+            timeout=0.5,
+        )
+        self._own_group = self._process_group_id is not None
+        if using_setsid and not self._own_group and is_real_proc:
+            live_child = (
+                capture_child_identity(spawned_pid, own_group=False)
+                if spawned_pid is not None
+                else None
+            )
+            abort_unregistered_child(
+                spawned_pid,
+                start_ticks=live_child.start_ticks if live_child is not None else None,
+                group_token=group_token,
+            )
+            self._reap_process()
+            self.emit(
+                "error",
+                "Codex did not enter its own process group before registration.",
+            )
+            return MessageDelivery("rejected")
+        self._child_group_token = group_token
+        try:
+            self._child_identity = (
+                register_child(
+                    spawned_pid,
+                    pgid=self._process_group_id,
+                    own_group=self._own_group,
+                    provider="openai",
+                    group_token=group_token,
+                    require_live=is_real_proc,
+                )
+                if spawned_pid is not None
+                else None
+            )
+        except ChildRegistryPersistenceError as exc:
+            abort_unregistered_child(
+                spawned_pid,
+                pgid=self._process_group_id,
+                start_ticks=(
+                    exc.child_identity.start_ticks
+                    if exc.child_identity is not None
+                    else None
+                ),
+                group_token=group_token,
+                descendants=exc.descendants,
+            )
+            self._reap_process()
+            self._process_group_id = None
+            self._own_group = False
+            self.emit(
+                "error",
+                f"Could not record Codex child process for crash recovery: {exc}",
+            )
             return MessageDelivery("rejected")
 
         # Prompt via stdin, then EOF — codex reads to end before starting.
@@ -350,6 +431,39 @@ class CodexCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
             stdin.write_all(prompt.encode("utf-8"), None)
             stdin.close(None)
         except GLib.Error as e:
+            descendants = (
+                snapshot_group_descendants(
+                    self._process_group_id,
+                    spawned_pid,
+                    self._child_identity.start_ticks,
+                )
+                if (
+                    self._own_group
+                    and self._process_group_id is not None
+                    and self._child_identity is not None
+                    and spawned_pid is not None
+                )
+                else ()
+            )
+            abort_unregistered_child(
+                spawned_pid,
+                pgid=self._process_group_id,
+                start_ticks=(
+                    self._child_identity.start_ticks
+                    if self._child_identity is not None
+                    else None
+                ),
+                group_token=group_token,
+                descendants=descendants,
+            )
+            if self._child_identity is not None:
+                unregister_if_dead(
+                    self._child_identity.pid,
+                    pgid=self._process_group_id,
+                    start_ticks=self._child_identity.start_ticks,
+                    group_token=group_token,
+                    descendants=descendants,
+                )
             self.emit("error", f"codex stdin write failed: {e.message}")
             self._reap_process()
             return MessageDelivery("rejected")
@@ -410,29 +524,82 @@ class CodexCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
         if pid is None:
             return
         own_group = self._own_group
+        child_identity = getattr(self, "_child_identity", None)
+        expected_ticks = child_identity.start_ticks if child_identity is not None else None
+        group_token = getattr(self, "_child_group_token", None)
+        pgid = pid if own_group else None
+        snap_descendants = (
+            snapshot_group_descendants(pgid, pid, expected_ticks)
+            if first_sig == signal.SIGTERM and child_identity is not None and pgid is not None
+            else ()
+        )
+        if snap_descendants:
+            self._stopped_descendants = snap_descendants
         _signal_group(pid, first_sig, own_group)
+        if first_sig == signal.SIGTERM and child_identity is not None:
+            wake_if_stopped(
+                pgid,
+                pid,
+                expected_start_ticks=expected_ticks,
+                expected_descendants=snap_descendants,
+                expected_group_token=group_token,
+            )
 
         def _stage_term() -> bool:
             if _is_alive(pid):
                 _signal_group(pid, signal.SIGTERM, own_group)
+                if child_identity is not None:
+                    wake_if_stopped(
+                        pgid,
+                        pid,
+                        expected_start_ticks=expected_ticks,
+                        expected_group_token=group_token,
+                    )
             return False
 
         def _stage_kill() -> bool:
             if _is_alive(pid):
                 _signal_group(pid, signal.SIGKILL, own_group)
                 _safe_kill(pid, signal.SIGKILL)
+            if child_identity is not None:
+                unregister_if_dead(
+                    pid,
+                    pgid=pgid,
+                    start_ticks=expected_ticks,
+                    group_token=group_token,
+                )
             return False
 
         GLib.timeout_add(self._STOP_TERM_AFTER_MS, _stage_term)
         GLib.timeout_add(self._STOP_KILL_AFTER_MS, _stage_kill)
 
+    def process_tree_target(self) -> ProcessTreeTarget | None:
+        ident = getattr(self, "_child_identity", None)
+        if ident is None:
+            return None
+        pgid = ident.pid if self._own_group else None
+        return ProcessTreeTarget(
+            pid=ident.pid,
+            pgid=pgid,
+            start_ticks=ident.start_ticks,
+            provider="openai",
+            group_token=getattr(self, "_child_group_token", None),
+            descendants=(
+                *getattr(self, "_stopped_descendants", ()),
+                *snapshot_group_descendants(pgid, ident.pid, ident.start_ticks),
+            ),
+        )
+
     def _pid(self) -> int | None:
         if self._proc is None:
             return None
+        getter = getattr(self._proc, "get_identifier", None)
+        if not callable(getter):
+            return None
         try:
-            ident = self._proc.get_identifier()
+            ident = getter()
             return int(ident) if ident is not None else None
-        except (GLib.Error, ValueError, TypeError):
+        except (AttributeError, GLib.Error, ValueError, TypeError):
             return None
 
     def _finalize(self, code: int) -> None:
@@ -568,6 +735,14 @@ class CodexCliDriver(EffortPolicyMixin, UserMessageQueueMixin, GObject.Object):
             # after). Touching driver state here would null the NEW turn's
             # readers and misreport a mid-turn death — verified live.
             return
+        ident = getattr(self, "_child_identity", None)
+        if ident is not None:
+            unregister_if_dead(
+                ident.pid,
+                pgid=ident.pid if self._own_group else None,
+                start_ticks=ident.start_ticks,
+                group_token=getattr(self, "_child_group_token", None),
+            )
         self._reap_process()
         self._pending_identity_user_text = None
 
