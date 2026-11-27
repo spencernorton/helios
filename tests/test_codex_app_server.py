@@ -599,10 +599,8 @@ def test_codex_app_server_stop_reaps_surviving_descendant_after_leader_exits(tmp
 def test_codex_app_server_start_aborts_child_when_registration_fails(tmp_path, monkeypatch):
     """Pass 2 Finding 2: failed durable registration kills the newly spawned process."""
     import sys
-    from helios.backend.process.child_registry import (
-        ChildRegistryPersistenceError,
-        read_process_identity,
-    )
+    from helios.backend.process import child_registry
+    from helios.backend.process.child_registry import read_process_identity
     from helios.backend.process.codex_app_server import (
         CodexAppServer,
         CodexAppServerStartError,
@@ -622,11 +620,18 @@ def test_codex_app_server_start_aborts_child_when_registration_fails(tmp_path, m
     launcher.chmod(0o755)
 
     captured_pids: list[int] = []
+    real_register = child_registry.register_child
 
-    def fail_register(pid, **_kw):
+    def fail_register(pid, **kw):
         captured_pids.append(pid)
-        raise ChildRegistryPersistenceError("disk full")
+        return real_register(pid, **kw)
 
+    monkeypatch.setattr(child_registry, "REGISTRY_PATH", tmp_path / "live-children.json")
+    monkeypatch.setattr(
+        child_registry,
+        "_write_entries_locked",
+        lambda _path, _entries: "disk full",
+    )
     monkeypatch.setattr(
         "helios.backend.process.codex_app_server.register_child",
         fail_register,
