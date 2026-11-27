@@ -1,5 +1,18 @@
 # Helios — Session Journal
 
+## 2026-11-27 — 0.125.1 released; final validation (supersedes the line below)
+
+- The entry below shipped with an unfilled `NATIVE_RESULT` placeholder and a
+  backend count from before its last commit. The final numbers for the merged
+  head are:
+  - backend lane (`gi` hidden): 1996 passed, 142 skipped;
+  - native lane under Xvfb with isolated state: 3733 passed, none failed;
+  - `ruff check .` clean;
+  - CI `tests`, `native`, `backend (3.11)` and `backend (3.13)` green.
+
+  A third cross-model review pass over the final diff found nothing further.
+- Released as `v0.125.1` from the squash merge of #89.
+
 ## 2026-11-27 — Gemini silent-turn recovery no longer closes live turns (0.125.1)
 
 - **Symptom:** two Gemini chats in one morning showed the blinking amber
