@@ -4,6 +4,11 @@ All notable changes to Helios are documented here. Each release is a
 `vX.Y.Z` tag on `main`; its GitHub Release carries the `.deb`, the tagged
 source (`source.tar.gz`) and `SHA256SUMS.txt`.
 
+## 0.126.0 — 2026-11-27
+
+### Changes
+- **Agents no longer open windows on your desktop.** Builds, tests and previews that an agent ran inherited Helios's display, so their windows appeared on the desktop, often for a moment before the test closed them. Every agent and helper process now gets `WAYLAND_DISPLAY=helios-no-desktop`, a socket that does not exist, and no `DISPLAY` or `XAUTHORITY`. A GUI program an agent starts directly fails to open a display instead; headless displays such as `xvfb-run` keep working. Only the sign-in terminal still opens on the desktop. Launches through the session bus or `systemd-run --user` are not covered.
+
 ## 0.125.2 — 2026-11-27
 
 ### Fixes

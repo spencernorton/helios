@@ -1,7 +1,7 @@
 # Helios for autonomous agents — install, configure, verify
 
 This is a shell-based installation and verification guide for Helios on
-Linux. The procedures describe source version 0.125.2 and include expected
+Linux. The procedures describe source version 0.126.0 and include expected
 results; native account sign-ins require the account holder and remain in
 each CLI's credential store. Start with [quickstart.md](quickstart.md) for
 the shorter route. Stable APT can contain an older release, so check the
@@ -53,15 +53,15 @@ the package, then install it. The command chain stops before installation if
 a download or checksum check fails.
 
 ```bash
-mkdir -p ~/Downloads/helios-0.125.2 &&
-cd ~/Downloads/helios-0.125.2 &&
-curl -fLO https://github.com/spencernorton/helios/releases/download/v0.125.2/helios_0.125.2_all.deb &&
-curl -fLO https://github.com/spencernorton/helios/releases/download/v0.125.2/SHA256SUMS.txt &&
-grep '  helios_0.125.2_all.deb$' SHA256SUMS.txt | sha256sum --check - &&
-sudo apt install -y ./helios_0.125.2_all.deb
+mkdir -p ~/Downloads/helios-0.126.0 &&
+cd ~/Downloads/helios-0.126.0 &&
+curl -fLO https://github.com/spencernorton/helios/releases/download/v0.126.0/helios_0.126.0_all.deb &&
+curl -fLO https://github.com/spencernorton/helios/releases/download/v0.126.0/SHA256SUMS.txt &&
+grep '  helios_0.126.0_all.deb$' SHA256SUMS.txt | sha256sum --check - &&
+sudo apt install -y ./helios_0.126.0_all.deb
 ```
 
-Expected: `helios_0.125.2_all.deb: OK`. Stop on a checksum failure.
+Expected: `helios_0.126.0_all.deb: OK`. Stop on a checksum failure.
 [GitHub Releases](https://github.com/spencernorton/helios/releases/latest)
 has the current version and matching source. Use the package and checksums
 from the same release when selecting a newer version.
@@ -73,7 +73,7 @@ enabled for the full workspace.
 dpkg -s helios | grep -E '^(Status|Version):'
 ```
 
-Expected: `Status: install ok installed` and `Version: 0.125.2`. APT installs
+Expected: `Status: install ok installed` and `Version: 0.126.0`. APT installs
 WebKit for the browser and, by default, Git, VTE and desktop portal typelibs
 for review, the terminal and screenshots.
 
@@ -707,6 +707,7 @@ Every CLI child (Claude session, title generation, archival, `claude auth status
 1. `HELIOS_INTERNAL_ENV` removed: `HELIOS_DEBUG`, `HELIOS_LOG_LEVEL`, `HELIOS_CLAUDE_BINARY`, `HELIOS_CODEX_BINARY`, `HELIOS_CODEX_TRANSPORT`, `HELIOS_TANDEM_BINARY`, `HELIOS_SCRATCHPAD_URL`, `HELIOS_SCRATCHPAD_KEY`, `HELIOS_TITLE_API_KEY` and `HELIOS_TITLE_API_KEY_HEADER` (full list in `src/helios/backend/process/env_scrub.py`). `GPG_AGENT_INFO` is dropped. `HELIOS_STATE_DIR` and `HELIOS_SESSION_POOL` pass through.
 2. Every variable whose upper-cased name contains `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`, `_PASS`, `CREDENTIAL`, `APIKEY`, `_KEY`, `_PWD`, `_PAT`, `JWT`, `AUTH_CONFIG`, `ASKPASS` or `KEYRING` removed unless it is in that spawn's keep set. Benign names such as `TOKENIZERS_PARALLELISM` are dropped too; names without a marker (for example `DATABASE_URL`) survive.
 3. `SSH_AUTH_SOCK` always kept (`POLICY_KEEP`), so agents can `ssh` and push as the person.
+4. The desktop display blocked: `DISPLAY`, `XAUTHORITY` and `WAYLAND_SOCKET` removed and `WAYLAND_DISPLAY` set to `helios-no-desktop`, a socket that does not exist. A window that an agent's build, test or preview opens then fails to find a display instead of appearing on the desktop; removing `WAYLAND_DISPLAY` alone would not do this, because libwayland falls back to `wayland-0`. Headless displays (`xvfb-run`, a headless compositor) still work. Launches through the session bus or `systemd-run --user` are not covered. Only the sign-in terminal keeps the display.
 
 | Child | Credentials kept |
 |---|---|

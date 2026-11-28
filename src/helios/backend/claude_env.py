@@ -369,11 +369,12 @@ def _launch_in_terminal(inner_cmd: str, what: str) -> tuple[bool, str]:
     try:
         # Detach so the terminal outlives this turn and isn't killed with Helios.
         # User-initiated login shell, but still scoped: the auth flow needs
-        # Anthropic auth, not the workstation's whole credential set.
+        # Anthropic auth, not the workstation's whole credential set. It is a
+        # window the person asked for, so it keeps the desktop display.
         subprocess.Popen(  # noqa: S603 — fixed argv, no shell
             _terminal_argv(term, inner_cmd),
             start_new_session=True,
-            env=scrubbed_child_env(keep=CLAUDE_AUTH_ENV),
+            env=scrubbed_child_env(keep=CLAUDE_AUTH_ENV, desktop=True),
         )
     except OSError as e:
         return False, f"Could not open a terminal: {e}"

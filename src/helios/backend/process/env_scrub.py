@@ -64,6 +64,19 @@ Removal layers (all NAME-based — a value is never read, logged, or stored):
    minor hygiene, NOT as a GPG boundary: modern GnuPG locates its agent socket
    via gpgconf regardless of this var, so dropping it does not isolate GPG.
 
+5. **The desktop display** — agents run builds, tests and previews, and any
+   window those open would land on the person's desktop. ``DISPLAY``,
+   ``XAUTHORITY`` and ``WAYLAND_SOCKET`` are dropped and ``WAYLAND_DISPLAY``
+   names a socket that does not exist (:data:`NO_DESKTOP_WAYLAND_DISPLAY`).
+   Dropping ``WAYLAND_DISPLAY`` alone is not enough: libwayland then falls back
+   to ``$XDG_RUNTIME_DIR/wayland-0``, the desktop itself. A GUI toolkit in an
+   agent child therefore fails to open a display instead of drawing on the
+   desktop, while headless displays (``xvfb-run``, a headless compositor) still
+   work because they set their own variables. This is a guard, not a sandbox:
+   launches that go through the session bus or the user service manager
+   (``systemd-run --user``, D-Bus activation) still reach the desktop. Only the
+   sign-in terminal, a window the person asked for, passes ``desktop=True``.
+
 Documented residual gap: a secret in a non-credential-shaped name (e.g.
 ``DATABASE_URL`` with an inline password) is not caught by name matching. Closing
 that needs the positive allowlist / minimum-environment builder — the principled
@@ -101,6 +114,12 @@ HELIOS_INTERNAL_ENV = (
 # intentionally NOT here — it is retained via POLICY_KEEP. GPG_AGENT_INFO is a
 # hygiene drop, not a GPG isolation boundary.
 AGENT_SOCKET_ENV = ("GPG_AGENT_INFO",)
+
+# Layer 5 — the desktop display (see module doc). WAYLAND_DISPLAY is not dropped
+# but pointed at NO_DESKTOP_WAYLAND_DISPLAY, which never exists, so libwayland
+# cannot fall back to the desktop's wayland-0.
+DESKTOP_DISPLAY_ENV = ("DISPLAY", "XAUTHORITY", "WAYLAND_SOCKET")
+NO_DESKTOP_WAYLAND_DISPLAY = "helios-no-desktop"
 
 # Always RETAINED, overriding the credential markers — an explicit, greppable
 # trust grant (agents may ssh and push autonomously; 2026-07-15).
@@ -229,18 +248,21 @@ def _is_credential_name(name: str) -> bool:
 
 
 def names_to_scrub(
-    env_names: Iterable[str], *, keep: Iterable[str] = ()
+    env_names: Iterable[str], *, keep: Iterable[str] = (), desktop: bool = False
 ) -> list[str]:
     """Names to remove from a child env, computed from the parent's var names.
 
     ``keep`` is this spawn's provider auth allow-list (e.g. :data:`CLAUDE_AUTH_ENV`
     for a Claude child); those names and :data:`POLICY_KEEP` are never dropped
     even though they are credential-shaped. Everything else credential-shaped —
-    including the *other* provider's auth — is removed. Sorted + deterministic so
+    including the *other* provider's auth — is removed, and so is the desktop
+    display unless ``desktop`` is true. Sorted + deterministic so
     the launcher and dict paths stay identical and tests can assert exact sets.
     """
     keeps = POLICY_KEEP | set(keep)
     drop = set(HELIOS_INTERNAL_ENV) | set(AGENT_SOCKET_ENV)
+    if not desktop:
+        drop |= set(DESKTOP_DISPLAY_ENV)
     for name in env_names:
         if name in keeps:
             continue
@@ -249,7 +271,9 @@ def names_to_scrub(
     return sorted(drop - keeps)
 
 
-def scrub_helios_env(launcher, *, keep: Iterable[str] = ()) -> None:
+def scrub_helios_env(
+    launcher, *, keep: Iterable[str] = (), desktop: bool = False
+) -> None:
     """Remove internal + credential-shaped vars from a Gio.SubprocessLauncher.
 
     The launcher inherits the parent (Helios) environment; ``unsetenv`` drops
@@ -258,8 +282,10 @@ def scrub_helios_env(launcher, *, keep: Iterable[str] = ()) -> None:
     when this process didn't have them set. Pass ``keep`` = the child's provider
     auth allow-list.
     """
-    for name in names_to_scrub(os.environ.keys(), keep=keep):
+    for name in names_to_scrub(os.environ.keys(), keep=keep, desktop=desktop):
         launcher.unsetenv(name)
+    if not desktop:
+        launcher.setenv("WAYLAND_DISPLAY", NO_DESKTOP_WAYLAND_DISPLAY, True)
 
 
 def import_workload_identity(
@@ -323,7 +349,10 @@ def import_workload_identity(
 
 
 def scrubbed_child_env(
-    source: dict[str, str] | None = None, *, keep: Iterable[str] = ()
+    source: dict[str, str] | None = None,
+    *,
+    keep: Iterable[str] = (),
+    desktop: bool = False,
 ) -> dict[str, str]:
     """Return a subprocess environment with internal + credential vars removed.
 
@@ -332,6 +361,8 @@ def scrubbed_child_env(
     plain ``dict`` form. Pass ``keep`` = the child's provider auth allow-list.
     """
     env = dict(os.environ if source is None else source)
-    for name in names_to_scrub(env.keys(), keep=keep):
+    for name in names_to_scrub(env.keys(), keep=keep, desktop=desktop):
         env.pop(name, None)
+    if not desktop:
+        env["WAYLAND_DISPLAY"] = NO_DESKTOP_WAYLAND_DISPLAY
     return env

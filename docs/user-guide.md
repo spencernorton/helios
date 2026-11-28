@@ -470,6 +470,9 @@ or paste the key in Settings. Every other variable whose name contains
 `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`, `_PASS`, `CREDENTIAL`,
 `APIKEY`, `_KEY`, `_PWD`, `_PAT`, `JWT`, `AUTH_CONFIG`, `ASKPASS` or
 `KEYRING` is stripped from the agents' environment; `SSH_AUTH_SOCK` is kept.
+Agents also get no desktop display, so a window that an agent's build or test
+opens fails to start instead of appearing on your desktop; GUI tests need a
+headless display such as `xvfb-run`.
 Two credential-shaped names are forwarded on purpose when set, for optional
 integrations that are inert without them: `NORVI_TRACKER_API_TOKEN` (an
 optional work-tracker token) to Claude, GPT and OpenRouter, and

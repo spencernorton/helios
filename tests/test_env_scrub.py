@@ -11,7 +11,9 @@ from helios.backend.process.env_scrub import (
     AGENT_SOCKET_ENV,
     CLAUDE_AUTH_ENV,
     CODEX_EXEC_ENV,
+    DESKTOP_DISPLAY_ENV,
     HELIOS_INTERNAL_ENV,
+    NO_DESKTOP_WAYLAND_DISPLAY,
     POLICY_KEEP,
     names_to_scrub,
     scrub_helios_env,
@@ -24,9 +26,13 @@ class FakeLauncher:
 
     def __init__(self) -> None:
         self.unset: list[str] = []
+        self.set: dict[str, str] = {}
 
     def unsetenv(self, name: str) -> None:
         self.unset.append(name)
+
+    def setenv(self, name: str, value: str, overwrite: bool) -> None:
+        self.set[name] = value
 
 
 # A parent environment shaped like a real workstation: both providers' auth,
@@ -47,7 +53,6 @@ _SAMPLE_ENV = {
     "CLAUDE_HOME": "/home/user/.claude",
     "CODEX_HOME": "/home/user/.codex",
     "LANG": "en_US.UTF-8",
-    "XAUTHORITY": "/run/user/1000/.mutter-Xwaylandauth",
     "GIT_PAGER": "cat",
     "PWD": "/home/user/repo",  # bare PWD/OLDPWD must survive the _PWD marker
     "OLDPWD": "/home/user",
@@ -81,6 +86,10 @@ _SAMPLE_ENV = {
     "GPG_AGENT_INFO": "/run/user/1000/gnupg/S.gpg-agent",
     # Helios-internal — always dropped
     "HELIOS_SCRATCHPAD_KEY": "x",
+    # The desktop display — blocked unless the spawn passes desktop=True.
+    "WAYLAND_DISPLAY": "wayland-0",
+    "DISPLAY": ":0",
+    "XAUTHORITY": "/run/user/1000/.mutter-Xwaylandauth",
 }
 
 _UNRELATED_CREDENTIALS = {
@@ -108,7 +117,7 @@ _UNRELATED_CREDENTIALS = {
 }
 
 _BENIGN = {"PATH", "HOME", "CLAUDE_HOME", "CODEX_HOME", "LANG",
-           "XAUTHORITY", "GIT_PAGER", "PWD", "OLDPWD",
+           "GIT_PAGER", "PWD", "OLDPWD",
            "CLASSPATH", "BYPASS_CACHE"}
 
 
@@ -329,3 +338,42 @@ def test_only_interactive_sessions_get_the_tracker_token():
         "backend/process/muse_driver.py",  # Muse
         "backend/process/openrouter_tools.py",  # OpenRouter's Bash tool
     ], granting
+
+
+def test_desktop_display_is_blocked_for_every_child_by_default():
+    # Unsetting WAYLAND_DISPLAY is not enough: libwayland falls back to
+    # $XDG_RUNTIME_DIR/wayland-0, so it must name a socket that never exists.
+    for keep in _ALL_KEEPS:
+        env = scrubbed_child_env(_SAMPLE_ENV, keep=keep)
+        assert env["WAYLAND_DISPLAY"] == NO_DESKTOP_WAYLAND_DISPLAY
+        assert env.keys().isdisjoint(DESKTOP_DISPLAY_ENV)
+        assert set(DESKTOP_DISPLAY_ENV) <= set(names_to_scrub(_SAMPLE_ENV, keep=keep))
+    launcher = FakeLauncher()
+    scrub_helios_env(launcher, keep=CLAUDE_AUTH_ENV)
+    assert set(DESKTOP_DISPLAY_ENV) <= set(launcher.unset)
+    assert launcher.set == {"WAYLAND_DISPLAY": NO_DESKTOP_WAYLAND_DISPLAY}
+
+
+def test_desktop_true_keeps_the_display_as_it_is():
+    env = scrubbed_child_env(_SAMPLE_ENV, keep=CLAUDE_AUTH_ENV, desktop=True)
+    for name in ("WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY"):
+        assert env[name] == _SAMPLE_ENV[name]
+    launcher = FakeLauncher()
+    scrub_helios_env(launcher, keep=CLAUDE_AUTH_ENV, desktop=True)
+    assert set(launcher.unset).isdisjoint(DESKTOP_DISPLAY_ENV)
+    assert launcher.set == {}
+
+
+def test_only_the_sign_in_terminal_keeps_the_desktop(monkeypatch):
+    from helios.backend import claude_env
+
+    seen = {}
+
+    def fake_popen(argv, **kwargs):
+        seen.update(kwargs["env"])
+
+    monkeypatch.setattr(claude_env, "available_terminal", lambda: "/usr/bin/true")
+    monkeypatch.setattr(claude_env.subprocess, "Popen", fake_popen)
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    ok, _ = claude_env._launch_in_terminal("true", "sign-in")
+    assert ok and seen["WAYLAND_DISPLAY"] == "wayland-0"
