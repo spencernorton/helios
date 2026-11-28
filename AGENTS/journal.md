@@ -1,5 +1,13 @@
 # Helios — Session Journal
 
+## 2026-11-27 — Stop agents opening windows on the desktop (0.126.0)
+
+- **Symptom:** windows from an agent's builds, tests and previews appeared on the desktop, often for a moment before the test closed them.
+- **Root cause:** every agent and helper child inherited Helios's `WAYLAND_DISPLAY`, `DISPLAY` and `XAUTHORITY`. Removing `WAYLAND_DISPLAY` alone is not enough: libwayland falls back to `$XDG_RUNTIME_DIR/wayland-0`.
+- **Fix:** `env_scrub` now drops `DISPLAY`, `XAUTHORITY` and `WAYLAND_SOCKET` and sets `WAYLAND_DISPLAY=helios-no-desktop`, a socket that does not exist. A GUI program an agent starts directly fails to open a display; headless displays such as `xvfb-run` keep working. Only the sign-in terminal keeps the desktop (`desktop=True`).
+- **Not covered:** launches through the session bus or `systemd-run --user`.
+- **Validation:** CI `tests`, `native`, `backend (3.11)` and `backend (3.13)` green on PR #92.
+
 ## 2026-11-27 — Reap surviving agent child process groups on shutdown and crash recovery (0.125.2)
 
 - **Symptom:** After an abrupt crash or window close while sessions were busy, live and stopped (`T`-state) child agent process groups survived under the desktop session manager. Reopening Helios released the orphaned `running` Work attempts assuming no child survived, so resuming a chat spawned a second live agent editing the same transcript and workspace concurrently while stopped orphans held idle MCP servers indefinitely.
@@ -407,7 +415,7 @@
   labels its `[1m]` row.
 - Verified with a headless probe rendering the picker from a copy of the real
   `~/.helios` state. Built on the unpushed `codex/helios-gemini-draft-fix`
-  commits; GitHub auth still missing on Apollo, so branch
+  commits; GitHub auth still missing on the Linux workstation, so branch
   `claude/model-picker-fixes` is local only.
 
 ## 2026-11-23 — Honor Gemini session capacity before starting a driver
@@ -438,7 +446,7 @@
 - Symptom: the sidebar filled with hundreds of rows the user never started.
   A headless `claude -p` batch in `$HOME` wrote one
   transcript per call; the cwd-based Temporary rule (`/tmp`, `_tmp_*`) cannot
-  catch `$HOME`, and agent scratch has since moved to `/var/tmp/agent-work`.
+  catch `$HOME`, and agent scratch has since moved out of `$HOME`.
 - Transcript metadata alone cannot separate them: Helios's own Claude chats
   are also `entrypoint: sdk-cli` / `promptSource: sdk`. A Work binding is not
   proof of ownership either — `resolve_native_work` lazily binds any transcript
@@ -597,7 +605,7 @@ Bound the final CI status job to five minutes while retaining every required ups
 - **Changed:** OpenRouter uses per-model reasoning levels, defaults and mandatory reasoning; minimal/xhigh/max retain their exact wire values. Background catalog discovery migrates old capability caches and refreshes after24hours; UI/send reads remain cached-only. Missing/malformed effort declarations do not invent controls.
 - **Native policy:** shared catalog snapshots validate staged/live GPT, Muse and Google choices, repair incompatible restored/model-switch choices, and never implicitly select an Ultra lease. Muse rejects arbitrary values; live GPT/Muse/OpenRouter changes require model capabilities. Claude distinguishes unknown metadata from explicit no-effort support, disables explicitly unsupported controls, and preserves newly advertised levels rather than filtering through static constants. Kimi retains native config acknowledgement.
 - **Google:** omit the unadvertised High startup default. Expose only distinct native permission modes; use Sandboxed/Read only labels and explain that headless approvals cannot be answered. Existing Auto/Don't ask aliases resolve to the same sandboxed native behavior they previously invoked.
-- **Validation:** seven new initial regressions fail on unchanged release source. First full isolated Apollo GTK run passed3567 tests; final cache/default edge cases and integrated validation follow. Ruff and diff checks pass. No installed package, live provider or paid model request was changed.
+- **Validation:** seven new initial regressions fail on unchanged release source. First full isolated GTK run on the Linux workstation passed 3,567 tests; final cache/default edge cases and integrated validation follow. Ruff and diff checks pass. No installed package, live provider or paid model request was changed.
 
 ## 2026-10-28 — codex — Qualify Muse reliability package ingress (v0.114.2)
 
@@ -606,7 +614,7 @@ Bound the final CI status job to five minutes while retaining every required ups
 
 ## 2026-10-28 — codex — Cross-provider question and approval lifetime audit
 
-- **Branch:** `codex/provider-interaction-audit`; tracker OP#1278, extending the pending dialog-cleanup PR47.
+- **Branch:** `codex/provider-interaction-audit`, extending the pending dialog-cleanup PR47.
 - **Reproduced/fixed:** OpenRouter Stop and permission changes left approval dialogs alive; permission changes did not wake the worker. Deferred presentations now check current approval state, permissions and cancellation. Invalidations dismiss dialogs and wake workers without reviving consent.
 - **Claude:** a root terminal left root questions/tool/plan approvals answerable. Clear root prompts on terminal, preserve background child prompts even before actor projection, and clear every prompt on process exit. No synthetic answers are sent after terminal evidence.
 - **GPT:** terminal results did not retire pending interactive requests; a delayed delivery could prompt for an ended turn. Resolve only matching-turn interactions and keep bounded completed-turn IDs to ignore late questions. Other turns and stale terminal events remain isolated.
@@ -615,15 +623,15 @@ Bound the final CI status job to five minutes while retaining every required ups
 
 ## 2026-10-28 — codex — Close settled Muse questions and approvals
 
-- **Branch:** `codex/muse-question-cleanup`, based on the separate Muse reliability release PR46; tracker OP#1274.
+- **Branch:** `codex/muse-question-cleanup`, based on the separate Muse reliability release PR46.
 - **Reproduced:** `userInput/settled` cleared driver state while leaving the active/retried dialog open, blocking queued questions. `approval/resolved` was ignored, and terminal turns retained pending approvals.
 - **Fix:** emit the existing `interaction-resolved` window signal for exact presentation IDs, invalidate callbacks before closing dialogs, and clear approvals when a turn ends. Keep native session matching and stale-answer fencing. Add the real window queue and catalog-worker tests to native CI; isolate worker tests from installed provider CLIs.
-- **Validation:** the Apollo development tree passed all **3,546** isolated GTK tests after correcting intentional caret/motion expectations. The follow-up release tree is separately validated, retaining upstream Kimi and the release PR's additional lifecycle fixes. New queue tests cover original/retried prompts, timeout/turn cancellation, foreign-session settlement, late clicks, and external/terminal approval resolution.
+- **Validation:** the Linux workstation's development tree passed all **3,546** isolated GTK tests after correcting intentional caret/motion expectations. The follow-up release tree is separately validated, retaining upstream Kimi and the release PR's additional lifecycle fixes. New queue tests cover original/retried prompts, timeout/turn cancellation, foreign-session settlement, late clicks, and external/terminal approval resolution.
 - **Deployment:** review branch only; no installed package or running app modified. Version remains the parent release's 0.114.1 until landing.
 
 ## 2026-10-28 — codex — Release Muse session reliability (v0.114.1)
 
-- Reconciled the two local Muse hotfix commits onto GitHub main in an independent worktree. Original Apollo main and its unrelated UI commits remain preserved on `preserve/lifecycle-import-20261028`; its obsolete GitLab tracking branch explains the misleading ahead/behind count.
+- Reconciled the two local Muse hotfix commits onto GitHub main in an independent worktree. The Linux workstation's original main and its unrelated UI commits remain preserved on `preserve/lifecycle-import-20261028`; its obsolete GitLab tracking branch explains the misleading ahead/behind count.
 - Host continuations stream and persist, background work protects drivers from eviction, native goals and busy state reach the window, and active Goal envelopes request all unblocked steps before yielding. Typed answers and rejected-question retry retain native IDs and stale-dialog fencing.
 - Additional release checks fence stale turn terminals, retain workflow IDs across partial updates, and fail closed when a continuation transcript cannot be saved. No automatic goal retry loop or changed concurrency/budget policy is introduced.
 - Validation: 192 focused native GTK, question, driver-manager, Goal and Work-store tests pass; Ruff passes. Release checks and deployment evidence are recorded in the tracker and shared project status.
@@ -641,19 +649,19 @@ Bound the final CI status job to five minutes while retaining every required ups
 
 ## 2026-10-28 — codex — Muse typed answers and pending-question recovery (local hotfix)
 
-- **Branch:** `codex/muse-question-answers`. Squire ops' retained Muse receipt proves the defect: a typed URL was sent as `selectedLabel` although it was not one of the offered labels; MSP rejected it with `-32057 userInputAnswerInvalid`. The driver also removed the pending question before acknowledgement, leaving the turn waiting without an answer surface.
+- **Branch:** `codex/muse-question-answers`. An ops server's retained Muse receipt proves the defect: a typed URL was sent as `selectedLabel` although it was not one of the offered labels; MSP rejected it with `-32057 userInputAnswerInvalid`. The driver also removed the pending question before acknowledgement, leaving the turn waiting without an answer surface.
 - **Fix:** GTK-free `backend/process/muse_questions.py` maps native IDs through the dialog, uses `freeText` for typed answers, and preserves multiple selections plus typed Other text as choices + `note`. Both text fields enforce the native 500-character limit without truncating or silently cancelling. The driver retains pending questions until native acknowledgement/settlement and re-presents definite validation rejections. Retries get fresh UI presentation IDs bound to the same native prompt, passing the window's deduplication while fencing old-dialog callbacks; duplicate submissions and late rejections after settlement are also fenced.
 - **Contract/evidence:** exported the installed Muse Code 1.4.6 MSP schema offline. A real isolated native session accepted the translated free-text answer, emitted `userInput/settled` with the text intact and completed the turn. Native memory-only (`--no-session-log`) probes do not offer `request_user_input`; the successful probe used a disposable XDG data directory. No real session was resumed or answered by the probe.
 - **Four sessions:** the existing Work admission policy caps Muse at four concurrently running attempts, including turns waiting for answers. This is independent of the four-driver idle-cache eviction target and is not a cap on saved chats. Neither policy was changed; no live admission rows were edited.
 - **Validation:** **168** focused Muse/question/Work-store regressions pass, including the real window queue's retry and stale-callback handling; full native GTK suite: **3,534 passed, five failures**, all reproduced on unchanged HEAD: two streaming-paragraph tests, two catalog-refresh tests that reach the local agy binary, and the reduced-motion CSS expectation. Ruff and diff checks pass.
-- **Installed locally:** the packaged Muse driver was byte-identical to the patch base. Installed only the changed driver and its new helper into the existing package; verified imports and exact file equality. This is a local patch, not an apt release, and a future package upgrade may replace it. The running app and its active sessions were left untouched. Restart Helios when safe to load the fix; the unanswered Squire ops question must be answered again after native resume presents it.
+- **Installed locally:** the packaged Muse driver was byte-identical to the patch base. Installed only the changed driver and its new helper into the existing package; verified imports and exact file equality. This is a local patch, not an apt release, and a future package upgrade may replace it. The running app and its active sessions were left untouched. Restart Helios when safe to load the fix; the unanswered ops-server question must be answered again after native resume presents it.
 
 
 ## 2026-10-26 — kimi — Native Kimi Code membership provider (v0.114.0)
 
 - `backend/kimi_{binary,env}.py` discovers the official CLI and performs bounded, tool-free managed-auth/model probes. `process/kimi_driver.py` implements ACP models, thinking, modes, streaming, tools, questions/approvals, images/resources, MCP, usage, compact/fork, cancellation and native identity. The account probe has no tracker credential; interactive sessions receive only the standard grant.
 - Provider identity, model picker, Settings/Accounts/Tools, Work admission/receipts, mirrored transcripts, exact resume, provider chips and native command palette are wired. Docs: `docs/kimi-subscription.md`. ACP audio, quota windows and unsupported/undocumented methods are honestly absent.
-- **Validation:** focused Kimi/provider tests and the real macOS managed-account ACP catalog probe pass (six models, K3.1 Pro default). Full macOS suite has only the two known `/private` path-prefix failures. Full Ubuntu GTK suite, Ruff F rules, compileall, gitleaks and diff checks pass. Apollo live acceptance passed a real Work receipt, real-window turn, exact resume/fork context, dynamic settings, tool approval/denial, 64×64 vision, text resource, cancellation and native compact.
+- **Validation:** focused Kimi/provider tests and the real macOS managed-account ACP catalog probe pass (six models, K3.1 Pro default). Full macOS suite has only the two known `/private` path-prefix failures. Full Ubuntu GTK suite, Ruff F rules, compileall, gitleaks and diff checks pass. Live acceptance on the Linux workstation passed a real Work receipt, real-window turn, exact resume/fork context, dynamic settings, tool approval/denial, 64×64 vision, text resource, cancellation and native compact.
 
 ## 2026-10-22 — claude — Opt-in worktrees (v0.113.0)
 
@@ -812,7 +820,7 @@ Bound the final CI status job to five minutes while retaining every required ups
   - Ghost rows: the file was unlinked before the driver was stopped, and sessions run by an external `claude` (e.g. a local launcher script) were deleted and immediately rewritten. New `sessions-deleting` signal tears down Helios drivers first; externally held sessions are refused with a dialog; `unlink(missing_ok=True)`.
   - Only `ClaudeCliDriver` has `set_model`/`set_effort`; other drivers kept the old model forever and Gemini/Muse reasoning changes raised `AttributeError`. `_retire_for_respawn` ends input on an idle driver so the next send resumes on the new setting; `_helios_requested_model` + `_driver_model_is_stale` catch a busy one at send time.
   - `_work_is_executing` now counts busy/initializing Work drivers (a Gemini/Muse resume runs before its attempt row exists).
-- **Follow-up (same day): picked model silently replaced.** Spencer picked Muse Full and the session spawned `claude --model opus`. Reproduced on the real window (Xvfb + private state dir, drivers stubbed; harness `~/work/helios-repro/repro.py`): `_show_fresh_chat_ui` left the old row selected; the delete handler's non-preserving `reload` re-selected row 0 → `_on_session_selected` → `_adopt_session_provider` → `_apply_model_choice('opus', quiet=True)`. Unmodified `main` reproduces it; this branch keeps Muse. Fix: `SessionList.clear_selection()` (handler-blocked) on fresh chat; delete/filter reloads preserve selection.
+- **Follow-up (same day): picked model silently replaced.** Spencer picked Muse Full and the session spawned `claude --model opus`. Reproduced on the real window (Xvfb + private state dir, drivers stubbed; a local repro harness): `_show_fresh_chat_ui` left the old row selected; the delete handler's non-preserving `reload` re-selected row 0 → `_on_session_selected` → `_adopt_session_provider` → `_apply_model_choice('opus', quiet=True)`. Unmodified `main` reproduces it; this branch keeps Muse. Fix: `SessionList.clear_selection()` (handler-blocked) on fresh chat; delete/filter reloads preserve selection.
 - **Follow-up: no respawns for model changes.** The first cut ended the driver and resumed; replaced with in-place switches: `CodexCliDriver.set_model` (per-turn field), `MuseServeDriver.set_model` → MSP `session/setModel {sessionId, commandId, model:{modelId}}` (probed live: `accepted` + `session/modelChanged`), Muse `set_effort` per-turn. `_helios_requested_model` + `_driver_model_is_stale` apply a mid-turn pick in place at the next send; only Gemini/OpenRouter still resume.
 - **Not changed, by design:** a cross-provider switch inside a `single` Work still starts without the other provider's history (collaboration is explicit; see AGENTS.md); the toast now says so. The quiet GPT→Claude fallback when the OpenAI catalog is unverified is pinned by tests as silent; left alone and raised with Spencer.
 - **Argon:** not a Helios bug. Google's `fetchAvailableModels` stopped returning Gemini 4 Argon for the account after 2026-10-18 ~22:00; `agy --model gemini-4-argon-medium` now fails "not recognized" in agy 1.4.5.
@@ -895,13 +903,13 @@ Bound the final CI status job to five minutes while retaining every required ups
 - **Why:** Muse requires bwrap `--ro-bind-symlink` (absent in Ubuntu's
   0.11.1), falls back to its embedded arm64 bwrap under qemu-user, and
   AppArmor's `apparmor_restrict_unprivileged_userns` denies the namespace.
-- **Still open:** Apollo MCP import into Muse settings; Ask-mode sandbox on
+- **Still open:** importing the workstation's MCP servers into Muse settings; Ask-mode sandbox on
   Ubuntu; a native x86_64 Muse binary if one exists.
 
 ## 2026-10-13 — Fix Muse "unsafe provider" send rejection
 
 - **Branch:** `muse/fix-unsafe-provider`
-- **Symptom:** on Apollo (0.103.0), Spark 1.2 showed in the picker but every
+- **Symptom:** on the Linux workstation (0.103.0), Spark 1.2 showed in the picker but every
   Muse send failed with "Helios rejected an unsafe provider identity";
   log: `session … came from unknown provider ''`.
 - **Root cause:** `MainWindow._driver_provider` allowlist never learned
@@ -979,7 +987,7 @@ Bound the final CI status job to five minutes while retaining every required ups
 
 - **Branch:** `antigravity/buffer-google-startup-prompt`
 - **What changed:** buffer user prompts submitted while the native Google CLI initializes, dispatching them automatically upon native init verification and properly releasing buffered attempts on early aborts.
-- **Validation:** focused unit tests passed in `test_gemini_driver.py` and `test_execution_settings_window.py`; full test suite on Apollo; Ruff, compileall, whitespace and version agreement clean.
+- **Validation:** focused unit tests passed in `test_gemini_driver.py` and `test_execution_settings_window.py`; full test suite on the Linux workstation; Ruff, compileall, whitespace and version agreement clean.
 - **Release:** 0.101.4 prepared for the pull request and tag-driven release.
 - **Next step:** submit pull request on GitHub and verify CI.
 - **Status file updated:** separate operating record tracks rollout.
@@ -988,7 +996,7 @@ Bound the final CI status job to five minutes while retaining every required ups
 
 - **Branch:** `antigravity/fix-google-session-identity`
 - **What changed:** recognized `google` provider in `_driver_provider`, `_adopt_session_provider`, and `_on_session_started`, preventing native Google sessions from being rejected as unknown provider identities; updated assistant and transcript labels; avoided tool snapshot clobbering.
-- **Validation:** focused unit tests passed in `test_execution_settings_window.py`; 3,356 tests passed on Apollo; Ruff, compileall, whitespace and version agreement clean.
+- **Validation:** focused unit tests passed in `test_execution_settings_window.py`; 3,356 tests passed on the Linux workstation; Ruff, compileall, whitespace and version agreement clean.
 - **Release:** 0.101.3 prepared for the pull request and tag-driven release.
 - **Next step:** submit pull request on GitHub and verify CI.
 - **Status file updated:** separate operating record tracks rollout.
@@ -997,7 +1005,7 @@ Bound the final CI status job to five minutes while retaining every required ups
 
 - **Branch:** `antigravity/google-effort-and-permissions`
 - **What changed:** Google model discovery groups reasoning variants into base models with selectable effort in the execution toolbar; full permission mode selection enabled for Google sessions with corresponding CLI flags.
-- **Validation:** 3,354 tests passed on Apollo; Ruff, compileall, and diff whitespace checks clean.
+- **Validation:** 3,354 tests passed on the Linux workstation; Ruff, compileall, and diff whitespace checks clean.
 - **Release:** 0.101.2 prepared for the pull request and tag-driven release.
 - **Next step:** submit pull request on GitHub and verify CI.
 - **Status file updated:** separate operating record tracks rollout.
